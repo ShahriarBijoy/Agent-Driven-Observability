@@ -4,15 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo \"@obs/model-proxy: dev placeholder (implemented in a later phase)\"",
+    "dev": "bun --watch src/main.ts",
+    "start": "bun run src/main.ts",
     "build": "echo \"@obs/model-proxy: build (noop)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "oxlint ."
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.4.0",
     "@obs/contracts": "workspace:*",
-    "@obs/telemetry": "workspace:*"
+    "@obs/domain": "workspace:*",
+    "@obs/telemetry": "workspace:*",
+    "hono": "^4.12.23",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@obs/tsconfig": "workspace:*"

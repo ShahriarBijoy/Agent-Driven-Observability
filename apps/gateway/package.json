@@ -4,17 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo \"@obs/gateway: dev placeholder (implemented in a later phase)\"",
+    "dev": "bun --watch src/main.ts",
+    "start": "bun run src/main.ts",
     "build": "echo \"@obs/gateway: build (noop)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "oxlint ."
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.4.0",
     "@obs/contracts": "workspace:*",
     "@obs/domain": "workspace:*",
     "@obs/lineage": "workspace:*",
-    "@obs/telemetry": "workspace:*"
+    "@obs/telemetry": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.23",
+    "ioredis": "^5.11.0",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@obs/tsconfig": "workspace:*"
