@@ -1,0 +1,21 @@
+{
+  "name": "@obs/retriever",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@obs/retriever: dev placeholder (implemented in a later phase)\"",
+    "build": "echo \"@obs/retriever: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "@obs/contracts": "workspace:*",
+    "@obs/domain": "workspace:*",
+    "@obs/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

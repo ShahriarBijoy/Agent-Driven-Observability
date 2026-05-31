@@ -1,0 +1,5 @@
+{
+  "extends": "@obs/tsconfig/base.json",
+  "files": [],
+  "include": []
+}

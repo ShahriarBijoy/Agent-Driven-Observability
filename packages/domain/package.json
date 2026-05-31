@@ -1,0 +1,15 @@
+{
+  "name": "@obs/domain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"@obs/domain: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

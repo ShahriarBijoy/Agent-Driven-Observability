@@ -1,0 +1,9 @@
+# Lineage plane (Marquez + its Postgres). Populated in Phase 3.
+# Compose this together with compose.yml:
+#   docker compose -f infra/compose.yml -f infra/compose.lineage.yml up -d
+name: observability-lab
+
+networks:
+  app:
+    name: obs-lab-app
+    external: true

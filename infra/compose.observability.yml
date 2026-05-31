@@ -1,0 +1,9 @@
+# Observability plane (LGTM stack + Grafana Alloy). Populated in Phase 2.
+# Compose this together with compose.yml:
+#   docker compose -f infra/compose.yml -f infra/compose.observability.yml up -d
+name: observability-lab
+
+networks:
+  obs:
+    name: obs-lab-obs
+    external: true

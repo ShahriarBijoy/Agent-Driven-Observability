@@ -1,0 +1,20 @@
+{
+  "name": "@obs/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@obs/web: dev placeholder (implemented in a later phase)\"",
+    "build": "echo \"@obs/web: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "@obs/contracts": "workspace:*",
+    "@obs/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

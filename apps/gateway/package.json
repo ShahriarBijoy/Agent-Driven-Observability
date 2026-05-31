@@ -1,0 +1,22 @@
+{
+  "name": "@obs/gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@obs/gateway: dev placeholder (implemented in a later phase)\"",
+    "build": "echo \"@obs/gateway: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "@obs/contracts": "workspace:*",
+    "@obs/domain": "workspace:*",
+    "@obs/lineage": "workspace:*",
+    "@obs/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

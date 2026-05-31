@@ -1,0 +1,9 @@
+[project]
+name = "dq-runner"
+version = "0.0.0"
+description = "Scheduled data-quality checks for the AI Observability Lab (Phase 3)."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false

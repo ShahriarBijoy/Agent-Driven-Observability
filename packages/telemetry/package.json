@@ -1,0 +1,15 @@
+{
+  "name": "@obs/telemetry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"@obs/telemetry: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

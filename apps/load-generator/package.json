@@ -1,0 +1,19 @@
+{
+  "name": "@obs/load-generator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@obs/load-generator: dev placeholder (implemented in a later phase)\"",
+    "build": "echo \"@obs/load-generator: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "@obs/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

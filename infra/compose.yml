@@ -1,0 +1,14 @@
+# Root compose file for the AI Observability Lab.
+# Phase 0: shared networks only. Service definitions arrive in later phases:
+#   - subject system (gateway/embedder/retriever/model-proxy, postgres, redis) -> Phase 1
+#   - observability (alloy/loki/tempo/mimir/pyroscope/grafana) -> Phase 2 (compose.observability.yml)
+#   - lineage (marquez + its postgres) -> Phase 3 (compose.lineage.yml)
+name: observability-lab
+
+networks:
+  app:
+    name: obs-lab-app
+    driver: bridge
+  obs:
+    name: obs-lab-obs
+    driver: bridge
