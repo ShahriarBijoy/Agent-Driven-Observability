@@ -4,14 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo \"@obs/load-generator: dev placeholder (implemented in a later phase)\"",
+    "dev": "bun run src/main.ts",
+    "start": "bun run src/main.ts",
     "build": "echo \"@obs/load-generator: build (noop)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "oxlint ."
   },
   "dependencies": {
-    "@obs/contracts": "workspace:*"
+    "@obs/contracts": "workspace:*",
+    "@obs/domain": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@obs/tsconfig": "workspace:*"
