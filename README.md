@@ -66,7 +66,7 @@ bun run format       # oxfmt --write .
 
 | Service       | Address               | Credentials   |
 | ------------- | --------------------- | ------------- |
-| Web dashboard | http://localhost:3000 |               |
+| Web dashboard | http://localhost:3003 |               |
 | Grafana       | http://localhost:3001 | admin / admin |
 | Marquez UI    | http://localhost:3002 |               |
 | Gateway API   | http://localhost:8080 |               |
