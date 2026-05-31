@@ -1,8 +1,11 @@
 # Root compose file for the AI Observability Lab.
-# Phase 0: shared networks only. Service definitions arrive in later phases:
-#   - subject system (gateway/embedder/retriever/model-proxy, postgres, redis) -> Phase 1
-#   - observability (alloy/loki/tempo/mimir/pyroscope/grafana) -> Phase 2 (compose.observability.yml)
-#   - lineage (marquez + its postgres) -> Phase 3 (compose.lineage.yml)
+# Phase 0: shared networks only.
+# Phase 1: subject system — postgres, redis, the four TS services
+#          (gateway/embedder/retriever/model-proxy), a one-shot seed job,
+#          and a load-generator behind the `load` profile.
+# Later phases layer on:
+#   - observability (alloy/loki/tempo/mimir/pyroscope/grafana) -> compose.observability.yml
+#   - lineage (marquez + its postgres) -> compose.lineage.yml
 name: observability-lab
 
 networks:
@@ -12,3 +15,189 @@ networks:
   obs:
     name: obs-lab-obs
     driver: bridge
+
+volumes:
+  postgres-data:
+
+# All four TS services share one image, built once from infra/Dockerfile with
+# the repo root as build context. They differ only by working_dir + env.
+x-ts-build: &ts-build
+  context: ..
+  dockerfile: infra/Dockerfile
+
+# A health probe that works from inside any Bun service container: hit the
+# service's own /health over loopback. ${port} is substituted per service.
+x-health: &ts-health
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 20s
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: observability_lab
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d observability_lab"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - app
+
+  gateway:
+    build: *ts-build
+    working_dir: /app/apps/gateway
+    command: ["bun", "run", "start"]
+    environment:
+      GATEWAY_PORT: "8080"
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://lab:lab@postgres:5432/observability_lab
+      EMBEDDER_URL: http://embedder:8081
+      RETRIEVER_URL: http://retriever:8082
+      MODEL_PROXY_URL: http://model-proxy:8083
+      DEV_TOKEN: dev-local-token
+    ports:
+      - "8080:8080"
+    healthcheck:
+      <<: *ts-health
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+    depends_on:
+      redis:
+        condition: service_healthy
+      embedder:
+        condition: service_healthy
+      retriever:
+        condition: service_healthy
+      model-proxy:
+        condition: service_healthy
+    networks:
+      - app
+
+  embedder:
+    build: *ts-build
+    working_dir: /app/apps/embedder
+    command: ["bun", "run", "start"]
+    environment:
+      EMBEDDER_PORT: "8081"
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8081:8081"
+    healthcheck:
+      <<: *ts-health
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:8081/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app
+
+  retriever:
+    build: *ts-build
+    working_dir: /app/apps/retriever
+    command: ["bun", "run", "start"]
+    environment:
+      RETRIEVER_PORT: "8082"
+      DATABASE_URL: postgres://lab:lab@postgres:5432/observability_lab
+    ports:
+      - "8082:8082"
+    healthcheck:
+      <<: *ts-health
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:8082/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+
+  model-proxy:
+    build: *ts-build
+    working_dir: /app/apps/model-proxy
+    command: ["bun", "run", "start"]
+    environment:
+      MODEL_PROXY_PORT: "8083"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      <<: *ts-health
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:8083/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+    networks:
+      - app
+
+  # One-shot corpus seed. Loads chunks into Postgres and builds the IVFFlat
+  # index post-load. Idempotent (onConflictDoNothing + CREATE INDEX IF NOT
+  # EXISTS), so re-running is safe.
+  seed:
+    build: *ts-build
+    working_dir: /app/apps/retriever
+    command: ["bun", "run", "seed"]
+    environment:
+      DATABASE_URL: postgres://lab:lab@postgres:5432/observability_lab
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+
+  # Synthetic traffic generator. Behind the `load` profile so it never starts
+  # with a plain `up`; opt in with `--profile load`.
+  load-generator:
+    build: *ts-build
+    working_dir: /app/apps/load-generator
+    command: ["bun", "run", "start"]
+    environment:
+      GATEWAY_URL: http://gateway:8080
+    profiles:
+      - load
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - app

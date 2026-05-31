@@ -12,11 +12,11 @@
     "lint": "oxlint ."
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.4.0",
     "@obs/contracts": "workspace:*",
     "@obs/domain": "workspace:*",
     "@obs/lineage": "workspace:*",
     "@obs/telemetry": "workspace:*",
-    "@hono/zod-openapi": "^1.4.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.23",
     "ioredis": "^5.11.0",

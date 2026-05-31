@@ -8,7 +8,7 @@
     "start": "bun run src/main.ts",
     "build": "echo \"@obs/load-generator: build (noop)\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "lint": "oxlint ."
   },
   "dependencies": {

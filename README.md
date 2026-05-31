@@ -4,7 +4,7 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 
 ## Status
 
-Phase 0 (Foundation) complete — monorepo scaffold only, no feature code yet. All application packages contain placeholder source files. See `docs/PLAN.html` for the full phased roadmap.
+Phase 1 (Subject system) complete — a working AI inference gateway with a real RAG pipeline (no observability yet; that is Phase 2). The gateway orchestrates embedder → retriever (pgvector top-k over a ~1,000-chunk seeded corpus) → model-proxy (a deterministic mock LLM with a rich fault model), behind bearer-token auth, per-tenant Redis token-bucket rate limiting, and Postgres usage-metering. A load-generator drives weighted, chaotic traffic. See `docs/adr/002-subject-system.md` for the design and `docs/PLAN.html` for the full phased roadmap.
 
 ## Stack
 
@@ -61,6 +61,30 @@ bun run typecheck    # tsc --noEmit across all packages
 bun run test         # vitest run across all packages
 bun run format       # oxfmt --write .
 ```
+
+### Run the subject system (Phase 1)
+
+```bash
+# Build + start postgres, redis, and the four TS services; seed the corpus.
+docker compose -f infra/compose.yml up -d --build
+
+# One-command smoke test: waits for health, seeds, and asserts /v1/chat
+# returns a completion that used a retrieved chunk.
+bash scripts/smoke.sh
+
+# Ask the gateway a question (RAG over the seeded corpus):
+curl -s -X POST localhost:8080/v1/chat \
+  -H "authorization: Bearer dev-local-token" \
+  -H "content-type: application/json" \
+  -d '{"prompt":"what is pride and prejudice about","topK":3}'
+
+# Drive synthetic traffic + chaos (opt-in `load` profile, or run on the host):
+GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
+  bun --cwd apps/load-generator run start
+```
+
+Dev tenants (bearer tokens): `dev-local-token` (acme), `dev-token-bravo` (bravo),
+`dev-token-abuser` (abuser — tiny quota, trips 429s).
 
 ### Service addresses (after `docker compose up`)
 

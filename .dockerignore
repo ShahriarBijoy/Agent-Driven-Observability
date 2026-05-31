@@ -1,0 +1,20 @@
+# Keep the Docker build context small. The image installs deps itself via
+# `bun install --frozen-lockfile`, so host node_modules / build artifacts and
+# local env files must never be shipped to the daemon.
+node_modules
+**/node_modules
+dist
+**/dist
+.turbo
+**/.turbo
+.git
+*.log
+.env
+.env.*
+!.env.example
+.worktree
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+.DS_Store
