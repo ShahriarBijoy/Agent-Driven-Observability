@@ -1,9 +1,24 @@
+import { createHash } from "node:crypto";
+import { createLogger, withSpan } from "@obs/telemetry";
 import type { ChatResponse, RetrievedRef } from "@obs/contracts";
+import {
+  recordCacheHit,
+  recordRetrievalRelevance,
+  recordTokensIn,
+  recordTokensOut,
+} from "../../platform/metrics";
 import type { EmbedderClient, ModelClient, RetrieverClient } from "./ports/clients";
 import type { UsageWriter } from "../usage-metering/ports/usage-writer";
 
 /** Max characters of a chunk body surfaced to the client as a snippet. */
 const SNIPPET_CHARS = 160;
+
+const log = createLogger("gateway");
+
+/** Stable sha-256 hex digest of the prompt, for low-cardinality span attribution. */
+function hashPrompt(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex");
+}
 
 export interface InferenceServiceDeps {
   embedder: EmbedderClient;
@@ -34,38 +49,82 @@ export interface InferenceService {
 export function createInferenceService(deps: InferenceServiceDeps): InferenceService {
   return {
     async chat(input: ChatInput): Promise<ChatResponse> {
-      const embedded = await deps.embedder.embed(input.prompt);
-      const chunks = await deps.retriever.retrieve(embedded.embedding, input.topK);
-      const context = chunks.map((chunk) => chunk.body);
-      const completion = await deps.model.complete(input.prompt, context);
+      return withSpan("rag.chat", async () => {
+        // 1. embed + retrieve → chunks
+        const { embedded, chunks } = await withSpan("rag.retrieve", async (span) => {
+          span.setAttributes({
+            tenant: input.tenant,
+            "prompt.hash": hashPrompt(input.prompt),
+            "rag.top_k": input.topK,
+          });
+          const result = await deps.embedder.embed(input.prompt);
+          const retrieved = await deps.retriever.retrieve(result.embedding, input.topK);
+          span.setAttribute(
+            "rag.retrieved_doc_ids",
+            retrieved.map((chunk) => chunk.docId),
+          );
+          return { embedded: result, chunks: retrieved };
+        });
 
-      // Best-effort usage write — a metering failure must never fail the chat.
-      try {
-        await deps.usage.write({
+        // Relevance + cache metrics from the retrieval outcome.
+        for (const chunk of chunks) recordRetrievalRelevance(chunk.score);
+        recordCacheHit(embedded.cached);
+
+        // 2. build the context from chunk bodies
+        const context = await withSpan("rag.augment", () => chunks.map((chunk) => chunk.body));
+
+        // 3. complete(prompt, context) → completion
+        const completion = await withSpan("rag.generate", async (span) => {
+          const result = await deps.model.complete(input.prompt, context);
+          span.setAttribute("gen.model", result.model);
+          return result;
+        });
+
+        recordTokensIn(completion.usage.promptTokens, {
           tenant: input.tenant,
-          promptTokens: completion.usage.promptTokens,
-          completionTokens: completion.usage.completionTokens,
           model: completion.model,
         });
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.error("[gateway] usage write failed:", reason);
-      }
+        recordTokensOut(completion.usage.completionTokens, {
+          tenant: input.tenant,
+          model: completion.model,
+        });
 
-      const retrieved: RetrievedRef[] = chunks.map((chunk) => ({
-        chunkId: chunk.chunkId,
-        docId: chunk.docId,
-        score: chunk.score,
-        snippet: chunk.body.slice(0, SNIPPET_CHARS),
-      }));
+        // Best-effort usage write — a metering failure must never fail the chat.
+        try {
+          await deps.usage.write({
+            tenant: input.tenant,
+            promptTokens: completion.usage.promptTokens,
+            completionTokens: completion.usage.completionTokens,
+            model: completion.model,
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          log.error("usage write failed", { reason });
+        }
 
-      return {
-        completion: completion.completion,
-        model: completion.model,
-        usage: completion.usage,
-        retrieved,
-        cached: embedded.cached,
-      };
+        const retrieved: RetrievedRef[] = chunks.map((chunk) => ({
+          chunkId: chunk.chunkId,
+          docId: chunk.docId,
+          score: chunk.score,
+          snippet: chunk.body.slice(0, SNIPPET_CHARS),
+        }));
+
+        log.info("chat completed", {
+          tenant: input.tenant,
+          topK: input.topK,
+          model: completion.model,
+          cached: embedded.cached,
+          retrievedCount: retrieved.length,
+        });
+
+        return {
+          completion: completion.completion,
+          model: completion.model,
+          usage: completion.usage,
+          retrieved,
+          cached: embedded.cached,
+        };
+      });
     },
   };
 }

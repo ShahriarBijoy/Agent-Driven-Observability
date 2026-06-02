@@ -1,9 +1,100 @@
-# Observability plane (LGTM stack + Grafana Alloy). Populated in Phase 2.
-# Compose this together with compose.yml:
+# Observability plane (LGTM stack + Grafana Alloy). Compose together with the
+# subject system:
 #   docker compose -f infra/compose.yml -f infra/compose.observability.yml up -d
+#
+# Alloy is the single OTLP ingress (4317 gRPC / 4318 HTTP). It fans out to:
+#   - Tempo  (traces)  :3200
+#   - Mimir  (metrics) :9009
+#   - Loki   (logs)    :3100
+# Grafana (:3001) provisions all three as data sources, cross-linked.
 name: observability-lab
 
 networks:
+  # Defined identically in compose.yml; the subject services join this network
+  # so they can reach alloy:4318. Declared here too so the observability plane
+  # can also be brought up on its own.
   obs:
     name: obs-lab-obs
-    external: true
+    driver: bridge
+
+volumes:
+  alloy-data:
+  loki-data:
+  tempo-data:
+  mimir-data:
+  grafana-data:
+
+services:
+  alloy:
+    image: grafana/alloy:v1.16.2
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "12345:12345" # Alloy UI / readiness
+    depends_on:
+      - loki
+      - tempo
+      - mimir
+    networks:
+      - obs
+
+  loki:
+    image: grafana/loki:3.7.2
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - obs
+
+  tempo:
+    image: grafana/tempo:3.0.0
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+    networks:
+      - obs
+
+  mimir:
+    image: grafana/mimir:3.1.0
+    command: ["-config.file=/etc/mimir/mimir.yaml"]
+    volumes:
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - ./mimir/rules:/data/mimir/rules
+      - mimir-data:/data/mimir
+    ports:
+      - "9009:9009"
+    networks:
+      - obs
+
+  grafana:
+    image: grafana/grafana:13.0.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - mimir
+      - tempo
+      - loki
+    networks:
+      - obs

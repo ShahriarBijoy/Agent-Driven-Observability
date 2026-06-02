@@ -1,0 +1,54 @@
+// Grafana Alloy — the single OTLP ingress for the lab. Services export OTLP/HTTP
+// here; Alloy batches and fans out to the three LGTM backends.
+//
+// Metrics take the OTLP-direct path to Mimir (otelcol.exporter.otlphttp -> /otlp)
+// rather than the otelcol.exporter.prometheus -> remote_write chain, because the
+// latter drops OTLP exemplars during conversion. Kept intentionally small; it is
+// extended in Phase 6.
+
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.otlphttp.mimir.input]
+    logs    = [otelcol.exporter.otlphttp.loki.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// Traces -> Tempo (OTLP gRPC)
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// Metrics -> Mimir (OTLP/HTTP; exemplar-safe). Alloy appends /v1/metrics.
+otelcol.exporter.otlphttp "mimir" {
+  client {
+    endpoint = "http://mimir:9009/otlp"
+  }
+}
+
+// Logs -> Loki (native OTLP ingest endpoint). Alloy appends /v1/logs.
+otelcol.exporter.otlphttp "loki" {
+  client {
+    endpoint = "http://loki:3100/otlp"
+  }
+}

@@ -1,6 +1,7 @@
 import { createMiddleware } from "hono/factory";
 import { RateLimitedError } from "../../platform/errors";
 import type { AppEnv } from "../../platform/http";
+import { recordRateLimitRejection } from "../../platform/metrics";
 import { recordForTenant } from "../auth/registry";
 import type { RateLimiter } from "./ports/limiter";
 
@@ -24,6 +25,7 @@ export function createRateLimitMiddleware(limiter: RateLimiter) {
       refillPerSecond: record.refillPerSecond,
     });
     if (!result.allowed) {
+      recordRateLimitRejection({ tenant });
       throw new RateLimitedError();
     }
     await next();

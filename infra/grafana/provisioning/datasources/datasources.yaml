@@ -1,0 +1,55 @@
+# Grafana data sources for the three-pillar drill-down. Cross-linked so a click
+# flows metric -> trace (Mimir exemplars -> Tempo), trace -> logs/metrics
+# (Tempo tracesToLogsV2 -> Loki, tracesToMetrics/serviceMap -> Mimir), and
+# log -> trace (Loki derivedFields trace_id -> Tempo). Mimir is the default.
+apiVersion: 1
+
+datasources:
+  - name: Mimir
+    type: prometheus
+    uid: mimir
+    access: proxy
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # trace_id arrives as Loki structured metadata for OTLP logs, so match it
+      # as a label on the trace_id field and link through to the Tempo trace.
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          url: "${__value.raw}"
+          datasourceUid: tempo
+          urlDisplayLabel: View trace
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        tags:
+          - key: service.name
+            value: service_name
+      tracesToMetrics:
+        datasourceUid: mimir
+      serviceMap:
+        datasourceUid: mimir
+      nodeGraph:
+        enabled: true

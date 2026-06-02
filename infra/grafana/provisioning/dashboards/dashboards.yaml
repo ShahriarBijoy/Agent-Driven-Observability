@@ -1,0 +1,15 @@
+# Dashboards provider: loads JSON dashboards from the provisioning dir. Other
+# agents drop gateway-red.json / rag-pipeline.json alongside this file.
+apiVersion: 1
+
+providers:
+  - name: lab
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,76 @@
+# Grafana-managed alert rules (apiVersion 1) for the gateway, queried against
+# Mimir (datasource uid "mimir"). Two rules per ADR-003 5e:
+#   1. gateway 5xx rate > 2% for 2m
+#   2. gateway p95 latency > 2s for 5m
+# Each rule pairs an instant Mimir query (refId A) with a threshold expression
+# (refId C) that fires when A crosses the bound.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: gateway
+    folder: Lab Alerts
+    interval: 1m
+    rules:
+      - uid: gw-5xx
+        title: Gateway 5xx rate > 2%
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: 100 * sum(rate(request_duration_seconds_count{service="gateway",http_status_code=~"5.."}[5m])) / clamp_min(sum(rate(request_duration_seconds_count{service="gateway"}[5m])),1)
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 2
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: gateway 5xx rate above 2%
+      - uid: gw-p95
+        title: Gateway p95 latency > 2s
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: histogram_quantile(0.95, sum by (le) (rate(request_duration_seconds_bucket{service="gateway"}[5m])))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 2
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: gateway p95 latency above 2s

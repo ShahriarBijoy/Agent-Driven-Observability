@@ -1,0 +1,54 @@
+# Mimir monolithic mode (-target=all), local filesystem block storage. Dev-only.
+# Accepts both OTLP (/otlp/v1/metrics, from Alloy) and Prometheus remote-write
+# (/api/v1/push, from Tempo's metrics-generator). Exemplars are enabled so the
+# metric-exemplar -> trace drill-down works in Grafana.
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  grpc_listen_port: 9095
+  log_level: warn
+  grpc_server_max_recv_msg_size: 104857600
+  grpc_server_max_send_msg_size: 104857600
+  grpc_server_max_concurrent_streams: 1000
+
+distributor:
+  ring:
+    kvstore:
+      store: memberlist
+
+ingester:
+  ring:
+    min_ready_duration: 0s
+    final_sleep: 0s
+    num_tokens: 512
+    kvstore:
+      store: inmemory
+    replication_factor: 1
+
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/mimir/blocks
+  tsdb:
+    dir: /data/mimir/tsdb
+  bucket_store:
+    sync_dir: /data/mimir/tsdb-sync
+
+compactor:
+  data_dir: /data/mimir/compactor
+
+ruler_storage:
+  backend: local
+  local:
+    directory: /data/mimir/rules
+
+limits:
+  # REQUIRED to store/serve exemplars (default 0 = disabled).
+  max_global_exemplars_per_user: 100000
+  # Tempo's metrics-generator sends native histograms.
+  native_histograms_ingestion_enabled: true
+  # Tolerate slightly late samples in a bursty dev environment.
+  out_of_order_time_window: 1h
+  # Apply Prometheus-style suffixes (_total, _seconds) to OTLP metrics.
+  otel_metric_suffixes_enabled: true

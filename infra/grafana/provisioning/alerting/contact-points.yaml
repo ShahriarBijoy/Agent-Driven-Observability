@@ -1,0 +1,15 @@
+# Grafana unified-alerting contact points (apiVersion 1).
+# "agent-webhook" is a placeholder receiver; the real agent endpoint is wired
+# in Phase 5. Grafana posts firing/resolved alerts here as JSON.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: agent-webhook
+    receivers:
+      - uid: agent-webhook
+        type: webhook
+        settings:
+          url: http://agent-service:9099/alert
+          httpMethod: POST
+        disableResolveMessage: false
