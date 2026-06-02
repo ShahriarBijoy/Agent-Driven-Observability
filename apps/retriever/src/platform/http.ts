@@ -1,11 +1,12 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { honoTelemetry } from "@obs/telemetry";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { AppError, toErrorResponse } from "./errors";
 
 /**
  * Shared Hono app factory. Every service builds its app here so that the
- * health endpoint, OpenAPI doc, validation-error shape, and error envelope are
- * identical across the fleet. (Telemetry is deliberately absent — Phase 2.)
+ * health endpoint, OpenAPI doc, validation-error shape, error envelope, and
+ * OpenTelemetry instrumentation are identical across the fleet.
  */
 export function createApp(serviceName: string): OpenAPIHono {
   const startedAt = Date.now();
@@ -18,6 +19,9 @@ export function createApp(serviceName: string): OpenAPIHono {
       return undefined;
     },
   });
+
+  // First middleware: one SERVER span per request + fleet-wide RED metrics.
+  app.use("*", honoTelemetry(serviceName));
 
   app.get("/health", (c) =>
     c.json({ status: "ok" as const, service: serviceName, uptimeMs: Date.now() - startedAt }),

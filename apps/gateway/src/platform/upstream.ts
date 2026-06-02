@@ -1,3 +1,4 @@
+import { tracedFetch } from "@obs/telemetry";
 import { UpstreamError, UpstreamTimeoutError } from "./errors";
 
 /**
@@ -37,12 +38,16 @@ export function createUpstreamClient(opts: UpstreamClientOptions): UpstreamClien
     async postJson(path, json) {
       let res: Response;
       try {
-        res = await fetch(`${base}${path}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(json),
-          signal: AbortSignal.timeout(opts.timeoutMs),
-        });
+        res = await tracedFetch(
+          `${base}${path}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(json),
+            signal: AbortSignal.timeout(opts.timeoutMs),
+          },
+          { spanName: `POST ${opts.name}` },
+        );
       } catch (err) {
         if (isTimeout(err)) {
           throw new UpstreamTimeoutError(`${opts.name} timed out after ${opts.timeoutMs}ms`);

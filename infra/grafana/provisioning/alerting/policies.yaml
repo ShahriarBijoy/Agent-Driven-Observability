@@ -1,0 +1,10 @@
+# Grafana unified-alerting notification policy tree (apiVersion 1).
+# Root policy routes every alert to the agent-webhook contact point.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: agent-webhook
+    group_by:
+      - grafana_folder
+      - alertname

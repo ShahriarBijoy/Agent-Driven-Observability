@@ -1,3 +1,6 @@
+import "./platform/telemetry"; // initialises OpenTelemetry before any app code
+
+import { createLogger } from "@obs/telemetry";
 import { loadConfig } from "./platform/config";
 import { createApp } from "./platform/http";
 import { mountAuthSlice } from "./slices/auth/slice";
@@ -5,6 +8,8 @@ import { mountRateLimitSlice } from "./slices/rate-limit/slice";
 import { makeRateLimiter } from "./slices/rate-limit";
 import { mountInferenceSlice } from "./slices/inference/slice";
 import { makeUsageWriter } from "./slices/usage-metering";
+
+const log = createLogger("gateway");
 
 const config = loadConfig();
 
@@ -25,9 +30,10 @@ mountInferenceSlice(app, {
   usage,
 });
 
-console.log(
-  `[gateway] listening on :${config.port} ` +
-    `(rateLimit=${config.rateLimitBackend}, usage=${config.usageBackend})`,
-);
+log.info(`gateway listening on :${config.port}`, {
+  port: config.port,
+  rateLimit: config.rateLimitBackend,
+  usage: config.usageBackend,
+});
 
 export default { port: config.port, fetch: app.fetch };
