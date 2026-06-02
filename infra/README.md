@@ -43,10 +43,10 @@ subdirectories below.
 
 ## Networks
 
-| Network | Name          | Purpose                                                                 |
-| ------- | ------------- | ----------------------------------------------------------------------- |
-| `app`   | `obs-lab-app` | Subject system services and Marquez communicate on this network.        |
-| `obs`   | `obs-lab-obs` | Alloy, Loki, Tempo, Mimir, and Grafana communicate on this network.     |
+| Network | Name          | Purpose                                                             |
+| ------- | ------------- | ------------------------------------------------------------------- |
+| `app`   | `obs-lab-app` | Subject system services and Marquez communicate on this network.    |
+| `obs`   | `obs-lab-obs` | Alloy, Loki, Tempo, Mimir, and Grafana communicate on this network. |
 
 The four TS services are attached to **both** networks: they serve subject traffic on `app`
 and push OpenTelemetry over OTLP to `alloy:4318` on `obs`. Alloy (on `obs`) batches and fans

@@ -114,13 +114,13 @@ docker compose -f infra/compose.yml -f infra/compose.observability.yml --profile
 
 ### Service addresses (after `docker compose up`)
 
-| Service       | Address               | Credentials   |
-| ------------- | --------------------- | ------------- |
-| Web dashboard | http://localhost:3003 |               |
+| Service       | Address               | Credentials       |
+| ------------- | --------------------- | ----------------- |
+| Web dashboard | http://localhost:3003 |                   |
 | Grafana       | http://localhost:3001 | anonymous (Admin) |
-| Marquez UI    | http://localhost:3002 |               |
-| Gateway API   | http://localhost:8080 |               |
-| Agent service | http://localhost:8090 |               |
+| Marquez UI    | http://localhost:3002 |                   |
+| Gateway API   | http://localhost:8080 |                   |
+| Agent service | http://localhost:8090 |                   |
 
 ## The plan
 
