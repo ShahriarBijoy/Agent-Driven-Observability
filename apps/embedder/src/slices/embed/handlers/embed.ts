@@ -6,7 +6,10 @@ import {
   ErrorResponseSchema,
   EMBEDDING_DIM,
 } from "@obs/contracts";
+import { createLogger } from "@obs/telemetry";
 import type { EmbedService } from "../service";
+
+const log = createLogger("embedder");
 
 const embedRoute = createRoute({
   method: "post",
@@ -34,6 +37,7 @@ export function registerEmbedRoute(app: OpenAPIHono, service: EmbedService): voi
   app.openapi(embedRoute, async (c) => {
     const { text } = c.req.valid("json");
     const result = await service.embed(text);
+    log.info("embedded text", { textLength: text.length, cached: result.cached });
     return c.json(
       { embedding: result.embedding, dim: EMBEDDING_DIM as 384, cached: result.cached },
       200,

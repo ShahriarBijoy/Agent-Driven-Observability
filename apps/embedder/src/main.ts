@@ -1,3 +1,5 @@
+import "./platform/telemetry"; // initialises OpenTelemetry before any app code
+
 import { loadConfig } from "./platform/config";
 import { createApp } from "./platform/http";
 import { makeCacheStore } from "./slices/cache";
