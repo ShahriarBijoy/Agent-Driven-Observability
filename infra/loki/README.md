@@ -1,6 +1,9 @@
 # infra/loki
 
-Loki (logs) config — Phase 2.
+Loki (logs) config — `loki.yaml`.
 
-This directory will contain the Loki configuration for log ingestion, storage,
-and retention policies for all services in the observability lab.
+Single-binary mode, local-filesystem storage (TSDB schema v13), `auth_enabled: false`
+(single tenant). `allow_structured_metadata` is on so OTLP logs carry `trace_id`/`span_id` as
+structured metadata (this is what links a log line back to its trace in Tempo). Dev-generous
+ingestion limits so sustained load-generator traffic is never rate-limited. Receives logs from
+Alloy on its native OTLP endpoint (`/otlp/v1/logs`). Dev-only — not for production.

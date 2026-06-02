@@ -1,10 +1,12 @@
 # AI Observability Lab
 
-A free, local, Docker-Compose learning lab where a small AI inference gateway becomes the subject of full-spectrum observability. The gateway handles LLM requests and emits logs, metrics, distributed traces, data-lineage events, and data-quality signals. Claude agents then read that telemetry — via Grafana dashboards, Jaeger traces, Marquez lineage graphs, and a custom MCP tool — to diagnose problems, explain anomalies, and trigger remediations automatically.
+A free, local, Docker-Compose learning lab where a small AI inference gateway becomes the subject of full-spectrum observability. The gateway handles LLM requests and emits logs, metrics, distributed traces, data-lineage events, and data-quality signals. Claude agents then read that telemetry — via Grafana dashboards, Tempo traces, Marquez lineage graphs, and a custom MCP tool — to diagnose problems, explain anomalies, and trigger remediations automatically.
 
 ## Status
 
-Phase 1 (Subject system) complete — a working AI inference gateway with a real RAG pipeline (no observability yet; that is Phase 2). The gateway orchestrates embedder → retriever (pgvector top-k over a ~1,000-chunk seeded corpus) → model-proxy (a deterministic mock LLM with a rich fault model), behind bearer-token auth, per-tenant Redis token-bucket rate limiting, and Postgres usage-metering. A load-generator drives weighted, chaotic traffic. See `docs/adr/002-subject-system.md` for the design and `docs/PLAN.html` for the full phased roadmap.
+Phase 2 (Application observability) complete — the subject system is now fully instrumented with OpenTelemetry and observed through the Grafana LGTM stack. Every service emits traces, metrics, and structured logs over OTLP to **Grafana Alloy**, which fans out to **Loki** (logs), **Tempo** (traces), and **Mimir** (metrics). Grafana ships provisioned datasources, a **Gateway RED** dashboard, a **RAG Pipeline** dashboard, and two alert rules. Distributed traces propagate across the gateway → embedder/retriever/model-proxy call graph (service map), and exemplars link the latency histograms to the exact traces that produced them. See `docs/adr/003-application-observability.md` for the design and the Bun-specific deviations (manual instrumentation; exemplars sourced from Tempo's metrics-generator).
+
+The underlying subject system (Phase 1) is a working AI inference gateway with a real RAG pipeline: embedder → retriever (pgvector top-k over a ~1,000-chunk seeded corpus) → model-proxy (a deterministic mock LLM with a rich fault model), behind bearer-token auth, per-tenant Redis token-bucket rate limiting, and Postgres usage-metering. A load-generator drives weighted, chaotic traffic. See `docs/adr/002-subject-system.md` and `docs/PLAN.html` for the full phased roadmap.
 
 ## Stack
 
@@ -12,7 +14,8 @@ Phase 1 (Subject system) complete — a working AI inference gateway with a real
 - **TypeScript (strict)** — shared `@obs/tsconfig` presets for libraries and services
 - **Oxlint + Oxfmt** — fast Rust-based linting and formatting
 - **Vitest** — unit and integration tests across the monorepo via workspace config
-- **Docker Compose** — local infrastructure (Postgres/pgvector, Redis, Grafana, Jaeger, Prometheus, Marquez)
+- **OpenTelemetry + Grafana LGTM** — shared `@obs/telemetry` (manual instrumentation, Bun-compatible) exports OTLP to Grafana Alloy → Loki (logs) / Tempo (traces) / Mimir (metrics), viewed in Grafana
+- **Docker Compose** — local infrastructure (Postgres/pgvector, Redis, the LGTM observability stack, and Marquez lineage)
 - **Python (uv)** — `agent-service` (Claude-powered diagnostics) and `dq-runner` (data-quality checks)
 
 ## Layout
@@ -26,11 +29,11 @@ apps/
 packages/
   contracts/        # Shared TypeScript types and Zod schemas
   domain/           # Domain logic (pure, no I/O)
-  otel-helpers/     # OTEL SDK wrappers
+  telemetry/        # @obs/telemetry — OTel SDK init + manual instrumentation helpers
   tsconfig/         # Shared tsconfig presets (base / library / service)
 infra/
-  compose.yml                  # Core services (Postgres, Redis)
-  compose.observability.yml    # Grafana, Prometheus, Jaeger, Loki, OTEL Collector
+  compose.yml                  # Subject system (Postgres, Redis, the four TS services, seed, load-gen)
+  compose.observability.yml    # Grafana Alloy + Loki/Tempo/Mimir + Grafana
   compose.lineage.yml          # Marquez (OpenLineage)
 slo/                # SLO / alert definitions (YAML)
 runbooks/           # Markdown runbooks for each alert
@@ -86,12 +89,35 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 Dev tenants (bearer tokens): `dev-local-token` (acme), `dev-token-bravo` (bravo),
 `dev-token-abuser` (abuser — tiny quota, trips 429s).
 
+### Run the observability stack (Phase 2)
+
+```bash
+# Build + start the subject system AND the observability plane (Alloy + LGTM + Grafana).
+docker compose -f infra/compose.yml -f infra/compose.observability.yml up -d --build
+
+# Drive traffic so the dashboards populate.
+docker compose -f infra/compose.yml -f infra/compose.observability.yml \
+  --profile load up -d load-generator
+```
+
+Open **Grafana → http://localhost:3001** (anonymous admin): the **Gateway · RED** and
+**RAG Pipeline** dashboards populate within seconds. On the RED duration panel, click a
+latency **exemplar** to jump to its Tempo trace, then "Logs for this span" to land on the
+matching `trace_id` in Loki. The **Service Map** (Explore → Tempo) shows the
+gateway → {embedder, retriever, model-proxy} edges.
+
+Tear it all down (add `-v` to also wipe seeded data + Grafana state):
+
+```bash
+docker compose -f infra/compose.yml -f infra/compose.observability.yml --profile load down
+```
+
 ### Service addresses (after `docker compose up`)
 
 | Service       | Address               | Credentials   |
 | ------------- | --------------------- | ------------- |
 | Web dashboard | http://localhost:3003 |               |
-| Grafana       | http://localhost:3001 | admin / admin |
+| Grafana       | http://localhost:3001 | anonymous (Admin) |
 | Marquez UI    | http://localhost:3002 |               |
 | Gateway API   | http://localhost:8080 |               |
 | Agent service | http://localhost:8090 |               |
