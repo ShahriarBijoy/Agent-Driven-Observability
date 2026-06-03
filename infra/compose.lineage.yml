@@ -54,9 +54,9 @@ services:
       POSTGRES_USER: marquez
       POSTGRES_PASSWORD: marquez
       SEARCH_ENABLED: "false"
-    # The image ships wait-for-it.sh + entrypoint.sh (entrypoint runs Flyway
-    # migrations). Point the wait at this compose's db host.
-    entrypoint: ["/opt/marquez/wait-for-it.sh", "marquez-db:5432", "--", "./entrypoint.sh"]
+    # Use the image's default entrypoint (./entrypoint.sh → java -jar … server
+    # marquez.dev.yml, which runs Flyway migrations on startup). compose already
+    # gates this on marquez-db being healthy, so no wait-for-it script is needed.
     ports:
       - "5000:5000" # API
       - "5001:5001" # admin / healthcheck
