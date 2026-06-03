@@ -4,6 +4,8 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 
 ## Status
 
+Phase 3 (Data observability) complete — the RAG pipeline is now modelled as a data pipeline. Every `/v1/chat` is an **OpenLineage** run of the job `rag.inference`, with `rag.embed` / `rag.retrieve` sub-runs linked via the parent-run facet, emitted to **Marquez**; the gateway also records each successful inference to an `inferences` table (the materialisation of the `prompts.recent` / `completions.recent` datasets). A Python **dq-runner** (FastAPI + APScheduler) runs five data-quality checks every 30s — freshness, volume, distribution drift (Kolmogorov–Smirnov), schema, and cache health — pushing `dq_*` metrics over OTLP to Mimir and persisting violations to `dq_violations`. Grafana ships a **Data Quality** dashboard (with a link-out to the Marquez graph) and two DQ alerts. See `docs/adr/004-data-observability.md` for the lineage taxonomy and threshold rationale.
+
 Phase 2 (Application observability) complete — the subject system is now fully instrumented with OpenTelemetry and observed through the Grafana LGTM stack. Every service emits traces, metrics, and structured logs over OTLP to **Grafana Alloy**, which fans out to **Loki** (logs), **Tempo** (traces), and **Mimir** (metrics). Grafana ships provisioned datasources, a **Gateway RED** dashboard, a **RAG Pipeline** dashboard, and two alert rules. Distributed traces propagate across the gateway → embedder/retriever/model-proxy call graph (service map), and exemplars link the latency histograms to the exact traces that produced them. See `docs/adr/003-application-observability.md` for the design and the Bun-specific deviations (manual instrumentation; exemplars sourced from Tempo's metrics-generator).
 
 The underlying subject system (Phase 1) is a working AI inference gateway with a real RAG pipeline: embedder → retriever (pgvector top-k over a ~1,000-chunk seeded corpus) → model-proxy (a deterministic mock LLM with a rich fault model), behind bearer-token auth, per-tenant Redis token-bucket rate limiting, and Postgres usage-metering. A load-generator drives weighted, chaotic traffic. See `docs/adr/002-subject-system.md` and `docs/PLAN.html` for the full phased roadmap.
@@ -25,16 +27,17 @@ apps/
   gateway/          # Bun HTTP server — AI inference gateway (OTEL instrumented)
   web/              # Next.js dashboard
   agent-service/    # Python — Claude agent reads telemetry, triggers actions
-  dq-runner/        # Python — Great Expectations / custom data-quality checks
+  dq-runner/        # Python — scheduled data-quality checks (freshness/volume/drift/schema/cache)
 packages/
   contracts/        # Shared TypeScript types and Zod schemas
   domain/           # Domain logic (pure, no I/O)
   telemetry/        # @obs/telemetry — OTel SDK init + manual instrumentation helpers
+  lineage/          # @obs/lineage — OpenLineage event builders + Marquez emitter
   tsconfig/         # Shared tsconfig presets (base / library / service)
 infra/
   compose.yml                  # Subject system (Postgres, Redis, the four TS services, seed, load-gen)
   compose.observability.yml    # Grafana Alloy + Loki/Tempo/Mimir + Grafana
-  compose.lineage.yml          # Marquez (OpenLineage)
+  compose.lineage.yml          # Marquez (OpenLineage) + dq-runner (data-quality)
 slo/                # SLO / alert definitions (YAML)
 runbooks/           # Markdown runbooks for each alert
 docs/               # PLAN.html (source of truth for all phases)
@@ -112,6 +115,28 @@ Tear it all down (add `-v` to also wipe seeded data + Grafana state):
 docker compose -f infra/compose.yml -f infra/compose.observability.yml --profile load down
 ```
 
+### Run data observability (Phase 3)
+
+```bash
+# Bring up the full lab: subject + observability + lineage/data-quality planes.
+bash scripts/dev-up.sh --build
+# (equivalently: docker compose -f infra/compose.yml \
+#   -f infra/compose.observability.yml -f infra/compose.lineage.yml up -d --build)
+
+# Drive traffic so lineage + DQ populate (the `broken`/`long` scenarios trip violations).
+GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=600 \
+  bun --cwd apps/load-generator run start
+```
+
+Then:
+
+- **Marquez → http://localhost:3002** shows the `rag.inference` job with input/output
+  dataset edges and the `rag.embed` / `rag.retrieve` sub-runs, populating live.
+- **Grafana → http://localhost:3001 → Data Quality** shows freshness, volume ratio,
+  drift (KS), cache hit ratio, and the violation rate, with a link-out to Marquez.
+- `curl localhost:8091/violations` lists recent rows from `dq_violations`; a synthetic
+  anomaly creates one within ~30s. `curl -X POST localhost:8091/run` triggers a pass now.
+
 ### Service addresses (after `docker compose up`)
 
 | Service       | Address               | Credentials       |
@@ -120,6 +145,7 @@ docker compose -f infra/compose.yml -f infra/compose.observability.yml --profile
 | Grafana       | http://localhost:3001 | anonymous (Admin) |
 | Marquez UI    | http://localhost:3002 |                   |
 | Gateway API   | http://localhost:8080 |                   |
+| dq-runner     | http://localhost:8091 |                   |
 | Agent service | http://localhost:8090 |                   |
 
 ## The plan

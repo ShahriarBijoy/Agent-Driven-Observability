@@ -74,3 +74,75 @@ groups:
           severity: page
         annotations:
           summary: gateway p95 latency above 2s
+
+  # Data-quality alerts (Phase 3), queried against Mimir. Same severity=page
+  # label as the gateway rules, so they route to the same contact point.
+  #   1. any high-severity DQ violation in the last 5m
+  #   2. prompt-length drift (KS) sustained > 0.4 for 10m
+  - orgId: 1
+    name: data-quality
+    folder: Lab Alerts
+    interval: 1m
+    rules:
+      - uid: dq-high-violation
+        title: DQ high-severity violation
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum(increase(dq_violations_total{severity="high"}[5m]))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: a high-severity data-quality violation fired in the last 5 minutes
+      - uid: dq-prompt-drift
+        title: DQ prompt drift sustained
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: max(dq_distribution_drift{signal="prompt_chars"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0.4
+        noDataState: OK
+        execErrState: OK
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: prompt-length drift (KS) above 0.4 for 10 minutes

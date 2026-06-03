@@ -13,5 +13,5 @@ COPY pyproject.toml uv.lock ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8090
+EXPOSE 8091
 CMD ["uv", "run", "--no-dev", "python", "-m", "dq_runner"]

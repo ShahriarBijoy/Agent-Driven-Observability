@@ -53,7 +53,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         ),
         redis_url=os.environ.get("REDIS_URL") or None,
         otel_endpoint=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
-        port=_int("DQ_RUNNER_PORT", 8090),
+        port=_int("DQ_RUNNER_PORT", 8091),
         check_interval_seconds=_int("DQ_CHECK_INTERVAL_SECONDS", 30),
         metric_export_interval_ms=_int("OTEL_METRIC_EXPORT_INTERVAL_MS", 10000),
         volume_window_seconds=_int("DQ_VOLUME_WINDOW_SECONDS", 60),
