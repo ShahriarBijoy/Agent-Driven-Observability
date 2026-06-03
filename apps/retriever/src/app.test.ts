@@ -1,4 +1,5 @@
 import { hashEmbedding, EMBEDDING_DIM } from "@obs/domain";
+import { createLineageEmitter } from "@obs/lineage";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./platform/http";
 import { createMemoryStore } from "./slices/query/adapters/memory-store";
@@ -21,7 +22,10 @@ function buildTestApp() {
     },
   ]);
   const app = createApp("retriever");
-  mountQuerySlice(app, { store });
+  mountQuerySlice(app, {
+    store,
+    lineage: createLineageEmitter({ url: "http://marquez-api:5000", enabled: false }),
+  });
   return app;
 }
 

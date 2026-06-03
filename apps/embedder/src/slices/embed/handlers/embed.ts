@@ -1,6 +1,14 @@
 import { createRoute } from "@hono/zod-openapi";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  DS_CACHE_EMBEDDINGS,
+  DS_PROMPTS_INCOMING,
+  JOB_EMBED,
+  type LineageEmitter,
+  parentFromHeaders,
+  withChildRun,
+} from "@obs/lineage";
+import {
   EmbedRequestSchema,
   EmbedResponseSchema,
   ErrorResponseSchema,
@@ -33,10 +41,21 @@ const embedRoute = createRoute({
   },
 });
 
-export function registerEmbedRoute(app: OpenAPIHono, service: EmbedService): void {
+export function registerEmbedRoute(
+  app: OpenAPIHono,
+  service: EmbedService,
+  lineage: LineageEmitter,
+): void {
   app.openapi(embedRoute, async (c) => {
     const { text } = c.req.valid("json");
-    const result = await service.embed(text);
+    // When called as part of an inference, emit a `rag.embed` sub-run linked to
+    // the gateway's parent run (propagated via x-ol-parent-* headers).
+    const parent = parentFromHeaders((name) => c.req.header(name));
+    const result = await withChildRun(
+      lineage,
+      { job: JOB_EMBED, inputs: [DS_PROMPTS_INCOMING], outputs: [DS_CACHE_EMBEDDINGS], parent },
+      () => service.embed(text),
+    );
     log.info("embedded text", { textLength: text.length, cached: result.cached });
     return c.json(
       { embedding: result.embedding, dim: EMBEDDING_DIM as 384, cached: result.cached },

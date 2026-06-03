@@ -1,5 +1,8 @@
+import type { LineageEmitter } from "@obs/lineage";
 import type { GatewayApp } from "../../platform/http";
+import { currentParentHeaders } from "../../platform/lineage-context";
 import { createUpstreamClient } from "../../platform/upstream";
+import type { InferenceRecorder } from "../usage-metering/ports/inference-recorder";
 import type { UsageWriter } from "../usage-metering/ports/usage-writer";
 import { createEmbedderHttpClient } from "./adapters/embedder-http";
 import { createModelHttpClient } from "./adapters/model-http";
@@ -14,6 +17,8 @@ export interface InferenceClients {
   retriever: RetrieverClient;
   model: ModelClient;
   usage: UsageWriter;
+  recorder: InferenceRecorder;
+  lineage: LineageEmitter;
 }
 
 export interface InferenceSliceDeps {
@@ -22,6 +27,8 @@ export interface InferenceSliceDeps {
   modelProxyUrl: string;
   upstreamTimeoutMs: number;
   usage: UsageWriter;
+  recorder: InferenceRecorder;
+  lineage: LineageEmitter;
 }
 
 /**
@@ -36,7 +43,9 @@ export function registerInferenceRoutes(app: GatewayApp, clients: InferenceClien
 
 /**
  * Mount point for the inference feature. Builds the shared-timeout upstream
- * clients from URLs and registers the routes.
+ * clients from URLs and registers the routes. The embedder/retriever clients
+ * propagate the active OpenLineage parent run via `x-ol-parent-*` headers; the
+ * model-proxy client does not (it is not a lineage sub-run).
  */
 export function mountInferenceSlice(app: GatewayApp, deps: InferenceSliceDeps): void {
   const embedder = createEmbedderHttpClient(
@@ -44,6 +53,7 @@ export function mountInferenceSlice(app: GatewayApp, deps: InferenceSliceDeps): 
       baseUrl: deps.embedderUrl,
       timeoutMs: deps.upstreamTimeoutMs,
       name: "embedder",
+      headers: currentParentHeaders,
     }),
   );
   const retriever = createRetrieverHttpClient(
@@ -51,6 +61,7 @@ export function mountInferenceSlice(app: GatewayApp, deps: InferenceSliceDeps): 
       baseUrl: deps.retrieverUrl,
       timeoutMs: deps.upstreamTimeoutMs,
       name: "retriever",
+      headers: currentParentHeaders,
     }),
   );
   const model = createModelHttpClient(
@@ -61,5 +72,12 @@ export function mountInferenceSlice(app: GatewayApp, deps: InferenceSliceDeps): 
     }),
   );
 
-  registerInferenceRoutes(app, { embedder, retriever, model, usage: deps.usage });
+  registerInferenceRoutes(app, {
+    embedder,
+    retriever,
+    model,
+    usage: deps.usage,
+    recorder: deps.recorder,
+    lineage: deps.lineage,
+  });
 }

@@ -20,6 +20,11 @@ export interface UpstreamClientOptions {
   readonly timeoutMs: number;
   /** Name surfaced in error messages, e.g. "embedder". */
   readonly name: string;
+  /**
+   * Optional provider of extra per-request headers (evaluated on every call).
+   * Used to propagate the OpenLineage parent run to lineage-emitting upstreams.
+   */
+  readonly headers?: () => Record<string, string>;
 }
 
 function isTimeout(err: unknown): boolean {
@@ -42,7 +47,7 @@ export function createUpstreamClient(opts: UpstreamClientOptions): UpstreamClien
           `${base}${path}`,
           {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", ...opts.headers?.() },
             body: JSON.stringify(json),
             signal: AbortSignal.timeout(opts.timeoutMs),
           },

@@ -3,11 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "build": "echo \"@obs/lineage: build (noop)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "oxlint ."
+  },
+  "dependencies": {
+    "@obs/telemetry": "workspace:*"
   },
   "devDependencies": {
     "@obs/tsconfig": "workspace:*"

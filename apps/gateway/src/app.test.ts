@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createLineageEmitter } from "@obs/lineage";
 import type { RetrievedChunk } from "@obs/contracts";
 import { createApp } from "./platform/http";
 import { mountAuthSlice } from "./slices/auth/slice";
 import { createMemoryLimiter } from "./slices/rate-limit";
 import { mountRateLimitSlice } from "./slices/rate-limit/slice";
-import { createNoopUsageWriter } from "./slices/usage-metering";
+import { createNoopInferenceRecorder, createNoopUsageWriter } from "./slices/usage-metering";
 import { registerInferenceRoutes } from "./slices/inference/slice";
 import type { RateLimiter } from "./slices/rate-limit";
 import type {
@@ -47,6 +48,8 @@ function buildApp(limiter: RateLimiter = createMemoryLimiter()) {
     retriever: fakeRetriever,
     model: fakeModel,
     usage: createNoopUsageWriter(),
+    recorder: createNoopInferenceRecorder(),
+    lineage: createLineageEmitter({ url: "http://marquez-api:5000", enabled: false }),
   });
   return app;
 }
