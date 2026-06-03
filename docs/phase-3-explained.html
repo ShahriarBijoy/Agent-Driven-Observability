@@ -450,11 +450,12 @@
       <div class="analogy">
         <span class="tag">Think of it like…</span>
         A bottling factory. <strong>Phase 2</strong> watches the machines: motors humming, no jams,
-        belts at full speed — all green. <strong>Phase 3 inspects the bottles coming off the
-        line</strong>: are they actually being filled? With the right liquid? At the normal rate? And
-        if a bad batch shows up, can we trace it back to <em>which ingredient and which step</em>
-        produced it? That second job — watching the <strong>product</strong>, not just the
-        <strong>machine</strong> — is <strong>data observability</strong>.
+        belts at full speed — all green.
+        <strong>Phase 3 inspects the bottles coming off the line</strong>: are they actually being
+        filled? With the right liquid? At the normal rate? And if a bad batch shows up, can we trace
+        it back to <em>which ingredient and which step</em> produced it? That second job — watching
+        the <strong>product</strong>, not just the <strong>machine</strong> — is
+        <strong>data observability</strong>.
       </div>
 
       <p>So Phase 3 adds two new senses to the lab, and they answer two different questions:</p>
@@ -465,8 +466,8 @@
           <h4>Data Lineage</h4>
           <div class="sub">“WHERE DID THIS COME FROM?”</div>
           <p>
-            A live <strong>map</strong> of how data flows: which inputs fed each request, which steps
-            ran, and what came out. The family tree / supply-chain of every answer. Built with
+            A live <strong>map</strong> of how data flows: which inputs fed each request, which
+            steps ran, and what came out. The family tree / supply-chain of every answer. Built with
             <strong>OpenLineage</strong> + <strong>Marquez</strong>.
           </p>
         </div>
@@ -504,7 +505,10 @@
           <tr>
             <td><strong>Job</strong></td>
             <td>A <em>recipe</em> — a named piece of work that runs over and over.</td>
-            <td><code>rag.inference</code> (one chat), <code>rag.embed</code>, <code>rag.retrieve</code></td>
+            <td>
+              <code>rag.inference</code> (one chat), <code>rag.embed</code>,
+              <code>rag.retrieve</code>
+            </td>
           </tr>
           <tr>
             <td><strong>Run</strong></td>
@@ -514,7 +518,10 @@
           <tr>
             <td><strong>Dataset</strong></td>
             <td>A named pile of data a run <em>reads</em> or <em>writes</em>.</td>
-            <td><code>vector_store.chunks</code>, <code>cache.embeddings</code> (in); <code>prompts.recent</code>, <code>completions.recent</code> (out)</td>
+            <td>
+              <code>vector_store.chunks</code>, <code>cache.embeddings</code> (in);
+              <code>prompts.recent</code>, <code>completions.recent</code> (out)
+            </td>
           </tr>
           <tr>
             <td><strong>Facet</strong></td>
@@ -531,9 +538,9 @@
           <div class="role">The standard</div>
         </div>
         <p>
-          A vendor-neutral <strong>standard</strong> for describing those jobs, runs, and datasets as
-          little JSON “events.” If Phase 2's <strong>OpenTelemetry</strong> was the common language
-          for app <em>health</em>, OpenLineage is the matching common language for data
+          A vendor-neutral <strong>standard</strong> for describing those jobs, runs, and datasets
+          as little JSON “events.” If Phase 2's <strong>OpenTelemetry</strong> was the common
+          language for app <em>health</em>, OpenLineage is the matching common language for data
           <em>flow</em>. Each run emits a <strong>START</strong> event when it begins and a
           <strong>COMPLETE</strong> (or <strong>FAIL</strong>) event when it ends.
         </p>
@@ -559,21 +566,23 @@
           <div class="role">Our emitter</div>
         </div>
         <p>
-          A small package <em>we</em> wrote (the lineage twin of Phase 2's <code>@obs/telemetry</code>):
-          it builds the START/COMPLETE/FAIL events and POSTs them to Marquez. It is
-          <strong>best-effort</strong> — if Marquez is down, the error is swallowed and logged so a
-          chat <em>never</em> fails just because lineage couldn't be recorded.
+          A small package <em>we</em> wrote (the lineage twin of Phase 2's
+          <code>@obs/telemetry</code>): it builds the START/COMPLETE/FAIL events and POSTs them to
+          Marquez. It is <strong>best-effort</strong> — if Marquez is down, the error is swallowed
+          and logged so a chat <em>never</em> fails just because lineage couldn't be recorded.
         </p>
       </div>
 
       <div class="note">
         <span class="tag">The parent / child trick — this is what draws the map</span>
         One chat actually fans out to the embedder and retriever. We make the gateway's run the
-        <strong>parent</strong>, and the embedder/retriever emit their own <strong>sub-runs</strong>
-        (<code>rag.embed</code>, <code>rag.retrieve</code>) that point back to it via a
-        <strong>parent facet</strong>. The link travels over HTTP headers
-        (<code>x-ol-parent-run-id</code> &amp; friends), exactly like trace propagation in Phase 2. Those
-        parent→child links are the <strong>edges</strong> Marquez draws.
+        <strong>parent</strong>, and the embedder/retriever emit their own
+        <strong>sub-runs</strong> (<code>rag.embed</code>, <code>rag.retrieve</code>) that point
+        back to it via a <strong>parent facet</strong>. The link travels over HTTP headers (<code
+          >x-ol-parent-run-id</code
+        >
+        &amp; friends), exactly like trace propagation in Phase 2. Those parent→child links are the
+        <strong>edges</strong> Marquez draws.
       </div>
 
       <!-- ───────────────────── 3 ───────────────────── -->
@@ -586,10 +595,10 @@
       </p>
 
       <p>
-        It can do this because the gateway now writes one row per <strong>successful</strong> chat to
-        a new <code>inferences</code> table — prompt length, token counts, retrieval scores, cache
-        flag, the response body, a timestamp. That table is the dq-runner's <strong>worktop</strong>:
-        the recent data, laid out so it can be inspected.
+        It can do this because the gateway now writes one row per <strong>successful</strong> chat
+        to a new <code>inferences</code> table — prompt length, token counts, retrieval scores,
+        cache flag, the response body, a timestamp. That table is the dq-runner's
+        <strong>worktop</strong>: the recent data, laid out so it can be inspected.
       </p>
 
       <h3>The five checks</h3>
@@ -610,22 +619,37 @@
           <tr>
             <td><strong>Volume</strong></td>
             <td>“Are we getting the <em>normal amount</em> of traffic?”</td>
-            <td>last-minute rate ÷ last-hour rate <code>&lt; 0.3</code> <span class="pill sev-high">high</span> or <code>&gt; 3.0</code> <span class="pill sev-med">medium</span></td>
+            <td>
+              last-minute rate ÷ last-hour rate <code>&lt; 0.3</code>
+              <span class="pill sev-high">high</span> or <code>&gt; 3.0</code>
+              <span class="pill sev-med">medium</span>
+            </td>
           </tr>
           <tr>
-            <td><strong>Distribution<br />(drift)</strong></td>
+            <td>
+              <strong>Distribution<br />(drift)</strong>
+            </td>
             <td>“Has the <em>kind</em> of data quietly changed?”</td>
-            <td>KS distance <code>&gt; 0.25</code> <span class="pill sev-med">medium</span>, <code>&gt; 0.4</code> <span class="pill sev-high">high</span></td>
+            <td>
+              KS distance <code>&gt; 0.25</code> <span class="pill sev-med">medium</span>,
+              <code>&gt; 0.4</code> <span class="pill sev-high">high</span>
+            </td>
           </tr>
           <tr>
             <td><strong>Schema</strong></td>
             <td>“Is every response the <em>right shape</em>?”</td>
-            <td>any of the last 100 responses fails the contract <span class="pill sev-high">high</span></td>
+            <td>
+              any of the last 100 responses fails the contract
+              <span class="pill sev-high">high</span>
+            </td>
           </tr>
           <tr>
             <td><strong>Cache health</strong></td>
             <td>“Is the embedding cache <em>actually helping</em>?”</td>
-            <td>hit ratio <code>&lt; 0.05</code> (with ≥20 samples) <span class="pill sev-low">low</span></td>
+            <td>
+              hit ratio <code>&lt; 0.05</code> (with ≥20 samples)
+              <span class="pill sev-low">low</span>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -633,10 +657,11 @@
       <div class="analogy">
         <span class="tag">“Drift,” in plain words</span>
         Imagine yesterday's prompts were mostly short, and today they're suddenly all long essays.
-        Nothing <em>errored</em> — but the <strong>distribution</strong> shifted, and that often means
-        something upstream changed. We measure it with the <strong>KS statistic</strong>
-        (Kolmogorov–Smirnov): line up “normal” vs “now,” and it's the <strong>biggest gap</strong>
-        between the two — a single number from <strong>0</strong> (identical) to <strong>1</strong>
+        Nothing <em>errored</em> — but the <strong>distribution</strong> shifted, and that often
+        means something upstream changed. We measure it with the
+        <strong>KS statistic</strong> (Kolmogorov–Smirnov): line up “normal” vs “now,” and it's the
+        <strong>biggest gap</strong> between the two — a single number from
+        <strong>0</strong> (identical) to <strong>1</strong>
         (completely different). Handy because it's already a ready-made 0–1 “how weird is it” score.
       </div>
 
@@ -645,8 +670,8 @@
         The dq-runner doesn't invent its own dashboard. It pushes its findings as
         <code>dq_*</code> <strong>metrics</strong> over OTLP to <strong>Alloy → Mimir</strong> — the
         <em>exact same</em> backend Phase 2 used for app metrics. So data-quality numbers sit
-        <strong>right next to</strong> request-rate and latency in Grafana. That's what people mean by
-        <em>“data quality as first-class SLIs”</em>: the freshness of your data is treated as
+        <strong>right next to</strong> request-rate and latency in Grafana. That's what people mean
+        by <em>“data quality as first-class SLIs”</em>: the freshness of your data is treated as
         seriously as the uptime of your service. When a check trips, it also writes a row to a
         <code>dq_violations</code> table — a permanent logbook of every problem found.
       </p>
@@ -663,28 +688,40 @@
           <div class="name">OpenLineage</div>
           <div class="role">The standard</div>
         </div>
-        <p>The common JSON language for describing data jobs/runs/datasets. <strong>Lineage team.</strong></p>
+        <p>
+          The common JSON language for describing data jobs/runs/datasets.
+          <strong>Lineage team.</strong>
+        </p>
       </div>
       <div class="tool">
         <div>
           <div class="name">Marquez</div>
           <div class="role">Lineage store + UI</div>
         </div>
-        <p>Collects the events and draws the clickable graph at <code>localhost:3002</code>. <strong>Lineage team.</strong></p>
+        <p>
+          Collects the events and draws the clickable graph at <code>localhost:3002</code>.
+          <strong>Lineage team.</strong>
+        </p>
       </div>
       <div class="tool">
         <div>
           <div class="name">@obs/lineage</div>
           <div class="role">Our emitter</div>
         </div>
-        <p>Builds &amp; ships lineage events from the TS services. Best-effort. <strong>Lineage team.</strong></p>
+        <p>
+          Builds &amp; ships lineage events from the TS services. Best-effort.
+          <strong>Lineage team.</strong>
+        </p>
       </div>
       <div class="tool">
         <div>
           <div class="name">inferences</div>
           <div class="role">Postgres table</div>
         </div>
-        <p>One row per successful chat — the record the dq-runner inspects. <strong>Quality team.</strong></p>
+        <p>
+          One row per successful chat — the record the dq-runner inspects.
+          <strong>Quality team.</strong>
+        </p>
       </div>
       <div class="tool">
         <div>
@@ -692,8 +729,8 @@
           <div class="role">The inspector</div>
         </div>
         <p>
-          Python service (FastAPI + a scheduler) that runs the five checks every 30s.
-          Lives at <code>localhost:8091</code>. <strong>Quality team.</strong>
+          Python service (FastAPI + a scheduler) that runs the five checks every 30s. Lives at
+          <code>localhost:8091</code>. <strong>Quality team.</strong>
         </p>
       </div>
       <div class="tool">
@@ -701,7 +738,10 @@
           <div class="name">dq_violations</div>
           <div class="role">Postgres table</div>
         </div>
-        <p>The logbook: one row each time a check trips (check, severity, details). <strong>Quality team.</strong></p>
+        <p>
+          The logbook: one row each time a check trips (check, severity, details).
+          <strong>Quality team.</strong>
+        </p>
       </div>
       <div class="tool">
         <div>
@@ -718,26 +758,33 @@
       <h2><span class="section-num">05</span>How it all connects</h2>
       <p>Two flows run side by side — one for the map, one for the inspection:</p>
 
-      <div class="flow"><span class="dim">── LINEAGE: "where did it come from?" ──────────────────────────────</span>
+      <div class="flow">
+        <span class="dim"
+          >── LINEAGE: "where did it come from?" ──────────────────────────────</span
+        >
 
-  <span class="amber">gateway</span> (rag.inference)            ┌──────────┐
-   ├─▶ <span class="amber">embedder</span> (rag.embed)   ──events─▶│  <span class="teal">Marquez</span>  │──▶ <span class="teal">you</span> (browser,
-   └─▶ <span class="amber">retriever</span> (rag.retrieve)─events─▶│  :5000   │     <span class="dim">localhost:3002)</span>
-        <span class="dim">child runs link to the parent</span>     └──────────┘     <span class="dim">the lineage graph</span>
+        <span class="amber">gateway</span> (rag.inference) ┌──────────┐ ├─▶
+        <span class="amber">embedder</span> (rag.embed) ──events─▶│
+        <span class="teal">Marquez</span> │──▶ <span class="teal">you</span> (browser, └─▶
+        <span class="amber">retriever</span> (rag.retrieve)─events─▶│ :5000 │
+        <span class="dim">localhost:3002)</span>
+        <span class="dim">child runs link to the parent</span> └──────────┘
+        <span class="dim">the lineage graph</span>
         <span class="dim">via x-ol-parent-* headers</span>
 
-<span class="dim">── DATA QUALITY: "is it any good?" ─────────────────────────────────</span>
+        <span class="dim"
+          >── DATA QUALITY: "is it any good?" ─────────────────────────────────</span
+        >
 
-  <span class="amber">gateway</span> ──writes one row──▶ ┌──────────────┐  reads   ┌────────────┐
-           per ok chat       │ <span class="teal">inferences</span>    │◀─every──│ <span class="green">dq-runner</span>  │
-                             │ (Postgres)   │   30s   │ (5 checks) │
-                             └──────────────┘         └─────┬──────┘
-                                                            │
-                       dq_* metrics (OTLP) ─────────────────┤
-                                                            ▼
-              ┌─ writes ─▶ <span class="teal">dq_violations</span> (Postgres logbook)
-              └─ pushes ─▶ <span class="amber">Alloy ▶ Mimir</span> ──▶ <span class="amber">Grafana</span> ──▶ <span class="green">you</span>
-                           <span class="dim">(reused from Phase 2)</span>      <span class="dim">Data Quality dashboard, :3001</span></div>
+        <span class="amber">gateway</span> ──writes one row──▶ ┌──────────────┐ reads ┌────────────┐
+        per ok chat │ <span class="teal">inferences</span> │◀─every──│
+        <span class="green">dq-runner</span> │ │ (Postgres) │ 30s │ (5 checks) │ └──────────────┘
+        └─────┬──────┘ │ dq_* metrics (OTLP) ─────────────────┤ ▼ ┌─ writes ─▶
+        <span class="teal">dq_violations</span> (Postgres logbook) └─ pushes ─▶
+        <span class="amber">Alloy ▶ Mimir</span> ──▶ <span class="amber">Grafana</span> ──▶
+        <span class="green">you</span> <span class="dim">(reused from Phase 2)</span>
+        <span class="dim">Data Quality dashboard, :3001</span>
+      </div>
 
       <!-- ───────────────────── 6 ───────────────────── -->
       <h2><span class="section-num">06</span>A tiny worked example</h2>
@@ -746,7 +793,10 @@
         <em>“what is pride and prejudice about?”</em> — through both new flows.
       </p>
 
-      <p><strong>① The lineage events.</strong> The gateway opens a run, the sub-services link to it, and it closes with facets:</p>
+      <p>
+        <strong>① The lineage events.</strong> The gateway opens a run, the sub-services link to it,
+        and it closes with facets:
+      </p>
       <pre><code><span class="c-com"># START — gateway begins run 4bf92f35…, declaring its inputs</span>
 { <span class="c-key">"eventType"</span>: <span class="c-str">"START"</span>,
   <span class="c-key">"job"</span>:  { <span class="c-key">"namespace"</span>: <span class="c-str">"ai-observability-lab"</span>, <span class="c-key">"name"</span>: <span class="c-str">"rag.inference"</span> },
@@ -763,15 +813,26 @@
           <span class="c-key">"facets"</span>: { <span class="c-key">"retrievalStats"</span>: { count: 3, mean: 0.74, max: 0.81 },
                       <span class="c-key">"inference"</span>:      { model: <span class="c-str">"mock-llm"</span>, tenant: <span class="c-str">"acme"</span> } } },
   <span class="c-key">"outputs"</span>: [ <span class="c-str">"prompts.recent"</span>, <span class="c-str">"completions.recent"</span> ] }</code></pre>
-      <p>Marquez stitches those into a clickable graph: <code>chunks</code>/<code>cache</code> → <code>rag.inference</code> → <code>prompts.recent</code>/<code>completions.recent</code>, with the embed &amp; retrieve sub-runs hanging underneath.</p>
+      <p>
+        Marquez stitches those into a clickable graph: <code>chunks</code>/<code>cache</code> →
+        <code>rag.inference</code> → <code>prompts.recent</code>/<code>completions.recent</code>,
+        with the embed &amp; retrieve sub-runs hanging underneath.
+      </p>
 
-      <p><strong>② The row the gateway records</strong> (this is what makes <code>prompts.recent</code> / <code>completions.recent</code> real, and gives the inspector something to read):</p>
+      <p>
+        <strong>② The row the gateway records</strong> (this is what makes
+        <code>prompts.recent</code> / <code>completions.recent</code> real, and gives the inspector
+        something to read):
+      </p>
       <pre><code><span class="c-com">-- one row in the `inferences` table, for this exact run</span>
 <span class="c-kw">INSERT INTO</span> inferences (run_id, tenant, model, prompt_chars, prompt_tokens,
     completion_tokens, retrieved_count, retrieval_score_mean, cache_hit, status)
 <span class="c-kw">VALUES</span> (<span class="c-str">'4bf92f35-…'</span>, <span class="c-str">'acme'</span>, <span class="c-str">'mock-llm'</span>, 31, 42, 88, 3, 0.74, <span class="c-kw">false</span>, <span class="c-str">'ok'</span>);</code></pre>
 
-      <p><strong>③ ~30s later the dq-runner sweeps</strong> the recent rows and emits its verdict as metrics — all healthy here:</p>
+      <p>
+        <strong>③ ~30s later the dq-runner sweeps</strong> the recent rows and emits its verdict as
+        metrics — all healthy here:
+      </p>
       <pre><code><span class="c-com"># dq_* metrics → Mimir (these show up in the Data Quality dashboard)</span>
 dq_freshness_seconds{dataset=<span class="c-str">"prompts.recent"</span>, tenant=<span class="c-str">"acme"</span>}   3      <span class="c-com"># fresh ✓</span>
 dq_volume_ratio{tenant=<span class="c-str">"acme"</span>}                            1.0    <span class="c-com"># normal ✓</span>
@@ -781,9 +842,11 @@ dq_cache_hit_ratio{tenant=<span class="c-str">"acme"</span>}                    
       <div class="note">
         <span class="tag">Now break something</span>
         Run the load-generator's <code>broken</code> scenario and watch successful chats collapse.
-        Within one 30-second sweep, the <strong>volume</strong> check sees the rate crater and writes
-        a row to the logbook — and the “any high-severity violation” alert fires:
-        <pre style="margin:10px 0 0"><code><span class="c-kw">INSERT INTO</span> dq_violations (check_name, signal, severity, dataset, payload)
+        Within one 30-second sweep, the <strong>volume</strong> check sees the rate crater and
+        writes a row to the logbook — and the “any high-severity violation” alert fires:
+        <pre
+          style="margin: 10px 0 0"
+        ><code><span class="c-kw">INSERT INTO</span> dq_violations (check_name, signal, severity, dataset, payload)
 <span class="c-kw">VALUES</span> (<span class="c-str">'volume'</span>, <span class="c-str">'acme'</span>, <span class="c-str">'high'</span>, <span class="c-str">'prompts.recent'</span>,
         <span class="c-str">'{"ratio":0.12,"count_1m":2,"baseline_rate":17}'</span>);</code></pre>
         That row — created automatically, within ~30s of the anomaly — <em>is</em> Phase 3 working.
@@ -831,8 +894,8 @@ dq_cache_hit_ratio{tenant=<span class="c-str">"acme"</span>}                    
         <div class="body">
           <p>
             <strong>Record the inference</strong> — one best-effort row per successful chat into the
-            <code>inferences</code> table. <em>Best-effort</em> means: wrapped in a try/catch so a DB
-            hiccup never fails the user's chat. (Lineage emission is best-effort too.)
+            <code>inferences</code> table. <em>Best-effort</em> means: wrapped in a try/catch so a
+            DB hiccup never fails the user's chat. (Lineage emission is best-effort too.)
           </p>
         </div>
       </div>
@@ -843,9 +906,9 @@ dq_cache_hit_ratio{tenant=<span class="c-str">"acme"</span>}                    
           <p>
             <strong>The dq-runner does the inspecting</strong> — a Python service (managed with
             <code>uv</code>) using <strong>FastAPI</strong> for its HTTP endpoints and
-            <strong>APScheduler</strong> as the alarm clock that triggers a pass every 30s. Each pass
-            reads <code>inferences</code>, runs the five checks (each guarded so one failure can't
-            abort the others), pushes <code>dq_*</code> metrics over OTLP, and writes any
+            <strong>APScheduler</strong> as the alarm clock that triggers a pass every 30s. Each
+            pass reads <code>inferences</code>, runs the five checks (each guarded so one failure
+            can't abort the others), pushes <code>dq_*</code> metrics over OTLP, and writes any
             <code>dq_violations</code>. The checks are plain, testable functions — e.g. drift is
             literally:
           </p>
@@ -880,26 +943,47 @@ dq_cache_hit_ratio{tenant=<span class="c-str">"acme"</span>}                    
         <tbody>
           <tr>
             <td><strong>Marquez</strong> (<code>:3002</code>)</td>
-            <td>The lineage graph: the <code>rag.inference</code> job, its input/output dataset edges, and the <code>rag.embed</code> / <code>rag.retrieve</code> sub-runs — populating live as traffic flows.</td>
+            <td>
+              The lineage graph: the <code>rag.inference</code> job, its input/output dataset edges,
+              and the <code>rag.embed</code> / <code>rag.retrieve</code> sub-runs — populating live
+              as traffic flows.
+            </td>
           </tr>
           <tr>
             <td><strong>Data Quality dashboard</strong> (Grafana, <code>:3001</code>)</td>
-            <td>Freshness per dataset, volume ratio (banded 0.3–3.0), drift per signal (banded 0.25/0.4), cache-hit ratio, schema failures, and the violation rate by check &amp; severity — plus a link-out button to Marquez.</td>
+            <td>
+              Freshness per dataset, volume ratio (banded 0.3–3.0), drift per signal (banded
+              0.25/0.4), cache-hit ratio, schema failures, and the violation rate by check &amp;
+              severity — plus a link-out button to Marquez.
+            </td>
           </tr>
           <tr>
-            <td><strong><code>/violations</code> endpoint</strong> (<code>:8091</code>)</td>
-            <td><code>curl localhost:8091/violations</code> lists recent rows; <code>curl -X POST localhost:8091/run</code> triggers a check pass right now instead of waiting.</td>
+            <td>
+              <strong><code>/violations</code> endpoint</strong> (<code>:8091</code>)
+            </td>
+            <td>
+              <code>curl localhost:8091/violations</code> lists recent rows;
+              <code>curl -X POST localhost:8091/run</code> triggers a check pass right now instead
+              of waiting.
+            </td>
           </tr>
           <tr>
             <td><strong>2 alert rules</strong></td>
-            <td>Auto-fire on (a) any <em>high</em>-severity violation in the last 5&nbsp;min, or (b) prompt-length drift (KS) &gt; 0.4 sustained for 10&nbsp;min. Both page, alongside the Phase 2 alerts.</td>
+            <td>
+              Auto-fire on (a) any <em>high</em>-severity violation in the last 5&nbsp;min, or (b)
+              prompt-length drift (KS) &gt; 0.4 sustained for 10&nbsp;min. Both page, alongside the
+              Phase 2 alerts.
+            </td>
           </tr>
         </tbody>
       </table>
 
       <!-- ───────────────────── 9 ───────────────────── -->
       <h2><span class="section-num">09</span>See it yourself</h2>
-      <p>Bring up the whole lab (subject + Phase 2 observability + Phase 3 lineage/quality), then pour in traffic:</p>
+      <p>
+        Bring up the whole lab (subject + Phase 2 observability + Phase 3 lineage/quality), then
+        pour in traffic:
+      </p>
       <pre><code><span class="c-com"># 1. Start everything (the broken/long scenarios will trip DQ violations)</span>
 bash scripts/dev-up.sh --build
 
@@ -908,9 +992,19 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=600 \
   bun --cwd apps/load-generator run start</code></pre>
       <p>Then:</p>
       <ul>
-        <li>Open <strong><a href="http://localhost:3002">Marquez → :3002</a></strong> and watch the <code>rag.inference</code> graph fill in.</li>
-        <li>Open <strong><a href="http://localhost:3001">Grafana → :3001</a> → Data Quality</strong> to see freshness, volume, drift, and the violation rate.</li>
-        <li>Run <code>curl localhost:8091/violations</code> — a synthetic anomaly produces a row within ~30s. That little round-trip <em>is</em> Phase 3.</li>
+        <li>
+          Open <strong><a href="http://localhost:3002">Marquez → :3002</a></strong> and watch the
+          <code>rag.inference</code> graph fill in.
+        </li>
+        <li>
+          Open
+          <strong><a href="http://localhost:3001">Grafana → :3001</a> → Data Quality</strong> to see
+          freshness, volume, drift, and the violation rate.
+        </li>
+        <li>
+          Run <code>curl localhost:8091/violations</code> — a synthetic anomaly produces a row
+          within ~30s. That little round-trip <em>is</em> Phase 3.
+        </li>
       </ul>
 
       <!-- ───────────────────── recap ───────────────────── -->
@@ -921,20 +1015,42 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=600 \
           app — where it came from, and whether it's any good.
         </p>
         <ul style="margin-bottom: 0">
-          <li><strong>Two new senses</strong> — <em>Lineage</em> (“where from?”) and <em>Quality</em> (“any good?”).</li>
-          <li><strong>OpenLineage</strong> is the common language for data flow; <strong>Marquez</strong> (<code>:3002</code>) is its graph.</li>
-          <li><strong><code>@obs/lineage</code></strong> emits parent/child runs so the graph is connected — best-effort, never breaks a chat.</li>
-          <li>The gateway records every ok chat to the <strong><code>inferences</code></strong> table — the inspector's worktop.</li>
-          <li>The <strong>dq-runner</strong> (Python, <code>:8091</code>) runs 5 checks every 30s: freshness, volume, drift (KS), schema, cache.</li>
-          <li>Results push as <strong><code>dq_*</code> metrics into the same Mimir/Grafana</strong> as Phase 2 — “data quality as first-class SLIs” — and trips land in <strong><code>dq_violations</code></strong>.</li>
+          <li>
+            <strong>Two new senses</strong> — <em>Lineage</em> (“where from?”) and
+            <em>Quality</em> (“any good?”).
+          </li>
+          <li>
+            <strong>OpenLineage</strong> is the common language for data flow;
+            <strong>Marquez</strong> (<code>:3002</code>) is its graph.
+          </li>
+          <li>
+            <strong><code>@obs/lineage</code></strong> emits parent/child runs so the graph is
+            connected — best-effort, never breaks a chat.
+          </li>
+          <li>
+            The gateway records every ok chat to the <strong><code>inferences</code></strong> table
+            — the inspector's worktop.
+          </li>
+          <li>
+            The <strong>dq-runner</strong> (Python, <code>:8091</code>) runs 5 checks every 30s:
+            freshness, volume, drift (KS), schema, cache.
+          </li>
+          <li>
+            Results push as
+            <strong><code>dq_*</code> metrics into the same Mimir/Grafana</strong> as Phase 2 —
+            “data quality as first-class SLIs” — and trips land in
+            <strong><code>dq_violations</code></strong
+            >.
+          </li>
         </ul>
       </div>
 
       <div class="footer">
         AI Observability Lab · Phase 3 (Data Observability)<br />
-        Deeper design, the lineage taxonomy &amp; threshold rationale: <code>docs/adr/004-data-observability.md</code><br />
-        Previous: <code>docs/phase-2-explained.html</code> (Application Observability) · Full phased roadmap:
-        <code>docs/PLAN.html</code> · Next up: Phase 4 (Frontend)
+        Deeper design, the lineage taxonomy &amp; threshold rationale:
+        <code>docs/adr/004-data-observability.md</code><br />
+        Previous: <code>docs/phase-2-explained.html</code> (Application Observability) · Full phased
+        roadmap: <code>docs/PLAN.html</code> · Next up: Phase 4 (Frontend)
       </div>
     </div>
   </body>

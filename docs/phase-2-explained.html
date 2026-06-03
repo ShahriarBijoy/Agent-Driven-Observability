@@ -414,23 +414,23 @@
       <h2><span class="section-num">01</span>The problem we're solving</h2>
       <p>
         In Phase 1 we built a working app: an <strong>AI gateway</strong> that takes a question,
-        looks up relevant text (this lookup-then-answer pattern is called
-        <strong>RAG</strong> — Retrieval-Augmented Generation), and returns an answer. It's made of
-        several small services talking to each other.
+        looks up relevant text (this lookup-then-answer pattern is called <strong>RAG</strong> —
+        Retrieval-Augmented Generation), and returns an answer. It's made of several small services
+        talking to each other.
       </p>
       <p>
-        That app <em>works</em> — but it's a black box. If it gets slow, or starts throwing errors at
-        2&nbsp;in the morning, how would you even know? And if you knew, how would you find out
+        That app <em>works</em> — but it's a black box. If it gets slow, or starts throwing errors
+        at 2&nbsp;in the morning, how would you even know? And if you knew, how would you find out
         <em>which</em> of the services is the culprit, and <em>why</em>?
       </p>
 
       <div class="analogy">
         <span class="tag">Think of it like…</span>
-        A hospital patient. Before Phase 2, the patient can't speak — you only know something's wrong
-        when they collapse. <strong>Phase 2 hooks them up to the monitors</strong>: heart-rate,
-        temperature, a chart of everything that happened. Now you can see trouble coming, find the
-        cause, and treat it. That's <strong>observability</strong>: making a system explain itself
-        from the outside.
+        A hospital patient. Before Phase 2, the patient can't speak — you only know something's
+        wrong when they collapse. <strong>Phase 2 hooks them up to the monitors</strong>:
+        heart-rate, temperature, a chart of everything that happened. Now you can see trouble
+        coming, find the cause, and treat it. That's <strong>observability</strong>: making a system
+        explain itself from the outside.
       </div>
 
       <p>
@@ -453,9 +453,9 @@
           <h4>Logs</h4>
           <div class="sub">THE DIARY</div>
           <p>
-            Timestamped text messages about individual events. <em>“2:01pm — chat completed for
-            tenant acme, used 3 chunks.”</em> Great for the <strong>story</strong> and the
-            <strong>details</strong> of one thing that happened.
+            Timestamped text messages about individual events.
+            <em>“2:01pm — chat completed for tenant acme, used 3 chunks.”</em> Great for the
+            <strong>story</strong> and the <strong>details</strong> of one thing that happened.
           </p>
         </div>
         <div class="pillar metrics">
@@ -473,8 +473,8 @@
           <h4>Traces</h4>
           <div class="sub">THE JOURNEY</div>
           <p>
-            The full path of <em>one single request</em> as it hops between services, with timing for
-            each step. Like a parcel's tracking history. Perfect for finding
+            The full path of <em>one single request</em> as it hops between services, with timing
+            for each step. Like a parcel's tracking history. Perfect for finding
             <strong>where</strong> something is slow or broke.
           </p>
         </div>
@@ -513,8 +513,8 @@
         In real life you use them together, in this order:
         <strong>Metrics</strong> shout “something is wrong!” (an alert fires) →
         <strong>Traces</strong> point at the guilty step (“the retriever is taking 4 seconds”) →
-        <strong>Logs</strong> tell you why (“database connection timed out”). Phase 2 is wired so you
-        can hop between them in one or two clicks.
+        <strong>Logs</strong> tell you why (“database connection timed out”). Phase 2 is wired so
+        you can hop between them in one or two clicks.
       </div>
 
       <!-- ───────────────────── 3 ───────────────────── -->
@@ -532,9 +532,10 @@
         </div>
         <p>
           A vendor-neutral <strong>standard</strong> for describing logs, metrics, and traces — plus
-          the libraries that produce and ship them. Think of it as the <strong>USB-C of
-          observability</strong>: instrument your code once in this common language, and you can plug
-          into any backend. We never want to be locked to one vendor, so everything speaks OTel.
+          the libraries that produce and ship them. Think of it as the
+          <strong>USB-C of observability</strong>: instrument your code once in this common
+          language, and you can plug into any backend. We never want to be locked to one vendor, so
+          everything speaks OTel.
         </p>
       </div>
 
@@ -554,9 +555,9 @@
 
       <h3>The storage + viewer: the “LGTM” stack</h3>
       <p>
-        These four are all made by Grafana Labs, and their initials spell <strong>LGTM</strong> (yes,
-        the “looks good to me” joke is on purpose). Three of them <em>store</em> one pillar each; the
-        fourth is the screen you actually look at.
+        These four are all made by Grafana Labs, and their initials spell
+        <strong>LGTM</strong> (yes, the “looks good to me” joke is on purpose). Three of them
+        <em>store</em> one pillar each; the fourth is the screen you actually look at.
       </p>
       <div class="tool">
         <div>
@@ -611,28 +612,33 @@
       <h2><span class="section-num">04</span>How it all connects</h2>
       <p>Put the relay team in order and the whole pipeline looks like this:</p>
 
-      <div class="flow"><span class="amber">your services</span>            <span class="dim">one address</span>           storage              <span class="teal">you</span>
-  (gateway, embedder,
-   retriever, model-proxy)
+      <div class="flow">
+        <span class="amber">your services</span> <span class="dim">one address</span> storage
+        <span class="teal">you</span> (gateway, embedder, retriever, model-proxy) ┌──────────────┐ │
+        📝 logs │──┐ │ 📊 metrics │──┤ OTLP* ┌─────────┐ ┌── <span class="amber">Loki</span> (logs)
+        ──┐ │ 🧵 traces │──┼──────────▶ │ <span class="teal">Alloy</span> │──▶├──
+        <span class="amber">Tempo</span> (traces) ──┼──▶
+        <span class="teal">Grafana</span> └──────────────┘ │ └─────────┘ └──
+        <span class="amber">Mimir</span> (metrics)──┘ <span class="dim">(your browser,</span> ▲ │
+        the post <span class="dim">localhost:3001)</span>
+        │ │ office speaks OTel ──────┘ via @obs/telemetry
 
-  ┌──────────────┐
-  │  📝 logs     │──┐
-  │  📊 metrics  │──┤   OTLP*    ┌─────────┐   ┌── <span class="amber">Loki</span>  (logs)   ──┐
-  │  🧵 traces   │──┼──────────▶ │  <span class="teal">Alloy</span>  │──▶├── <span class="amber">Tempo</span> (traces) ──┼──▶ <span class="teal">Grafana</span>
-  └──────────────┘  │           └─────────┘   └── <span class="amber">Mimir</span> (metrics)──┘    <span class="dim">(your browser,</span>
-   ▲                │            the post                                  <span class="dim">localhost:3001)</span>
-   │                │             office
-  speaks OTel ──────┘
- via @obs/telemetry
-
-  <span class="dim">* OTLP = OpenTelemetry Protocol, the standard wire format. Everyone ships to http://alloy:4318</span></div>
+        <span class="dim"
+          >* OTLP = OpenTelemetry Protocol, the standard wire format. Everyone ships to
+          http://alloy:4318</span
+        >
+      </div>
 
       <p>In words:</p>
       <ol>
-        <li>Each service is <strong>instrumented</strong> (it produces signals) using our helpers.</li>
+        <li>
+          Each service is <strong>instrumented</strong> (it produces signals) using our helpers.
+        </li>
         <li>It ships everything in the OTLP format to <strong>one place: Alloy</strong>.</li>
         <li>Alloy <strong>fans out</strong> — logs→Loki, traces→Tempo, metrics→Mimir.</li>
-        <li>You open <strong>Grafana</strong>, which reads from all three and shows it on one screen.</li>
+        <li>
+          You open <strong>Grafana</strong>, which reads from all three and shows it on one screen.
+        </li>
       </ol>
 
       <!-- ───────────────────── 5 ───────────────────── -->
@@ -642,7 +648,10 @@
         <em>“what is pride and prejudice about?”</em> — and see what each pillar captures.
       </p>
 
-      <p>The request fans out through several services. The <strong>trace</strong> records that shape and the time spent in each step:</p>
+      <p>
+        The request fans out through several services. The <strong>trace</strong> records that shape
+        and the time spent in each step:
+      </p>
       <pre><code><span class="c-com"># A TRACE — one request, broken into timed "spans" (steps)</span>
 rag.chat                                    312ms   ◀── the whole request
 ├─ rag.retrieve                             190ms
@@ -690,7 +699,9 @@ retrieval_relevance_score                                             ← 0.81, 
       <div class="step">
         <span class="step-num">1</span>
         <div class="body">
-          <p><strong>Turn the engine on</strong> — one file, the very first thing the service runs:</p>
+          <p>
+            <strong>Turn the engine on</strong> — one file, the very first thing the service runs:
+          </p>
         </div>
       </div>
       <pre><code><span class="c-com">// src/platform/telemetry.ts</span>
@@ -714,8 +725,8 @@ retrieval_relevance_score                                             ← 0.81, 
       <pre><code><span class="c-fn">app</span>.<span class="c-fn">use</span>(<span class="c-str">"*"</span>, <span class="c-fn">honoTelemetry</span>(<span class="c-str">"gateway"</span>)); <span class="c-com">// one line per service</span></code></pre>
       <p>
         This single line opens a trace span for each request and records the fleet-wide
-        <strong>RED metrics</strong> automatically. RED is an industry mnemonic for the three numbers
-        you always want about a service:
+        <strong>RED metrics</strong> automatically. RED is an industry mnemonic for the three
+        numbers you always want about a service:
       </p>
       <ul>
         <li><strong>R</strong>ate — how many requests per second.</li>
@@ -748,10 +759,10 @@ retrieval_relevance_score                                             ← 0.81, 
         <div class="body">
           <p>
             <strong>Keep the trace alive across services</strong> — when the gateway calls another
-            service, it uses <code>tracedFetch</code> instead of plain <code>fetch</code>. It quietly
-            attaches a “you're part of trace #4bf92…” header, so the next service joins the
-            <em>same</em> trace. <strong>This is what draws the Service Map</strong> — the diagram of
-            gateway → embedder / retriever / model-proxy.
+            service, it uses <code>tracedFetch</code> instead of plain <code>fetch</code>. It
+            quietly attaches a “you're part of trace #4bf92…” header, so the next service joins the
+            <em>same</em> trace. <strong>This is what draws the Service Map</strong> — the diagram
+            of gateway → embedder / retriever / model-proxy.
           </p>
         </div>
       </div>
@@ -773,10 +784,10 @@ log.<span class="c-fn">info</span>(<span class="c-str">"chat completed"</span>, 
       <div class="note">
         <span class="tag">Why we wrote it by hand</span>
         Normally OpenTelemetry can auto-instrument popular frameworks with zero code. But our
-        services run on <strong>Bun</strong> (a fast JavaScript runtime), and the auto-magic is built
-        for Node.js — it doesn't hook into Bun. So we built thin, explicit helpers in
-        <code>@obs/telemetry</code> instead. Slightly more code, but it works reliably and keeps every
-        service consistent. (The full reasoning lives in
+        services run on <strong>Bun</strong> (a fast JavaScript runtime), and the auto-magic is
+        built for Node.js — it doesn't hook into Bun. So we built thin, explicit helpers in
+        <code>@obs/telemetry</code> instead. Slightly more code, but it works reliably and keeps
+        every service consistent. (The full reasoning lives in
         <code>docs/adr/003-application-observability.md</code>.)
       </div>
 
@@ -793,23 +804,36 @@ log.<span class="c-fn">info</span>(<span class="c-str">"chat completed"</span>, 
         <tbody>
           <tr>
             <td><strong>Gateway · RED dashboard</strong></td>
-            <td>The health vitals: request rate, error rate, and p50/p95/p99 latency — with clickable exemplar dots.</td>
+            <td>
+              The health vitals: request rate, error rate, and p50/p95/p99 latency — with clickable
+              exemplar dots.
+            </td>
           </tr>
           <tr>
             <td><strong>RAG Pipeline dashboard</strong></td>
-            <td>Business view: token throughput, cache-hit ratio, retrieval-relevance heatmap, rate-limit rejections, top tenants.</td>
+            <td>
+              Business view: token throughput, cache-hit ratio, retrieval-relevance heatmap,
+              rate-limit rejections, top tenants.
+            </td>
           </tr>
           <tr>
             <td><strong>Service Map</strong></td>
-            <td>An auto-drawn diagram of which service calls which, built from the distributed traces.</td>
+            <td>
+              An auto-drawn diagram of which service calls which, built from the distributed traces.
+            </td>
           </tr>
           <tr>
             <td><strong>Exemplar → trace → logs</strong></td>
-            <td>The three-click drill-down from a metric spike all the way to the exact log lines.</td>
+            <td>
+              The three-click drill-down from a metric spike all the way to the exact log lines.
+            </td>
           </tr>
           <tr>
             <td><strong>2 alert rules</strong></td>
-            <td>Auto-fire if the gateway's 5xx error rate &gt; 2% (2&nbsp;min) or p95 latency &gt; 2s (5&nbsp;min).</td>
+            <td>
+              Auto-fire if the gateway's 5xx error rate &gt; 2% (2&nbsp;min) or p95 latency &gt; 2s
+              (5&nbsp;min).
+            </td>
           </tr>
         </tbody>
       </table>
@@ -824,32 +848,46 @@ docker compose -f infra/compose.yml -f infra/compose.observability.yml up -d --b
 docker compose -f infra/compose.yml -f infra/compose.observability.yml \
   --profile load up -d load-generator</code></pre>
       <p>
-        Then open <strong><a href="http://localhost:3001">http://localhost:3001</a></strong> (Grafana,
-        logs you in anonymously). Open the <strong>Gateway · RED</strong> dashboard, click a latency
-        <strong>exemplar</strong> dot to jump to its Tempo trace, then “Logs for this span” to land on
-        the matching log in Loki. That little journey <em>is</em> Phase 2.
+        Then open
+        <strong><a href="http://localhost:3001">http://localhost:3001</a></strong> (Grafana, logs
+        you in anonymously). Open the <strong>Gateway · RED</strong> dashboard, click a latency
+        <strong>exemplar</strong> dot to jump to its Tempo trace, then “Logs for this span” to land
+        on the matching log in Loki. That little journey <em>is</em> Phase 2.
       </p>
 
       <!-- ───────────────────── recap ───────────────────── -->
       <h2><span class="section-num">09</span>One-screen recap</h2>
       <div class="card">
         <p style="margin-top: 0">
-          <strong>What Phase 2 did:</strong> made every service explain itself, and gave us a control
-          room to watch.
+          <strong>What Phase 2 did:</strong> made every service explain itself, and gave us a
+          control room to watch.
         </p>
         <ul style="margin-bottom: 0">
-          <li><strong>3 pillars</strong> — Logs (the diary), Metrics (the gauges), Traces (the journey).</li>
+          <li>
+            <strong>3 pillars</strong> — Logs (the diary), Metrics (the gauges), Traces (the
+            journey).
+          </li>
           <li><strong>OpenTelemetry</strong> is the common language all services speak.</li>
-          <li><strong>Alloy</strong> is the one inbox; it fans out to <strong>Loki / Tempo / Mimir</strong> (= LGTM storage).</li>
+          <li>
+            <strong>Alloy</strong> is the one inbox; it fans out to
+            <strong>Loki / Tempo / Mimir</strong> (= LGTM storage).
+          </li>
           <li><strong>Grafana</strong> is the screen you look at.</li>
-          <li><strong><code>@obs/telemetry</code></strong> makes instrumenting a service a 1–2 line job.</li>
-          <li><strong>Exemplars</strong> stitch the three pillars together — spike → trace → logs in a few clicks.</li>
+          <li>
+            <strong><code>@obs/telemetry</code></strong> makes instrumenting a service a 1–2 line
+            job.
+          </li>
+          <li>
+            <strong>Exemplars</strong> stitch the three pillars together — spike → trace → logs in a
+            few clicks.
+          </li>
         </ul>
       </div>
 
       <div class="footer">
         AI Observability Lab · Phase 2 (Application Observability)<br />
-        Deeper design + the Bun-specific decisions: <code>docs/adr/003-application-observability.md</code><br />
+        Deeper design + the Bun-specific decisions:
+        <code>docs/adr/003-application-observability.md</code><br />
         Full phased roadmap: <code>docs/PLAN.html</code> · Next up: Phase 3 (Data Observability)
       </div>
     </div>
