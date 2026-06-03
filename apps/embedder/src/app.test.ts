@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { createLineageEmitter } from "@obs/lineage";
 import { createApp } from "./platform/http";
 import { makeCacheStore } from "./slices/cache";
 import { mountEmbedSlice } from "./slices/embed/slice";
 
 function buildTestApp() {
   const app = createApp("embedder");
-  mountEmbedSlice(app, { cache: makeCacheStore({ backend: "memory" }), ttlSeconds: 60 });
+  mountEmbedSlice(app, {
+    cache: makeCacheStore({ backend: "memory" }),
+    ttlSeconds: 60,
+    lineage: createLineageEmitter({ url: "http://marquez-api:5000", enabled: false }),
+  });
   return app;
 }
 

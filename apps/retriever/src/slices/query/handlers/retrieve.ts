@@ -1,5 +1,13 @@
 import { createRoute } from "@hono/zod-openapi";
 import type { OpenAPIHono } from "@hono/zod-openapi";
+import {
+  DS_RETRIEVAL_RESULTS,
+  DS_VECTOR_STORE_CHUNKS,
+  JOB_RETRIEVE,
+  type LineageEmitter,
+  parentFromHeaders,
+  withChildRun,
+} from "@obs/lineage";
 import { ErrorResponseSchema, RetrieveRequestSchema, RetrieveResponseSchema } from "@obs/contracts";
 import type { RetrieveService } from "../service";
 
@@ -25,10 +33,26 @@ const retrieveRoute = createRoute({
   },
 });
 
-export function registerRetrieveRoute(app: OpenAPIHono, service: RetrieveService): void {
+export function registerRetrieveRoute(
+  app: OpenAPIHono,
+  service: RetrieveService,
+  lineage: LineageEmitter,
+): void {
   app.openapi(retrieveRoute, async (c) => {
     const { embedding, topK } = c.req.valid("json");
-    const results = await service.retrieve(embedding, topK);
+    // When called as part of an inference, emit a `rag.retrieve` sub-run linked
+    // to the gateway's parent run (propagated via x-ol-parent-* headers).
+    const parent = parentFromHeaders((name) => c.req.header(name));
+    const results = await withChildRun(
+      lineage,
+      {
+        job: JOB_RETRIEVE,
+        inputs: [DS_VECTOR_STORE_CHUNKS],
+        outputs: [DS_RETRIEVAL_RESULTS],
+        parent,
+      },
+      () => service.retrieve(embedding, topK),
+    );
     return c.json({ results }, 200);
   });
 }

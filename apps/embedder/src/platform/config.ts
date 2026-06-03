@@ -1,3 +1,4 @@
+import { type LineageOptions, resolveLineageOptions } from "@obs/lineage";
 import { z } from "zod";
 
 const EnvSchema = z.object({
@@ -5,6 +6,8 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().min(1).optional(),
   EMBED_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   CACHE_BACKEND: z.enum(["redis", "memory"]).optional(),
+  MARQUEZ_URL: z.string().min(1).optional(),
+  LINEAGE_ENABLED: z.enum(["true", "false"]).optional(),
 });
 
 export interface Config {
@@ -12,6 +15,7 @@ export interface Config {
   readonly redisUrl: string | undefined;
   readonly embedCacheTtlSeconds: number;
   readonly cacheBackend: "redis" | "memory";
+  readonly lineage: LineageOptions;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -22,5 +26,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     redisUrl: parsed.REDIS_URL,
     embedCacheTtlSeconds: parsed.EMBED_CACHE_TTL_SECONDS,
     cacheBackend,
+    lineage: resolveLineageOptions(env),
   };
 }

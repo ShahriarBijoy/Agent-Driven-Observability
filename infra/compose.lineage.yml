@@ -1,9 +1,129 @@
-# Lineage plane (Marquez + its Postgres). Populated in Phase 3.
-# Compose this together with compose.yml:
-#   docker compose -f infra/compose.yml -f infra/compose.lineage.yml up -d
+# Lineage + data-observability plane (Phase 3).
+#   - Marquez (OpenLineage server) + its own Postgres + the Marquez web UI
+#   - dq-runner (scheduled data-quality checks)
+# Compose this together with compose.yml (and compose.observability.yml for the
+# full telemetry path):
+#   docker compose -f infra/compose.yml \
+#     -f infra/compose.observability.yml -f infra/compose.lineage.yml up -d
+#
+# Including this file also injects MARQUEZ_URL into the TS services, which is
+# what switches their OpenLineage emission on (off by default without it).
 name: observability-lab
 
 networks:
   app:
     name: obs-lab-app
     external: true
+  obs:
+    name: obs-lab-obs
+    external: true
+  lineage:
+    name: obs-lab-lineage
+    driver: bridge
+
+volumes:
+  marquez-db-data:
+
+services:
+  # --- Marquez (OpenLineage reference server) ---
+  marquez-db:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquez -d marquez"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - lineage
+
+  marquez-api:
+    image: marquezproject/marquez:0.50.0
+    environment:
+      MARQUEZ_PORT: "5000"
+      MARQUEZ_ADMIN_PORT: "5001"
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: marquez
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      SEARCH_ENABLED: "false"
+    # Use the image's default entrypoint (./entrypoint.sh → java -jar … server
+    # marquez.dev.yml, which runs Flyway migrations on startup). compose already
+    # gates this on marquez-db being healthy, so no wait-for-it script is needed.
+    ports:
+      - "5000:5000" # API
+      - "5001:5001" # admin / healthcheck
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    networks:
+      - app
+      - lineage
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.50.0
+    environment:
+      MARQUEZ_HOST: marquez-api
+      MARQUEZ_PORT: "5000"
+      WEB_PORT: "3000"
+    ports:
+      - "3002:3000" # UI (Grafana already uses host 3001)
+    depends_on:
+      - marquez-api
+    networks:
+      - lineage
+
+  # --- Data-quality runner ---
+  dq-runner:
+    build:
+      context: ../apps/dq-runner
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://lab:lab@postgres:5432/observability_lab
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      OTEL_METRIC_EXPORT_INTERVAL_MS: "10000"
+      DQ_RUNNER_PORT: "8091"
+      DQ_CHECK_INTERVAL_SECONDS: "30"
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8091/health').getcode()==200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app
+      - obs
+
+  # --- Lineage emission switch for the TS services ---
+  # Defining these here (merged with compose.yml) injects MARQUEZ_URL, which is
+  # what enables OpenLineage emission. Without this file, lineage stays off.
+  gateway:
+    environment:
+      MARQUEZ_URL: http://marquez-api:5000
+  embedder:
+    environment:
+      MARQUEZ_URL: http://marquez-api:5000
+  retriever:
+    environment:
+      MARQUEZ_URL: http://marquez-api:5000

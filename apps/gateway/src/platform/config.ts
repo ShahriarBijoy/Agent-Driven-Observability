@@ -1,3 +1,4 @@
+import { type LineageOptions, resolveLineageOptions } from "@obs/lineage";
 import { z } from "zod";
 
 const EnvSchema = z.object({
@@ -10,6 +11,8 @@ const EnvSchema = z.object({
   UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
   RATE_LIMIT_BACKEND: z.enum(["redis", "memory"]).optional(),
   USAGE_BACKEND: z.enum(["postgres", "noop"]).optional(),
+  MARQUEZ_URL: z.string().min(1).optional(),
+  LINEAGE_ENABLED: z.enum(["true", "false"]).optional(),
 });
 
 export interface Config {
@@ -22,6 +25,7 @@ export interface Config {
   readonly upstreamTimeoutMs: number;
   readonly rateLimitBackend: "redis" | "memory";
   readonly usageBackend: "postgres" | "noop";
+  readonly lineage: LineageOptions;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -38,5 +42,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     upstreamTimeoutMs: parsed.UPSTREAM_TIMEOUT_MS,
     rateLimitBackend,
     usageBackend,
+    lineage: resolveLineageOptions(env),
   };
 }
