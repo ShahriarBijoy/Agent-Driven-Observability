@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phase 3, Explained Simply — Data Observability</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0e0d0b;
+        --bg-elev: #16140f;
+        --bg-card: #1b1814;
+        --ink: #ece4d4;
+        --ink-dim: #b8ad95;
+        --ink-faint: #7a7163;
+        --rule: #2a261e;
+        --rule-soft: #1f1c16;
+        --signal: #e5a663; /* telemetry amber */
+        --signal-dim: #b5814a;
+        --data: #7ab0a6; /* cool teal — the Phase 3 accent */
+        --warn: #d96e4e;
+        --good: #8bbf6b;
+        --violet: #a99bd6;
+        --shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 24px 60px -30px rgba(0, 0, 0, 0.7);
+        --maxw: 820px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: var(--bg);
+        color: var(--ink);
+      }
+      body {
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
+        font-size: 16.5px;
+        line-height: 1.62;
+        margin: 0;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        background-image:
+          radial-gradient(1200px 600px at 80% -10%, rgba(122, 176, 166, 0.07), transparent 60%),
+          radial-gradient(900px 500px at -10% 110%, rgba(229, 166, 99, 0.05), transparent 60%);
+      }
+
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 72px 28px 140px;
+      }
+
+      /* ——— Type ——— */
+      h1,
+      h2,
+      h3 {
+        font-family: "Fraunces", Georgia, serif;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        line-height: 1.18;
+      }
+      h1 {
+        font-size: 44px;
+        margin: 0 0 8px;
+      }
+      h2 {
+        font-size: 29px;
+        margin: 64px 0 6px;
+        scroll-margin-top: 24px;
+      }
+      h3 {
+        font-size: 21px;
+        margin: 38px 0 6px;
+        color: var(--ink);
+      }
+      .eyebrow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--data);
+        margin-bottom: 18px;
+      }
+      .lede {
+        font-size: 19px;
+        color: var(--ink-dim);
+        font-family: "Fraunces", Georgia, serif;
+        font-style: italic;
+        font-weight: 300;
+        line-height: 1.5;
+        margin: 14px 0 0;
+      }
+      p {
+        margin: 14px 0;
+      }
+      a {
+        color: var(--data);
+      }
+      strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .section-num {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        color: var(--data);
+        display: block;
+        margin-bottom: 2px;
+        letter-spacing: 0.04em;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid var(--rule);
+        margin: 56px 0;
+      }
+
+      /* ——— Cards & callouts ——— */
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 22px 24px;
+        margin: 22px 0;
+        box-shadow: var(--shadow);
+      }
+      .analogy {
+        border-left: 3px solid var(--data);
+        background: linear-gradient(90deg, rgba(122, 176, 166, 0.07), transparent 70%);
+        border-radius: 0 10px 10px 0;
+        padding: 14px 20px;
+        margin: 18px 0;
+        font-size: 16px;
+      }
+      .analogy .tag {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--data);
+        display: block;
+        margin-bottom: 4px;
+      }
+      .note {
+        border-left: 3px solid var(--signal);
+        background: linear-gradient(90deg, rgba(229, 166, 99, 0.08), transparent 70%);
+        border-radius: 0 10px 10px 0;
+        padding: 14px 20px;
+        margin: 18px 0;
+        font-size: 15.5px;
+      }
+      .note .tag {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--signal);
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      /* ——— Pillars grid ——— */
+      .pillars {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin: 26px 0;
+      }
+      .pillars.duo {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      @media (max-width: 720px) {
+        .pillars,
+        .pillars.duo {
+          grid-template-columns: 1fr;
+        }
+      }
+      .pillar {
+        background: var(--bg-card);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .pillar .icon {
+        font-size: 26px;
+        display: block;
+        margin-bottom: 8px;
+      }
+      .pillar h4 {
+        font-family: "Fraunces", serif;
+        font-size: 19px;
+        font-weight: 500;
+        margin: 0 0 2px;
+      }
+      .pillar .sub {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--ink-faint);
+        letter-spacing: 0.06em;
+        margin-bottom: 10px;
+      }
+      .pillar p {
+        font-size: 14.5px;
+        color: var(--ink-dim);
+        margin: 8px 0 0;
+      }
+      .pillar.lineage {
+        border-top: 2px solid var(--data);
+      }
+      .pillar.quality {
+        border-top: 2px solid var(--good);
+      }
+      .pillar.app {
+        border-top: 2px solid var(--signal);
+      }
+
+      /* ——— Tool list ——— */
+      .tool {
+        display: grid;
+        grid-template-columns: 132px 1fr;
+        gap: 18px;
+        padding: 18px 0;
+        border-bottom: 1px solid var(--rule-soft);
+      }
+      @media (max-width: 600px) {
+        .tool {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        }
+      }
+      .tool .name {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--data);
+      }
+      .tool .role {
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+        color: var(--ink-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-top: 3px;
+      }
+      .tool p {
+        margin: 0;
+        font-size: 15px;
+        color: var(--ink-dim);
+      }
+      .tool .reused {
+        color: var(--signal);
+        font-weight: 600;
+      }
+
+      /* ——— Flow diagram ——— */
+      .flow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        line-height: 1.85;
+        background: var(--bg-elev);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 24px 22px;
+        margin: 24px 0;
+        overflow-x: auto;
+        color: var(--ink-dim);
+        white-space: pre;
+      }
+      .flow .amber {
+        color: var(--signal);
+      }
+      .flow .teal {
+        color: var(--data);
+      }
+      .flow .green {
+        color: var(--good);
+      }
+      .flow .dim {
+        color: var(--ink-faint);
+      }
+
+      /* ——— Code ——— */
+      pre {
+        background: #100f0c;
+        border: 1px solid var(--rule);
+        border-radius: 10px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        line-height: 1.7;
+        color: #d8cfbd;
+        margin: 18px 0;
+      }
+      code {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.88em;
+        background: rgba(122, 176, 166, 0.12);
+        color: var(--data);
+        padding: 1px 6px;
+        border-radius: 5px;
+      }
+      pre code {
+        background: none;
+        color: inherit;
+        padding: 0;
+      }
+      .c-kw {
+        color: var(--violet);
+      }
+      .c-fn {
+        color: var(--signal);
+      }
+      .c-str {
+        color: var(--good);
+      }
+      .c-com {
+        color: var(--ink-faint);
+        font-style: italic;
+      }
+      .c-key {
+        color: var(--data);
+      }
+
+      /* ——— Tables ——— */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 22px 0;
+        font-size: 15px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--rule-soft);
+        vertical-align: top;
+      }
+      th {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-faint);
+        border-bottom: 1px solid var(--rule);
+      }
+      td code {
+        font-size: 0.82em;
+      }
+
+      ul,
+      ol {
+        padding-left: 22px;
+      }
+      li {
+        margin: 7px 0;
+      }
+      .pill {
+        display: inline-block;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        padding: 2px 9px;
+        border-radius: 20px;
+        border: 1px solid var(--rule);
+        color: var(--ink-dim);
+        margin-right: 6px;
+      }
+      .sev-high {
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+      .sev-med {
+        color: var(--signal);
+        border-color: var(--signal-dim);
+      }
+      .sev-low {
+        color: var(--good);
+        border-color: var(--good);
+      }
+
+      .footer {
+        margin-top: 80px;
+        padding-top: 24px;
+        border-top: 1px solid var(--rule);
+        font-size: 13px;
+        color: var(--ink-faint);
+        font-family: "JetBrains Mono", monospace;
+      }
+      .step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: rgba(122, 176, 166, 0.16);
+        color: var(--data);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        font-weight: 600;
+        margin-right: 10px;
+        flex: none;
+      }
+      .step {
+        display: flex;
+        align-items: flex-start;
+        gap: 4px;
+        margin: 16px 0;
+      }
+      .step .body {
+        flex: 1;
+      }
+      .step .body p {
+        margin: 0 0 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="eyebrow">AI Observability Lab · Phase 3</div>
+      <h1>Data Observability, explained simply</h1>
+      <p class="lede">
+        Phase 2 asked “is the app <em>healthy</em>?” Phase 3 asks a harder question: “is the
+        <em>data</em> it produces any good — and do we know <em>where it came from</em>?” Here's the
+        whole idea, jargon unpacked, with a worked example.
+      </p>
+
+      <hr />
+
+      <!-- ───────────────────── 1 ───────────────────── -->
+      <h2><span class="section-num">01</span>The problem we're solving</h2>
+      <p>
+        In Phase 2 we wired up the <strong>three pillars</strong> — logs, metrics, traces — so we
+        could watch the app's <strong>vital signs</strong>: is it up, is it fast, is it throwing
+        errors? That tells you the machine is <em>running</em>.
+      </p>
+      <p>
+        But our app is an <strong>AI/RAG pipeline</strong> — a machine whose whole job is to
+        <em>process data</em> (find relevant chunks, write answers). And here's the trap:
+        <strong>the machine can be perfectly healthy and still produce garbage.</strong> Every
+        request returns <code>200 OK</code> in 300&nbsp;ms… while the answers quietly go stale,
+        empty, weird, or stop coming entirely. Phase 2 would never notice — green lights all round.
+      </p>
+
+      <div class="analogy">
+        <span class="tag">Think of it like…</span>
+        A bottling factory. <strong>Phase 2</strong> watches the machines: motors humming, no jams,
+        belts at full speed — all green. <strong>Phase 3 inspects the bottles coming off the
+        line</strong>: are they actually being filled? With the right liquid? At the normal rate? And
+        if a bad batch shows up, can we trace it back to <em>which ingredient and which step</em>
+        produced it? That second job — watching the <strong>product</strong>, not just the
+        <strong>machine</strong> — is <strong>data observability</strong>.
+      </div>
+
+      <p>So Phase 3 adds two new senses to the lab, and they answer two different questions:</p>
+
+      <div class="pillars duo">
+        <div class="pillar lineage">
+          <span class="icon">🗺️</span>
+          <h4>Data Lineage</h4>
+          <div class="sub">“WHERE DID THIS COME FROM?”</div>
+          <p>
+            A live <strong>map</strong> of how data flows: which inputs fed each request, which steps
+            ran, and what came out. The family tree / supply-chain of every answer. Built with
+            <strong>OpenLineage</strong> + <strong>Marquez</strong>.
+          </p>
+        </div>
+        <div class="pillar quality">
+          <span class="icon">🔬</span>
+          <h4>Data Quality</h4>
+          <div class="sub">“IS THIS DATA ANY GOOD?”</div>
+          <p>
+            Scheduled <strong>health checks on the data itself</strong> — is it fresh, flowing at a
+            normal rate, the right shape, the usual <em>kind</em>? Run every 30s by a small Python
+            service we call the <strong>dq-runner</strong>.
+          </p>
+        </div>
+      </div>
+
+      <!-- ───────────────────── 2 ───────────────────── -->
+      <h2><span class="section-num">02</span>Idea A — Data Lineage (the map)</h2>
+      <p>
+        <strong>Lineage</strong> is just the paper trail of your data: <em>this</em> answer was
+        produced by <em>this</em> run, which read <em>these</em> inputs and wrote <em>those</em>
+        outputs. When something looks wrong, lineage lets you walk the chain backwards and find the
+        culprit ingredient — exactly like a recall investigation in our bottling factory.
+      </p>
+
+      <h3>The vocabulary (only four words)</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Word</th>
+            <th>Means</th>
+            <th>In our lab</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Job</strong></td>
+            <td>A <em>recipe</em> — a named piece of work that runs over and over.</td>
+            <td><code>rag.inference</code> (one chat), <code>rag.embed</code>, <code>rag.retrieve</code></td>
+          </tr>
+          <tr>
+            <td><strong>Run</strong></td>
+            <td>One <em>execution</em> of a job, with a unique ID.</td>
+            <td>One specific <code>/v1/chat</code> call, e.g. run <code>4bf92f35…</code></td>
+          </tr>
+          <tr>
+            <td><strong>Dataset</strong></td>
+            <td>A named pile of data a run <em>reads</em> or <em>writes</em>.</td>
+            <td><code>vector_store.chunks</code>, <code>cache.embeddings</code> (in); <code>prompts.recent</code>, <code>completions.recent</code> (out)</td>
+          </tr>
+          <tr>
+            <td><strong>Facet</strong></td>
+            <td>An <em>extra sticky-note</em> of detail attached to a run.</td>
+            <td>retrieval scores, the model &amp; tenant used, an error message on failure</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>The standard: OpenLineage</h3>
+      <div class="tool">
+        <div>
+          <div class="name">OpenLineage</div>
+          <div class="role">The standard</div>
+        </div>
+        <p>
+          A vendor-neutral <strong>standard</strong> for describing those jobs, runs, and datasets as
+          little JSON “events.” If Phase 2's <strong>OpenTelemetry</strong> was the common language
+          for app <em>health</em>, OpenLineage is the matching common language for data
+          <em>flow</em>. Each run emits a <strong>START</strong> event when it begins and a
+          <strong>COMPLETE</strong> (or <strong>FAIL</strong>) event when it ends.
+        </p>
+      </div>
+
+      <h3>The store + viewer: Marquez</h3>
+      <div class="tool">
+        <div>
+          <div class="name">Marquez</div>
+          <div class="role">Lineage graph</div>
+        </div>
+        <p>
+          The collector that <strong>receives</strong> those OpenLineage events, remembers them, and
+          <strong>draws the graph</strong> you click around in. It is to lineage what Grafana is to
+          metrics. You open it in a browser at <code>localhost:3002</code>.
+        </p>
+      </div>
+
+      <h3>Our package: <code>@obs/lineage</code></h3>
+      <div class="tool">
+        <div>
+          <div class="name">@obs/lineage</div>
+          <div class="role">Our emitter</div>
+        </div>
+        <p>
+          A small package <em>we</em> wrote (the lineage twin of Phase 2's <code>@obs/telemetry</code>):
+          it builds the START/COMPLETE/FAIL events and POSTs them to Marquez. It is
+          <strong>best-effort</strong> — if Marquez is down, the error is swallowed and logged so a
+          chat <em>never</em> fails just because lineage couldn't be recorded.
+        </p>
+      </div>
+
+      <div class="note">
+        <span class="tag">The parent / child trick — this is what draws the map</span>
+        One chat actually fans out to the embedder and retriever. We make the gateway's run the
+        <strong>parent</strong>, and the embedder/retriever emit their own <strong>sub-runs</strong>
+        (<code>rag.embed</code>, <code>rag.retrieve</code>) that point back to it via a
+        <strong>parent facet</strong>. The link travels over HTTP headers
+        (<code>x-ol-parent-run-id</code> &amp; friends), exactly like trace propagation in Phase 2. Those
+        parent→child links are the <strong>edges</strong> Marquez draws.
+      </div>
+
+      <!-- ───────────────────── 3 ───────────────────── -->
+      <h2><span class="section-num">03</span>Idea B — Data Quality (the inspector)</h2>
+      <p>
+        Lineage shows the <em>shape</em> of the flow. Data <strong>quality</strong> judges whether
+        what's flowing is actually <em>good</em>. We do this with a tiny Python service, the
+        <strong>dq-runner</strong>, that wakes up <strong>every 30 seconds</strong>, looks at the
+        recent data, and grades it on five checks.
+      </p>
+
+      <p>
+        It can do this because the gateway now writes one row per <strong>successful</strong> chat to
+        a new <code>inferences</code> table — prompt length, token counts, retrieval scores, cache
+        flag, the response body, a timestamp. That table is the dq-runner's <strong>worktop</strong>:
+        the recent data, laid out so it can be inspected.
+      </p>
+
+      <h3>The five checks</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Check</th>
+            <th>The question it answers</th>
+            <th>Fires when…</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Freshness</strong></td>
+            <td>“Is data still <em>arriving</em>, or did it go quiet?”</td>
+            <td>nothing seen for &gt; 120s <span class="pill sev-med">medium</span></td>
+          </tr>
+          <tr>
+            <td><strong>Volume</strong></td>
+            <td>“Are we getting the <em>normal amount</em> of traffic?”</td>
+            <td>last-minute rate ÷ last-hour rate <code>&lt; 0.3</code> <span class="pill sev-high">high</span> or <code>&gt; 3.0</code> <span class="pill sev-med">medium</span></td>
+          </tr>
+          <tr>
+            <td><strong>Distribution<br />(drift)</strong></td>
+            <td>“Has the <em>kind</em> of data quietly changed?”</td>
+            <td>KS distance <code>&gt; 0.25</code> <span class="pill sev-med">medium</span>, <code>&gt; 0.4</code> <span class="pill sev-high">high</span></td>
+          </tr>
+          <tr>
+            <td><strong>Schema</strong></td>
+            <td>“Is every response the <em>right shape</em>?”</td>
+            <td>any of the last 100 responses fails the contract <span class="pill sev-high">high</span></td>
+          </tr>
+          <tr>
+            <td><strong>Cache health</strong></td>
+            <td>“Is the embedding cache <em>actually helping</em>?”</td>
+            <td>hit ratio <code>&lt; 0.05</code> (with ≥20 samples) <span class="pill sev-low">low</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="analogy">
+        <span class="tag">“Drift,” in plain words</span>
+        Imagine yesterday's prompts were mostly short, and today they're suddenly all long essays.
+        Nothing <em>errored</em> — but the <strong>distribution</strong> shifted, and that often means
+        something upstream changed. We measure it with the <strong>KS statistic</strong>
+        (Kolmogorov–Smirnov): line up “normal” vs “now,” and it's the <strong>biggest gap</strong>
+        between the two — a single number from <strong>0</strong> (identical) to <strong>1</strong>
+        (completely different). Handy because it's already a ready-made 0–1 “how weird is it” score.
+      </div>
+
+      <h3>Where the results go — and why that's the clever bit</h3>
+      <p>
+        The dq-runner doesn't invent its own dashboard. It pushes its findings as
+        <code>dq_*</code> <strong>metrics</strong> over OTLP to <strong>Alloy → Mimir</strong> — the
+        <em>exact same</em> backend Phase 2 used for app metrics. So data-quality numbers sit
+        <strong>right next to</strong> request-rate and latency in Grafana. That's what people mean by
+        <em>“data quality as first-class SLIs”</em>: the freshness of your data is treated as
+        seriously as the uptime of your service. When a check trips, it also writes a row to a
+        <code>dq_violations</code> table — a permanent logbook of every problem found.
+      </p>
+
+      <!-- ───────────────────── 4 ───────────────────── -->
+      <h2><span class="section-num">04</span>The tools — who does what</h2>
+      <p>
+        Phase 3 introduces a few new players and <strong>re-uses</strong> the Phase 2 ones (shown in
+        <span class="reused">amber</span>). Read it as two small teams.
+      </p>
+
+      <div class="tool">
+        <div>
+          <div class="name">OpenLineage</div>
+          <div class="role">The standard</div>
+        </div>
+        <p>The common JSON language for describing data jobs/runs/datasets. <strong>Lineage team.</strong></p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">Marquez</div>
+          <div class="role">Lineage store + UI</div>
+        </div>
+        <p>Collects the events and draws the clickable graph at <code>localhost:3002</code>. <strong>Lineage team.</strong></p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">@obs/lineage</div>
+          <div class="role">Our emitter</div>
+        </div>
+        <p>Builds &amp; ships lineage events from the TS services. Best-effort. <strong>Lineage team.</strong></p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">inferences</div>
+          <div class="role">Postgres table</div>
+        </div>
+        <p>One row per successful chat — the record the dq-runner inspects. <strong>Quality team.</strong></p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">dq-runner</div>
+          <div class="role">The inspector</div>
+        </div>
+        <p>
+          Python service (FastAPI + a scheduler) that runs the five checks every 30s.
+          Lives at <code>localhost:8091</code>. <strong>Quality team.</strong>
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">dq_violations</div>
+          <div class="role">Postgres table</div>
+        </div>
+        <p>The logbook: one row each time a check trips (check, severity, details). <strong>Quality team.</strong></p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">Mimir + Grafana</div>
+          <div class="role"><span class="reused">reused from Phase 2</span></div>
+        </div>
+        <p>
+          <span class="reused">The same metrics store and dashboards.</span> The <code>dq_*</code>
+          metrics land here next to the app SLIs — no new viewer needed.
+        </p>
+      </div>
+
+      <!-- ───────────────────── 5 ───────────────────── -->
+      <h2><span class="section-num">05</span>How it all connects</h2>
+      <p>Two flows run side by side — one for the map, one for the inspection:</p>
+
+      <div class="flow"><span class="dim">── LINEAGE: "where did it come from?" ──────────────────────────────</span>
+
+  <span class="amber">gateway</span> (rag.inference)            ┌──────────┐
+   ├─▶ <span class="amber">embedder</span> (rag.embed)   ──events─▶│  <span class="teal">Marquez</span>  │──▶ <span class="teal">you</span> (browser,
+   └─▶ <span class="amber">retriever</span> (rag.retrieve)─events─▶│  :5000   │     <span class="dim">localhost:3002)</span>
+        <span class="dim">child runs link to the parent</span>     └──────────┘     <span class="dim">the lineage graph</span>
+        <span class="dim">via x-ol-parent-* headers</span>
+
+<span class="dim">── DATA QUALITY: "is it any good?" ─────────────────────────────────</span>
+
+  <span class="amber">gateway</span> ──writes one row──▶ ┌──────────────┐  reads   ┌────────────┐
+           per ok chat       │ <span class="teal">inferences</span>    │◀─every──│ <span class="green">dq-runner</span>  │
+                             │ (Postgres)   │   30s   │ (5 checks) │
+                             └──────────────┘         └─────┬──────┘
+                                                            │
+                       dq_* metrics (OTLP) ─────────────────┤
+                                                            ▼
+              ┌─ writes ─▶ <span class="teal">dq_violations</span> (Postgres logbook)
+              └─ pushes ─▶ <span class="amber">Alloy ▶ Mimir</span> ──▶ <span class="amber">Grafana</span> ──▶ <span class="green">you</span>
+                           <span class="dim">(reused from Phase 2)</span>      <span class="dim">Data Quality dashboard, :3001</span></div>
+
+      <!-- ───────────────────── 6 ───────────────────── -->
+      <h2><span class="section-num">06</span>A tiny worked example</h2>
+      <p>
+        Let's follow <strong>one</strong> chat — someone asks
+        <em>“what is pride and prejudice about?”</em> — through both new flows.
+      </p>
+
+      <p><strong>① The lineage events.</strong> The gateway opens a run, the sub-services link to it, and it closes with facets:</p>
+      <pre><code><span class="c-com"># START — gateway begins run 4bf92f35…, declaring its inputs</span>
+{ <span class="c-key">"eventType"</span>: <span class="c-str">"START"</span>,
+  <span class="c-key">"job"</span>:  { <span class="c-key">"namespace"</span>: <span class="c-str">"ai-observability-lab"</span>, <span class="c-key">"name"</span>: <span class="c-str">"rag.inference"</span> },
+  <span class="c-key">"run"</span>:  { <span class="c-key">"runId"</span>: <span class="c-str">"4bf92f35-77b3-…"</span> },
+  <span class="c-key">"inputs"</span>: [ <span class="c-str">"vector_store.chunks"</span>, <span class="c-str">"cache.embeddings"</span> ] }
+
+  <span class="c-com"># …two child sub-runs link back via a parent facet…</span>
+  rag.embed     (embedder)   parent → 4bf92f35…
+  rag.retrieve  (retriever)  parent → 4bf92f35…
+
+<span class="c-com"># COMPLETE — outputs declared, plus "sticky-note" facets</span>
+{ <span class="c-key">"eventType"</span>: <span class="c-str">"COMPLETE"</span>,
+  <span class="c-key">"run"</span>: { <span class="c-key">"runId"</span>: <span class="c-str">"4bf92f35-77b3-…"</span>,
+          <span class="c-key">"facets"</span>: { <span class="c-key">"retrievalStats"</span>: { count: 3, mean: 0.74, max: 0.81 },
+                      <span class="c-key">"inference"</span>:      { model: <span class="c-str">"mock-llm"</span>, tenant: <span class="c-str">"acme"</span> } } },
+  <span class="c-key">"outputs"</span>: [ <span class="c-str">"prompts.recent"</span>, <span class="c-str">"completions.recent"</span> ] }</code></pre>
+      <p>Marquez stitches those into a clickable graph: <code>chunks</code>/<code>cache</code> → <code>rag.inference</code> → <code>prompts.recent</code>/<code>completions.recent</code>, with the embed &amp; retrieve sub-runs hanging underneath.</p>
+
+      <p><strong>② The row the gateway records</strong> (this is what makes <code>prompts.recent</code> / <code>completions.recent</code> real, and gives the inspector something to read):</p>
+      <pre><code><span class="c-com">-- one row in the `inferences` table, for this exact run</span>
+<span class="c-kw">INSERT INTO</span> inferences (run_id, tenant, model, prompt_chars, prompt_tokens,
+    completion_tokens, retrieved_count, retrieval_score_mean, cache_hit, status)
+<span class="c-kw">VALUES</span> (<span class="c-str">'4bf92f35-…'</span>, <span class="c-str">'acme'</span>, <span class="c-str">'mock-llm'</span>, 31, 42, 88, 3, 0.74, <span class="c-kw">false</span>, <span class="c-str">'ok'</span>);</code></pre>
+
+      <p><strong>③ ~30s later the dq-runner sweeps</strong> the recent rows and emits its verdict as metrics — all healthy here:</p>
+      <pre><code><span class="c-com"># dq_* metrics → Mimir (these show up in the Data Quality dashboard)</span>
+dq_freshness_seconds{dataset=<span class="c-str">"prompts.recent"</span>, tenant=<span class="c-str">"acme"</span>}   3      <span class="c-com"># fresh ✓</span>
+dq_volume_ratio{tenant=<span class="c-str">"acme"</span>}                            1.0    <span class="c-com"># normal ✓</span>
+dq_distribution_drift{signal=<span class="c-str">"prompt_chars"</span>}             0.08   <span class="c-com"># tiny shift ✓</span>
+dq_cache_hit_ratio{tenant=<span class="c-str">"acme"</span>}                         0.62   <span class="c-com"># cache helping ✓</span></code></pre>
+
+      <div class="note">
+        <span class="tag">Now break something</span>
+        Run the load-generator's <code>broken</code> scenario and watch successful chats collapse.
+        Within one 30-second sweep, the <strong>volume</strong> check sees the rate crater and writes
+        a row to the logbook — and the “any high-severity violation” alert fires:
+        <pre style="margin:10px 0 0"><code><span class="c-kw">INSERT INTO</span> dq_violations (check_name, signal, severity, dataset, payload)
+<span class="c-kw">VALUES</span> (<span class="c-str">'volume'</span>, <span class="c-str">'acme'</span>, <span class="c-str">'high'</span>, <span class="c-str">'prompts.recent'</span>,
+        <span class="c-str">'{"ratio":0.12,"count_1m":2,"baseline_rate":17}'</span>);</code></pre>
+        That row — created automatically, within ~30s of the anomaly — <em>is</em> Phase 3 working.
+      </div>
+
+      <!-- ───────────────────── 7 ───────────────────── -->
+      <h2><span class="section-num">07</span>How we actually wired it in code</h2>
+
+      <div class="step">
+        <span class="step-num">1</span>
+        <div class="body">
+          <p>
+            <strong>The gateway opens a lineage run per chat</strong> — a START up front, a COMPLETE
+            (with facets) on success, a FAIL on error. This is the real gateway code:
+          </p>
+        </div>
+      </div>
+      <pre><code><span class="c-kw">const</span> runId = <span class="c-fn">newRunId</span>();
+<span class="c-kw">await</span> deps.lineage.<span class="c-fn">start</span>({ runId, job: JOB_INFERENCE,
+  inputs: [DS_VECTOR_STORE_CHUNKS, DS_CACHE_EMBEDDINGS] });
+<span class="c-com">// …do the work…</span>
+<span class="c-kw">await</span> deps.lineage.<span class="c-fn">complete</span>({ runId, job: JOB_INFERENCE,
+  outputs: [DS_PROMPTS_RECENT, DS_COMPLETIONS_RECENT],
+  runFacets: { retrievalStats: stats, inference: { model, tenant } } });</code></pre>
+
+      <div class="step">
+        <span class="step-num">2</span>
+        <div class="body">
+          <p>
+            <strong>Keep the run linked across services</strong> — the embed + retrieve calls run
+            “inside” the parent, so the headers carry the parent run-id to the sub-services. This is
+            what makes the graph connected (just like trace propagation in Phase 2):
+          </p>
+        </div>
+      </div>
+      <pre><code><span class="c-kw">const</span> parent = { runId, jobNamespace: …, jobName: <span class="c-str">"rag.inference"</span> };
+<span class="c-kw">const</span> { embedded, chunks } = <span class="c-kw">await</span> <span class="c-fn">runWithParent</span>(parent, () =>
+  <span class="c-fn">withSpan</span>(<span class="c-str">"rag.retrieve"</span>, <span class="c-kw">async</span> () => {
+    <span class="c-kw">const</span> result = <span class="c-kw">await</span> deps.embedder.<span class="c-fn">embed</span>(input.prompt);   <span class="c-com">// → rag.embed sub-run</span>
+    <span class="c-kw">return</span> { embedded: result, chunks: <span class="c-kw">await</span> deps.retriever.<span class="c-fn">retrieve</span>(…) }; <span class="c-com">// → rag.retrieve</span>
+  }));</code></pre>
+
+      <div class="step">
+        <span class="step-num">3</span>
+        <div class="body">
+          <p>
+            <strong>Record the inference</strong> — one best-effort row per successful chat into the
+            <code>inferences</code> table. <em>Best-effort</em> means: wrapped in a try/catch so a DB
+            hiccup never fails the user's chat. (Lineage emission is best-effort too.)
+          </p>
+        </div>
+      </div>
+
+      <div class="step">
+        <span class="step-num">4</span>
+        <div class="body">
+          <p>
+            <strong>The dq-runner does the inspecting</strong> — a Python service (managed with
+            <code>uv</code>) using <strong>FastAPI</strong> for its HTTP endpoints and
+            <strong>APScheduler</strong> as the alarm clock that triggers a pass every 30s. Each pass
+            reads <code>inferences</code>, runs the five checks (each guarded so one failure can't
+            abort the others), pushes <code>dq_*</code> metrics over OTLP, and writes any
+            <code>dq_violations</code>. The checks are plain, testable functions — e.g. drift is
+            literally:
+          </p>
+        </div>
+      </div>
+      <pre><code><span class="c-com"># apps/dq-runner — the drift score is just the KS statistic</span>
+<span class="c-kw">from</span> scipy.stats <span class="c-kw">import</span> ks_2samp
+
+<span class="c-kw">def</span> <span class="c-fn">ks_drift</span>(baseline, current, min_samples=20):
+    <span class="c-kw">if</span> len(baseline) &lt; min_samples <span class="c-kw">or</span> len(current) &lt; min_samples:
+        <span class="c-kw">return</span> <span class="c-kw">None</span>                                  <span class="c-com"># not enough data yet</span>
+    <span class="c-kw">return</span> <span class="c-fn">float</span>(<span class="c-fn">ks_2samp</span>(baseline, current).statistic)  <span class="c-com"># 0 = same, 1 = totally different</span></code></pre>
+
+      <div class="note">
+        <span class="tag">Why a separate Python service?</span>
+        Data-quality work is statistics — drift tests, sampling, distribution math. Python's
+        <code>scipy</code> does this in one line, where TypeScript would be a slog. So the dq-runner
+        lives in its own little Python world, but reports back into the <em>same</em> Grafana/Mimir
+        everything else uses. (Full reasoning &amp; thresholds:
+        <code>docs/adr/004-data-observability.md</code>.)
+      </div>
+
+      <!-- ───────────────────── 8 ───────────────────── -->
+      <h2><span class="section-num">08</span>What you can see</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Where</th>
+            <th>What it shows you</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Marquez</strong> (<code>:3002</code>)</td>
+            <td>The lineage graph: the <code>rag.inference</code> job, its input/output dataset edges, and the <code>rag.embed</code> / <code>rag.retrieve</code> sub-runs — populating live as traffic flows.</td>
+          </tr>
+          <tr>
+            <td><strong>Data Quality dashboard</strong> (Grafana, <code>:3001</code>)</td>
+            <td>Freshness per dataset, volume ratio (banded 0.3–3.0), drift per signal (banded 0.25/0.4), cache-hit ratio, schema failures, and the violation rate by check &amp; severity — plus a link-out button to Marquez.</td>
+          </tr>
+          <tr>
+            <td><strong><code>/violations</code> endpoint</strong> (<code>:8091</code>)</td>
+            <td><code>curl localhost:8091/violations</code> lists recent rows; <code>curl -X POST localhost:8091/run</code> triggers a check pass right now instead of waiting.</td>
+          </tr>
+          <tr>
+            <td><strong>2 alert rules</strong></td>
+            <td>Auto-fire on (a) any <em>high</em>-severity violation in the last 5&nbsp;min, or (b) prompt-length drift (KS) &gt; 0.4 sustained for 10&nbsp;min. Both page, alongside the Phase 2 alerts.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ───────────────────── 9 ───────────────────── -->
+      <h2><span class="section-num">09</span>See it yourself</h2>
+      <p>Bring up the whole lab (subject + Phase 2 observability + Phase 3 lineage/quality), then pour in traffic:</p>
+      <pre><code><span class="c-com"># 1. Start everything (the broken/long scenarios will trip DQ violations)</span>
+bash scripts/dev-up.sh --build
+
+<span class="c-com"># 2. Drive traffic so lineage + data-quality light up</span>
+GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=600 \
+  bun --cwd apps/load-generator run start</code></pre>
+      <p>Then:</p>
+      <ul>
+        <li>Open <strong><a href="http://localhost:3002">Marquez → :3002</a></strong> and watch the <code>rag.inference</code> graph fill in.</li>
+        <li>Open <strong><a href="http://localhost:3001">Grafana → :3001</a> → Data Quality</strong> to see freshness, volume, drift, and the violation rate.</li>
+        <li>Run <code>curl localhost:8091/violations</code> — a synthetic anomaly produces a row within ~30s. That little round-trip <em>is</em> Phase 3.</li>
+      </ul>
+
+      <!-- ───────────────────── recap ───────────────────── -->
+      <h2><span class="section-num">10</span>One-screen recap</h2>
+      <div class="card">
+        <p style="margin-top: 0">
+          <strong>What Phase 3 did:</strong> taught the lab to watch the <em>data</em>, not just the
+          app — where it came from, and whether it's any good.
+        </p>
+        <ul style="margin-bottom: 0">
+          <li><strong>Two new senses</strong> — <em>Lineage</em> (“where from?”) and <em>Quality</em> (“any good?”).</li>
+          <li><strong>OpenLineage</strong> is the common language for data flow; <strong>Marquez</strong> (<code>:3002</code>) is its graph.</li>
+          <li><strong><code>@obs/lineage</code></strong> emits parent/child runs so the graph is connected — best-effort, never breaks a chat.</li>
+          <li>The gateway records every ok chat to the <strong><code>inferences</code></strong> table — the inspector's worktop.</li>
+          <li>The <strong>dq-runner</strong> (Python, <code>:8091</code>) runs 5 checks every 30s: freshness, volume, drift (KS), schema, cache.</li>
+          <li>Results push as <strong><code>dq_*</code> metrics into the same Mimir/Grafana</strong> as Phase 2 — “data quality as first-class SLIs” — and trips land in <strong><code>dq_violations</code></strong>.</li>
+        </ul>
+      </div>
+
+      <div class="footer">
+        AI Observability Lab · Phase 3 (Data Observability)<br />
+        Deeper design, the lineage taxonomy &amp; threshold rationale: <code>docs/adr/004-data-observability.md</code><br />
+        Previous: <code>docs/phase-2-explained.html</code> (Application Observability) · Full phased roadmap:
+        <code>docs/PLAN.html</code> · Next up: Phase 4 (Frontend)
+      </div>
+    </div>
+  </body>
+</html>
