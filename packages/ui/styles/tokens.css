@@ -1,0 +1,67 @@
+/*
+ * Design tokens for the observability lab control plane.
+ *
+ * The palette is the lab's house style (see docs/PLAN.html): warm off-black
+ * surfaces, parchment ink, sodium-vapor amber as the single signal accent,
+ * cool teal reserved for data, and restrained semantic colors. Components in
+ * @obs/ui and pages in apps/web must reference these variables — never
+ * ad-hoc colors.
+ */
+
+:root {
+  /* Surfaces — warm off-black, stepped by elevation */
+  --bg: #0e0d0b;
+  --bg-elev: #16140f;
+  --bg-card: #1b1814;
+  --bg-inset: #0a0908;
+
+  /* Ink — warm parchment, stepped by emphasis */
+  --ink: #ece4d4;
+  --ink-dim: #b8ad95;
+  --ink-faint: #7a7163;
+
+  /* Hairline rules */
+  --rule: #2a261e;
+  --rule-soft: #1f1c16;
+
+  /* Accents */
+  --signal: #e5a663; /* sodium / telemetry amber — the one true accent */
+  --signal-dim: #b5814a;
+  --data: #7ab0a6; /* cool teal — data viz, lineage */
+  --warn: #d96e4e;
+  --good: #8bbf6b;
+
+  --shadow-elevated: 0 1px 0 rgba(255, 255, 255, 0.04), 0 24px 60px -30px rgba(0, 0, 0, 0.7);
+}
+
+/* Map tokens into Tailwind v4 theme so utilities like bg-card, text-ink,
+ * border-rule, text-signal exist everywhere the tokens are imported. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-elev: var(--bg-elev);
+  --color-card: var(--bg-card);
+  --color-inset: var(--bg-inset);
+
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+
+  --color-signal: var(--signal);
+  --color-signal-dim: var(--signal-dim);
+  --color-data: var(--data);
+  --color-warn: var(--warn);
+  --color-good: var(--good);
+
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Fraunces", georgia, serif;
+
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  --shadow-card: var(--shadow-elevated);
+}

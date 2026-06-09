@@ -4,17 +4,40 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo \"@obs/web: dev placeholder (implemented in a later phase)\"",
-    "build": "echo \"@obs/web: build (noop)\"",
+    "dev": "vite dev --port 3003",
+    "build": "vite build",
+    "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "oxlint ."
   },
   "dependencies": {
     "@obs/contracts": "workspace:*",
-    "@obs/ui": "workspace:*"
+    "@obs/ui": "workspace:*",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-zone": "^2.2.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.206.0",
+    "@opentelemetry/instrumentation": "^0.206.0",
+    "@opentelemetry/instrumentation-fetch": "^0.206.0",
+    "@opentelemetry/resources": "^2.2.0",
+    "@opentelemetry/sdk-trace-web": "^2.2.0",
+    "@opentelemetry/semantic-conventions": "^1.37.0",
+    "@tanstack/react-router": "^1.0.0",
+    "@tanstack/react-start": "^1.0.0",
+    "postgres": "^3.4.9",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@obs/tsconfig": "workspace:*"
+    "@obs/tsconfig": "workspace:*",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^7.0.0",
+    "vite-tsconfig-paths": "^5.1.0"
   }
 }

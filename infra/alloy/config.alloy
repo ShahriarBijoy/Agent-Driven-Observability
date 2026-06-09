@@ -12,6 +12,13 @@ otelcol.receiver.otlp "default" {
   }
   http {
     endpoint = "0.0.0.0:4318"
+
+    // Phase 4: the web app's browser RUM exports OTLP straight from the
+    // page, so the receiver must answer CORS preflights from the app origin.
+    cors {
+      allowed_origins = ["http://localhost:3003"]
+      allowed_headers = ["*"]
+    }
   }
 
   output {

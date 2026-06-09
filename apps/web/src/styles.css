@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "@obs/ui/styles/tokens.css";
+
+/* Tailwind only auto-scans the app; the workspace UI package must be added. */
+@source "../../../packages/ui/src";
+
+@layer base {
+  html {
+    background: var(--bg);
+    color-scheme: dark;
+  }
+
+  body {
+    background:
+      radial-gradient(1200px 500px at 70% -10%, rgba(229, 166, 99, 0.04), transparent 60%),
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--signal-dim);
+    color: var(--bg);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule) transparent;
+  }
+}
+
+/* Page-load reveal — one orchestrated stagger, nothing scattered. */
+@keyframes panel-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.panel-rise {
+  animation: panel-rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.panel-rise-1 {
+  animation-delay: 0.05s;
+}
+.panel-rise-2 {
+  animation-delay: 0.12s;
+}
+.panel-rise-3 {
+  animation-delay: 0.19s;
+}
+.panel-rise-4 {
+  animation-delay: 0.26s;
+}
+
+/* Rendered Markdown (postmortems, artifacts, runbooks). */
+.md-body :is(h1, h2, h3) {
+  font-family: var(--font-display);
+  color: var(--ink);
+  margin: 1.2em 0 0.4em;
+  font-weight: 500;
+}
+.md-body h1 {
+  font-size: 1.35rem;
+}
+.md-body h2 {
+  font-size: 1.15rem;
+}
+.md-body h3 {
+  font-size: 1rem;
+}
+.md-body p {
+  margin: 0.5em 0;
+}
+.md-body :is(ul, ol) {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.md-body ul {
+  list-style: square;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.2em 0;
+}
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-inset);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 0.1em 0.35em;
+  color: var(--signal);
+}
+.md-body pre {
+  background: var(--bg-inset);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.md-body pre code {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink-dim);
+}
+.md-body blockquote {
+  border-left: 2px solid var(--signal-dim);
+  padding-left: 1em;
+  color: var(--ink-faint);
+  margin: 0.6em 0;
+}
+.md-body a {
+  color: var(--signal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-body strong {
+  color: var(--ink);
+}
+
+/* Streaming caret for the agent chat. */
+@keyframes caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.stream-caret::after {
+  content: "▍";
+  color: var(--signal);
+  animation: caret-blink 0.9s steps(1) infinite;
+}
