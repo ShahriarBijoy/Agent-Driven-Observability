@@ -4,6 +4,12 @@ node_modules/
 # build output
 dist/
 .turbo/
+.tanstack/
+.output/
+.nitro/
+
+# browser-automation artifacts
+.playwright-mcp/
 
 # logs
 *.log
