@@ -4,6 +4,8 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 
 ## Status
 
+Phase 4 (Frontend) complete — the lab has a real control plane. **`apps/web`** is a TanStack Start app (React 19, Tailwind v4) on **http://localhost:3003**, themed entirely from **`@obs/ui`** design tokens (warm off-black, sodium amber, Fraunces/IBM Plex Sans/JetBrains Mono). The home page reads golden signals from Mimir and recent incidents/agent-runs from Postgres; `/telemetry` and `/lineage` embed Grafana (kiosk, anonymous) and Marquez in iframes driven by a top-bar time-range control; `/agents` streams a chat over **SSE** against a placeholder **echo agent** in the BFF — including live tool-call events and a working **approval gate** on the run-detail page; `/incidents` renders Markdown postmortems; `/runbooks` lists `runbooks/*.md` with a "run with executor" launcher; `/settings` shows the dev token, tenant registry, and the agent permission matrix. The browser itself is instrumented (OTel web SDK → Alloy), so frontend fetch spans join the gateway's trace tree. The agent wire contract (runs, stream events, approvals) lives in `@obs/contracts`; Phase 5's agent-service replaces the echo agent behind the same seam (`apps/web/src/server/agent-client.ts`).
+
 Phase 3 (Data observability) complete — the RAG pipeline is now modelled as a data pipeline. Every `/v1/chat` is an **OpenLineage** run of the job `rag.inference`, with `rag.embed` / `rag.retrieve` sub-runs linked via the parent-run facet, emitted to **Marquez**; the gateway also records each successful inference to an `inferences` table (the materialisation of the `prompts.recent` / `completions.recent` datasets). A Python **dq-runner** (FastAPI + APScheduler) runs five data-quality checks every 30s — freshness, volume, distribution drift (Kolmogorov–Smirnov), schema, and cache health — pushing `dq_*` metrics over OTLP to Mimir and persisting violations to `dq_violations`. Grafana ships a **Data Quality** dashboard (with a link-out to the Marquez graph) and two DQ alerts. See `docs/adr/004-data-observability.md` for the lineage taxonomy and threshold rationale.
 
 Phase 2 (Application observability) complete — the subject system is now fully instrumented with OpenTelemetry and observed through the Grafana LGTM stack. Every service emits traces, metrics, and structured logs over OTLP to **Grafana Alloy**, which fans out to **Loki** (logs), **Tempo** (traces), and **Mimir** (metrics). Grafana ships provisioned datasources, a **Gateway RED** dashboard, a **RAG Pipeline** dashboard, and two alert rules. Distributed traces propagate across the gateway → embedder/retriever/model-proxy call graph (service map), and exemplars link the latency histograms to the exact traces that produced them. See `docs/adr/003-application-observability.md` for the design and the Bun-specific deviations (manual instrumentation; exemplars sourced from Tempo's metrics-generator).
@@ -25,11 +27,12 @@ The underlying subject system (Phase 1) is a working AI inference gateway with a
 ```
 apps/
   gateway/          # Bun HTTP server — AI inference gateway (OTEL instrumented)
-  web/              # Next.js dashboard
+  web/              # TanStack Start control plane (:3003) — dashboards, agents, incidents, runbooks
   agent-service/    # Python — Claude agent reads telemetry, triggers actions
   dq-runner/        # Python — scheduled data-quality checks (freshness/volume/drift/schema/cache)
 packages/
-  contracts/        # Shared TypeScript types and Zod schemas
+  contracts/        # Shared TypeScript types and Zod schemas (incl. the agent wire contract)
+  ui/               # @obs/ui — design tokens (tokens.css) + themed React primitives
   domain/           # Domain logic (pure, no I/O)
   telemetry/        # @obs/telemetry — OTel SDK init + manual instrumentation helpers
   lineage/          # @obs/lineage — OpenLineage event builders + Marquez emitter
@@ -137,11 +140,31 @@ Then:
 - `curl localhost:8091/violations` lists recent rows from `dq_violations`; a synthetic
   anomaly creates one within ~30s. `curl -X POST localhost:8091/run` triggers a pass now.
 
+### Run the control plane (Phase 4)
+
+```bash
+# With the stack from Phase 2/3 up (Grafana needs the embedding flag from
+# this phase's compose change — recreate grafana/alloy if they predate it):
+bun --cwd apps/web run dev
+```
+
+Open **http://localhost:3003**:
+
+- **/** — golden signals (live from Mimir) + recent incidents and agent runs.
+- **/telemetry, /lineage** — Grafana dashboards (kiosk) and Marquez, embedded; the
+  top-bar **window** control drives the Grafana time range.
+- **/agents** — chat with the placeholder echo agent (SSE streaming, tool-call panel).
+  Send `request approval` to pause the run at an approval gate, then approve/deny it
+  on the run-detail page.
+- **/runbooks** — preview a runbook and "run with executor" (starts a gated run).
+
+All values have working local defaults; see `apps/web/.env.example` to override.
+
 ### Service addresses (after `docker compose up`)
 
 | Service       | Address               | Credentials       |
 | ------------- | --------------------- | ----------------- |
-| Web dashboard | http://localhost:3003 |                   |
+| Control plane | http://localhost:3003 | dev mode, no auth |
 | Grafana       | http://localhost:3001 | anonymous (Admin) |
 | Marquez UI    | http://localhost:3002 |                   |
 | Gateway API   | http://localhost:8080 |                   |
