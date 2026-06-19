@@ -260,3 +260,13 @@ async def list_runs(tenant: str | None) -> list[dict]:
         }
         for r in rows
     ]
+
+
+async def run_select(sql: str, params: list, limit: int = 200) -> list[dict]:
+    """Execute a read-only SELECT in a read-only transaction. Callers MUST have
+    validated the SQL against the allow-list first (tools.validation)."""
+    pool = _require_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            rows = await conn.fetch(sql, *params)
+    return [dict(r) for r in rows[:limit]]

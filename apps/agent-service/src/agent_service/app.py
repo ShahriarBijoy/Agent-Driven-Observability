@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import db
 from .agents.echo import run_echo
+from .tools import backends
 from .context import RunContext, new_run
 from .hub import hub
 from .models import AgentChatRequest, ApprovalDecisionBody
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_telemetry()
     await db.init_pool()
     yield
+    await backends.close_http()
     await db.close_pool()
 
 
