@@ -72,3 +72,22 @@ CREATE TABLE IF NOT EXISTS agent_artifacts (
 );
 
 CREATE INDEX IF NOT EXISTS agent_artifacts_run_idx ON agent_artifacts (run_id, seq);
+
+-- The incident inbox the web control plane reads. The incident-reporter agent
+-- writes one row per investigated alert (postmortem_md holds the Markdown), and
+-- links it back to the agent run that produced it.
+CREATE TABLE IF NOT EXISTS incidents (
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'open',
+  tenant        TEXT NOT NULL,
+  opened_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at   TIMESTAMPTZ,
+  summary       TEXT,
+  postmortem_md TEXT,
+  run_id        TEXT REFERENCES agent_runs (id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS incidents_opened_idx ON incidents (opened_at DESC);

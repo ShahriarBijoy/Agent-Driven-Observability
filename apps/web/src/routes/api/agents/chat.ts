@@ -1,18 +1,25 @@
 import { AgentChatRequestSchema, type AgentStreamEvent } from "@obs/contracts";
 import { createFileRoute } from "@tanstack/react-router";
-import { startEchoTurn } from "~/server/runs-store";
+import { serverEnv } from "~/server/env";
 
 /**
  * POST /api/agents/chat — the BFF's streaming agent endpoint.
  *
- * Today it runs the in-process echo agent; in Phase 5 the handler body
- * becomes a proxy to agent-service's SSE stream. The wire format (SSE frames
- * of AgentStreamEvent JSON) is the contract and does not change.
+ * Phase 5: a thin proxy to agent-service's `POST /chat` SSE stream. The wire
+ * format (SSE frames of AgentStreamEvent JSON) is the contract and does not
+ * change, so the browser code is untouched. If agent-service is unreachable we
+ * emit a single SSE `error` frame instead of a 500, keeping the chat UI sane.
  */
 
-function sseFrame(event: AgentStreamEvent): Uint8Array {
-  return new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
+function sseError(message: string): string {
+  return `data: ${JSON.stringify({ type: "error", message } satisfies AgentStreamEvent)}\n\n`;
 }
+
+const SSE_HEADERS = {
+  "content-type": "text/event-stream",
+  "cache-control": "no-cache",
+  connection: "keep-alive",
+} as const;
 
 export const Route = createFileRoute("/api/agents/chat")({
   server: {
@@ -26,34 +33,26 @@ export const Route = createFileRoute("/api/agents/chat")({
           );
         }
 
-        const { events } = startEchoTurn(parsed.data);
+        let upstream: Response;
+        try {
+          upstream = await fetch(new URL("/chat", serverEnv.agentServiceUrl), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(parsed.data),
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "agent-service unreachable";
+          return new Response(sseError(message), { headers: SSE_HEADERS });
+        }
 
-        const stream = new ReadableStream<Uint8Array>({
-          async start(controller) {
-            try {
-              for await (const event of events) {
-                controller.enqueue(sseFrame(event));
-              }
-            } catch (err) {
-              controller.enqueue(
-                sseFrame({
-                  type: "error",
-                  message: err instanceof Error ? err.message : "stream failed",
-                }),
-              );
-            } finally {
-              controller.close();
-            }
-          },
-        });
+        if (!upstream.ok || upstream.body === null) {
+          return new Response(sseError(`agent-service responded ${upstream.status}`), {
+            headers: SSE_HEADERS,
+          });
+        }
 
-        return new Response(stream, {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          },
-        });
+        // Pipe the upstream SSE straight through to the browser.
+        return new Response(upstream.body, { headers: SSE_HEADERS });
       },
     },
   },

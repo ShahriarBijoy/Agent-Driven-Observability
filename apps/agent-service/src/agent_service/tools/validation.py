@@ -80,6 +80,18 @@ def validate_select_sql(sql: str, allowlist: frozenset[str] = PG_ALLOWLIST) -> t
     return True, "ok"
 
 
+_ARTIFACT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def safe_artifact_name(name: str | None, default: str) -> str | None:
+    """Reduce a model-supplied artifact name to a single safe basename, or None
+    if it can't be made safe. Blocks path traversal in save_artifact's file copy."""
+    candidate = os.path.basename((name or default).strip())
+    if _ARTIFACT_NAME_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
 def safe_runbook_path(path: str, root: str) -> tuple[str | None, str]:
     """Resolve `path` inside `root`, refusing traversal and non-Markdown files.
     Returns (absolute_path, 'ok') or (None, reason)."""

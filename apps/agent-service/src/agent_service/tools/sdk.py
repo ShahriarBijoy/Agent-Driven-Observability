@@ -17,6 +17,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from ..config import config
 from ..context import RunContext
 from . import backends
+from .validation import safe_artifact_name
 
 SERVER = "obslab"
 
@@ -227,17 +228,24 @@ def build_mcp_server(ctx: RunContext):
         kind = args["kind"]
         media = "text/markdown" if kind == "markdown" else "application/json"
         default_name = "artifact.md" if kind == "markdown" else "artifact.json"
-        name = args.get("name") or default_name
-        artifact = await ctx.add_artifact(name, media, args["content"])
+        # `name` comes from the model — sanitise to a single safe basename so a
+        # crafted/injected name can't write a file copy outside ARTIFACTS_DIR.
+        safe_name = safe_artifact_name(args.get("name"), default_name)
+        if safe_name is None:
+            return _text({"error": "invalid artifact name", "name": args.get("name")})
+        artifact = await ctx.add_artifact(safe_name, media, args["content"])
         # Also drop a file copy under ARTIFACTS_DIR for out-of-band inspection.
         try:
-            out_dir = os.path.join(config.artifacts_dir, ctx.run_id)
+            out_dir = os.path.realpath(os.path.join(config.artifacts_dir, ctx.run_id))
             os.makedirs(out_dir, exist_ok=True)
-            with open(os.path.join(out_dir, name), "w", encoding="utf-8") as fh:
+            target = os.path.realpath(os.path.join(out_dir, safe_name))
+            if target == out_dir or not target.startswith(out_dir + os.sep):
+                raise ValueError("path escapes artifacts dir")
+            with open(target, "w", encoding="utf-8") as fh:
                 fh.write(args["content"])
         except Exception:  # noqa: BLE001 — the DB copy is authoritative
             pass
-        return _text({"artifact_id": artifact.id, "name": name})
+        return _text({"artifact_id": artifact.id, "name": safe_name})
 
     return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _approval, _artifact])
 

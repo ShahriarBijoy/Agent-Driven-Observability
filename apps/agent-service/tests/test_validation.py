@@ -7,9 +7,19 @@ import os
 
 from agent_service.tools.validation import (
     parse_range,
+    safe_artifact_name,
     safe_runbook_path,
     validate_select_sql,
 )
+
+
+def test_safe_artifact_name() -> None:
+    assert safe_artifact_name("postmortem.md", "x.md") == "postmortem.md"
+    assert safe_artifact_name(None, "default.json") == "default.json"
+    # Traversal / absolute / sneaky names are rejected or reduced to a basename.
+    for bad in ["../../etc/passwd", "/etc/cron.d/x", "..", ".hidden", "a/b.md", "a\\b.md"]:
+        result = safe_artifact_name(bad, "d.md")
+        assert result is None or ("/" not in result and "\\" not in result and result != "..")
 
 
 def test_select_allowed_tables_pass() -> None:
