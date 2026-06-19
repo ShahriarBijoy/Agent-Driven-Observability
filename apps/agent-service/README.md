@@ -45,6 +45,22 @@ key required.
 uv run pytest   # unit tests for the wire contract + tool validators
 ```
 
+## Self-observability
+
+The service instruments itself with the OTel Python SDK and exports OTLP/HTTP to
+Alloy (`OTEL_EXPORTER_OTLP_ENDPOINT`). Every model-backed run is one trace:
+
+```
+agent.<kind>            (parent span — the whole run)
+├─ tool.loki_query      (child span per tool call, with tool.status)
+├─ tool.mimir_query
+└─ tool.save_artifact
+```
+
+So an agent run shows up in Tempo exactly like any other service's request —
+agents you can't see in your traces are agents you can't trust. FastAPI, httpx,
+and asyncpg are auto-instrumented too.
+
 ## Persistence
 
 Five tables, provisioned by `infra/postgres/init/03-agents.sql` and also ensured
