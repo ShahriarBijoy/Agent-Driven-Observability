@@ -44,6 +44,8 @@ class RunContext:
     def __init__(self, run: AgentRun) -> None:
         self.run = run
         self._tracer = get_tracer()
+        # Set by the auto-fixer to a contained repo clone; gh_open_pr targets it.
+        self.workspace: str | None = None
 
     @property
     def run_id(self) -> str:

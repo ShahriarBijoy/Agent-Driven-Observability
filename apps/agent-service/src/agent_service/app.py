@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db
+from .agents.autofix import run_autofixer
 from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
 from .agents.incident import run_incident_reporter, summarize_alert
@@ -162,6 +163,26 @@ async def execute_runbook(name: str, request: Request) -> JSONResponse:
     ctx = new_run("runbook-executor", tenant, f"runbook: {name}")
     await db.create_run(ctx.run, "runbook-execute")
     asyncio.create_task(_guard_run(ctx, run_runbook_executor(ctx, name)))
+    return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+
+
+class AutoFixRequest(BaseModel):
+    tenant: str = config.dev_tenant
+    error_pattern: str
+    hint: str = ""
+
+
+@app.post("/auto-fix")
+async def auto_fix(request: Request) -> JSONResponse:
+    try:
+        body = AutoFixRequest.model_validate(await request.json())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    ctx = new_run("auto-fixer", body.tenant, body.error_pattern)
+    await db.create_run(ctx.run, "auto-fix")
+    asyncio.create_task(_guard_run(ctx, run_autofixer(ctx, body.error_pattern, body.hint)))
     return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
 
 

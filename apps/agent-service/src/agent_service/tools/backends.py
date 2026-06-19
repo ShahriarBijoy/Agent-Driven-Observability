@@ -238,12 +238,14 @@ async def runbook_read(path: str) -> dict:
 # ---- gh (open PR) -----------------------------------------------------------
 
 
-async def gh_open_pr(branch: str, title: str, body: str, patch: str) -> dict:
-    """Open a PR in the subject repo clone (SUBJECT_REPO_DIR) via the gh CLI.
-    The auto-fixer guards this behind an approval gate before calling it."""
-    repo = config.subject_repo_dir
+async def gh_open_pr(repo: str | None, branch: str, title: str, body: str, patch: str = "") -> dict:
+    """Open a PR from `repo` (a contained clone) via the gh CLI. The auto-fixer
+    edits files directly and guards this behind approval; `patch` is optional —
+    if empty, the current working-tree changes are committed. Against a local
+    remote (the dry-run path), gh can't open a real PR, so we report the pushed
+    branch + diffstat instead of failing."""
     if not repo:
-        return {"error": "SUBJECT_REPO_DIR is not configured; no repo to open a PR in"}
+        return {"error": "no workspace configured; nothing to open a PR in"}
     if not branch.strip() or not title.strip():
         return {"error": "branch and title are required"}
 
@@ -257,21 +259,36 @@ async def gh_open_pr(branch: str, title: str, body: str, patch: str) -> dict:
         co = _run(["git", "checkout", "-B", branch])
         if co.returncode != 0:
             return {"error": f"git checkout failed: {co.stderr.strip()}"}
-        apply = _run(["git", "apply", "--whitespace=nowarn", "-"], stdin=patch)
-        if apply.returncode != 0:
-            return {"error": f"git apply failed: {apply.stderr.strip()}"}
+        if patch.strip():
+            apply = _run(["git", "apply", "--whitespace=nowarn", "-"], stdin=patch)
+            if apply.returncode != 0:
+                return {"error": f"git apply failed: {apply.stderr.strip()}"}
         _run(["git", "add", "-A"])
         commit = _run(["git", "commit", "-m", title])
         if commit.returncode != 0:
+            blob = (commit.stdout + commit.stderr).lower()
+            if "nothing to commit" in blob:
+                return {"error": "no changes to commit — edit files before opening a PR"}
             return {"error": f"git commit failed: {commit.stderr.strip()}"}
         push = _run(["git", "push", "-u", "origin", branch, "--force"])
         if push.returncode != 0:
             return {"error": f"git push failed: {push.stderr.strip()}"}
         pr = _run(["gh", "pr", "create", "--base", base, "--head", branch,
                    "--title", title, "--body", body])
-        if pr.returncode != 0:
-            return {"error": f"gh pr create failed: {pr.stderr.strip()}"}
-        return {"status": "opened", "branch": branch, "pr_url": pr.stdout.strip()}
+        if pr.returncode == 0:
+            return {"status": "opened", "branch": branch, "pr_url": pr.stdout.strip()}
+        # Local/bare remote: no GitHub host for gh. Report the pushed branch + diff.
+        diffstat = _run(["git", "--no-pager", "diff", "--stat", f"{base}...{branch}"]).stdout.strip()
+        if not diffstat:
+            diffstat = _run(["git", "--no-pager", "show", "--stat", "--oneline", "HEAD"]).stdout.strip()
+        return {
+            "status": "branch_pushed",
+            "branch": branch,
+            "base": base,
+            "note": "pushed to a local remote (dry run); a real PR needs a GitHub host.",
+            "diffstat": diffstat,
+            "gh_error": pr.stderr.strip()[:200],
+        }
     except subprocess.TimeoutExpired:
         return {"error": "git/gh command timed out"}
     except Exception as exc:  # noqa: BLE001

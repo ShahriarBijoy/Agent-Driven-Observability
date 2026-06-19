@@ -159,30 +159,7 @@ async def _runbook(args: dict) -> dict:
     return _text(await backends.runbook_read(args["path"]))
 
 
-@tool(
-    "gh_open_pr",
-    "Open a pull request in the subject repo with a unified-diff patch. Requires a prior "
-    "approval (the auto-fixer must call request_approval first). branch, title, body, patch.",
-    {
-        "type": "object",
-        "properties": {
-            "branch": {"type": "string"},
-            "title": {"type": "string"},
-            "body": {"type": "string"},
-            "patch": {"type": "string", "description": "a unified diff (git apply format)"},
-        },
-        "required": ["branch", "title", "patch"],
-    },
-)
-async def _gh(args: dict) -> dict:
-    return _text(
-        await backends.gh_open_pr(
-            args["branch"], args["title"], args.get("body", ""), args.get("patch", "")
-        )
-    )
-
-
-_STATELESS = [_loki, _tempo, _mimir, _marquez, _pg, _grafana, _runbook, _gh]
+_STATELESS = [_loki, _tempo, _mimir, _marquez, _pg, _grafana, _runbook]
 
 
 # ---- per-run server (binds ctx into approval + artifact) ---------------------
@@ -209,6 +186,31 @@ def build_mcp_server(ctx: RunContext):
             else "Denied by the operator. Do not proceed; stop and explain why."
         )
         return _text({"decision": decision, "instruction": instruction})
+
+    @tool(
+        "gh_open_pr",
+        "Open a pull request from the contained workspace clone. Edit files directly with Edit "
+        "first, then call this (patch optional). Requires a prior approval — call request_approval "
+        "and get 'approved' before opening the PR. Against a local remote it reports the pushed "
+        "branch + diff instead of a GitHub URL.",
+        {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "description": "focused branch name, e.g. fix/rate-limit-default"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "patch": {"type": "string", "description": "optional unified diff; omit if you edited files directly"},
+            },
+            "required": ["branch", "title"],
+        },
+    )
+    async def _gh(args: dict) -> dict:
+        repo = ctx.workspace or config.subject_repo_dir
+        return _text(
+            await backends.gh_open_pr(
+                repo, args["branch"], args["title"], args.get("body", ""), args.get("patch", "")
+            )
+        )
 
     @tool(
         "save_artifact",
@@ -247,7 +249,7 @@ def build_mcp_server(ctx: RunContext):
             pass
         return _text({"artifact_id": artifact.id, "name": safe_name})
 
-    return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _approval, _artifact])
+    return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _gh, _approval, _artifact])
 
 
 # ---- per-agent allow-lists + system prompts ---------------------------------
@@ -305,11 +307,12 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "save_artifact with a Markdown execution log of what ran and each approval decision."
     ),
     "auto-fixer": (
-        "You are the auto-fixer. Given an error pattern, locate the bug in the subject repo using "
-        "Read/Glob, make the smallest correct fix with Edit, and verify with Bash where possible. "
-        "You operate in a contained clone. You MUST call request_approval with a clear summary and "
-        "receive approval BEFORE opening a pull request; if denied, stop and explain. Then call "
-        "gh_open_pr with a focused branch name, title, body, and a unified-diff patch. Keep the "
-        "change minimal and well-described."
+        "You are the auto-fixer. Given an error pattern, locate the bug in the contained repo clone "
+        "(your cwd) using Glob/Read, make the smallest correct fix by editing files directly with "
+        "Edit, and verify with Bash where possible. You MUST call request_approval with a clear "
+        "one-sentence summary of the change and receive 'approved' BEFORE opening a pull request; "
+        "if denied, stop and explain — do not open the PR. Once approved, call gh_open_pr with a "
+        "focused branch name, a title, and a body explaining the fix (you edited files directly, so "
+        "the patch argument is optional). Keep the change minimal and well-described."
     ),
 }
