@@ -58,7 +58,7 @@ function AgentsPage() {
       const res = await fetch("/api/agents/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent: "echo", tenant, runId: runIdRef.current, message }),
+        body: JSON.stringify({ agent: "rca", tenant, runId: runIdRef.current, message }),
       });
       for await (const event of readAgentStream(res)) {
         switch (event.type) {
@@ -106,8 +106,10 @@ function AgentsPage() {
       <div className="flex min-h-0 flex-col">
         <div className="panel-rise mb-4 flex items-baseline gap-3">
           <h1 className="font-display text-2xl font-medium text-ink">Agents</h1>
-          <Badge tone="data">echo agent</Badge>
-          <span className="text-xs text-ink-faint">real agents arrive in Phase 5</span>
+          <Badge tone="data">rca assistant</Badge>
+          <span className="text-xs text-ink-faint">
+            read-only · Loki · Tempo · Mimir · Postgres
+          </span>
         </div>
 
         <Card className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col">
@@ -115,7 +117,7 @@ function AgentsPage() {
             {transcript.length === 0 && streamText === null ? (
               <EmptyState
                 title="rca assistant"
-                detail='Ask about the system. The placeholder echo agent streams its answer over SSE — send "request approval" to exercise the approval gate.'
+                detail="Ask why something is happening. The RCA assistant runs real Loki, Tempo, Mimir, and Postgres queries — shown live in the tool timeline — and answers from what it finds."
               />
             ) : (
               transcript.map((entry) => <ChatBubble key={entry.id} entry={entry} />)
@@ -249,7 +251,7 @@ function ChatBubble({ entry, streaming = false }: { entry: TranscriptEntry; stre
         )}
       >
         <p className="mb-1 font-mono text-[9px] tracking-[0.16em] text-ink-faint uppercase">
-          {isUser ? "operator" : "echo agent"}
+          {isUser ? "operator" : "rca assistant"}
         </p>
         <p className={cn("whitespace-pre-wrap", streaming && "stream-caret")}>{entry.content}</p>
       </div>

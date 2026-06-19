@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from . import db
 from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
+from .agents.rca import run_rca
 from .config import config
 from .tools import backends
 from .context import RunContext, new_run
@@ -34,6 +35,7 @@ from .telemetry import init_telemetry, instrument_app
 ChatAgent = Callable[[RunContext, str], Awaitable[None]]
 CHAT_AGENTS: dict[str, ChatAgent] = {
     "echo": run_echo,
+    "rca": run_rca,
 }
 
 

@@ -31,6 +31,11 @@ from ..tools import sdk as toolsdk
 
 _MCP_PREFIX = f"mcp__{toolsdk.SERVER}__"
 
+# Per-run Claude session ids, so a multi-turn chat (same runId) continues the
+# same SDK session instead of starting cold. Best-effort: lost on restart, which
+# just means the next turn starts fresh.
+_sessions: dict[str, str] = {}
+
 # Mutating agents run unattended (no human at a CLI prompt), so they can't fall
 # back to interactive permission prompts. Their real guardrail is the explicit
 # request_approval tool + a contained cwd, not the SDK permission dialog.
@@ -86,6 +91,7 @@ async def run_agent_session(
         model=config.model,
         cwd=cwd,
         max_turns=max_turns,
+        resume=_sessions.get(ctx.run_id),  # continue a multi-turn chat
     )
 
     tracer = get_tracer()
@@ -129,6 +135,8 @@ async def run_agent_session(
                                     tc, status, _truncate(_result_text(block.content)), duration
                                 )
                     elif isinstance(message, ResultMessage):
+                        if message.session_id:
+                            _sessions[ctx.run_id] = message.session_id
                         if message.total_cost_usd is not None:
                             run_span.set_attribute("agent.cost_usd", message.total_cost_usd)
                         if message.num_turns is not None:
