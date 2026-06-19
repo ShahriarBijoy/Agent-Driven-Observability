@@ -4,6 +4,8 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 
 ## Status
 
+Phase 5 (Claude agents) complete — the control plane is now backed by a real agent-service. **`apps/agent-service`** (FastAPI + the **Claude Agent SDK**, managed with `uv`) hosts five agents that read the telemetry plane and act on it: an **RCA assistant** (interactive chat), an **incident reporter** (triggered by a Grafana alert → Markdown postmortem + an `incidents` row), a **dashboard generator** (natural-language brief → a real Grafana dashboard), a **runbook executor** (walks `runbooks/*.md` with **blocking per-step approvals**), and an **auto-fixer** (fixes a bug in a **contained clone** and opens a PR behind an approval gate). All five share one toolkit — `loki_query` / `tempo_query` / `mimir_query` / `marquez_lineage` / `pg_select` / `grafana_create_dashboard` / `gh_open_pr` / `runbook_read` / `request_approval` / `save_artifact`, registered as Claude Agent SDK tools — so only the system prompt and allow-list differ per agent. Every run streams over **SSE** in the `@obs/contracts` wire format (the Phase-4 web UI is unchanged), persists to a five-table audit schema in Postgres, and appears in **Tempo** as one `agent.<kind>` trace with a `tool.<name>` child span per tool call. The web BFF's echo agent is gone: `agent-client.ts` and `/api/agents/chat` now proxy the real service. The SDK authenticates against your local Claude Code session — no API key. See `docs/PLAN.html` section #p5.
+
 Phase 4 (Frontend) complete — the lab has a real control plane. **`apps/web`** is a TanStack Start app (React 19, Tailwind v4) on **http://localhost:3003**, themed entirely from **`@obs/ui`** design tokens (warm off-black, sodium amber, Fraunces/IBM Plex Sans/JetBrains Mono). The home page reads golden signals from Mimir and recent incidents/agent-runs from Postgres; `/telemetry` and `/lineage` embed Grafana (kiosk, anonymous) and Marquez in iframes driven by a top-bar time-range control; `/agents` streams a chat over **SSE** against a placeholder **echo agent** in the BFF — including live tool-call events and a working **approval gate** on the run-detail page; `/incidents` renders Markdown postmortems; `/runbooks` lists `runbooks/*.md` with a "run with executor" launcher; `/settings` shows the dev token, tenant registry, and the agent permission matrix. The browser itself is instrumented (OTel web SDK → Alloy), so frontend fetch spans join the gateway's trace tree. The agent wire contract (runs, stream events, approvals) lives in `@obs/contracts`; Phase 5's agent-service replaces the echo agent behind the same seam (`apps/web/src/server/agent-client.ts`).
 
 Phase 3 (Data observability) complete — the RAG pipeline is now modelled as a data pipeline. Every `/v1/chat` is an **OpenLineage** run of the job `rag.inference`, with `rag.embed` / `rag.retrieve` sub-runs linked via the parent-run facet, emitted to **Marquez**; the gateway also records each successful inference to an `inferences` table (the materialisation of the `prompts.recent` / `completions.recent` datasets). A Python **dq-runner** (FastAPI + APScheduler) runs five data-quality checks every 30s — freshness, volume, distribution drift (Kolmogorov–Smirnov), schema, and cache health — pushing `dq_*` metrics over OTLP to Mimir and persisting violations to `dq_violations`. Grafana ships a **Data Quality** dashboard (with a link-out to the Marquez graph) and two DQ alerts. See `docs/adr/004-data-observability.md` for the lineage taxonomy and threshold rationale.
@@ -153,12 +155,60 @@ Open **http://localhost:3003**:
 - **/** — golden signals (live from Mimir) + recent incidents and agent runs.
 - **/telemetry, /lineage** — Grafana dashboards (kiosk) and Marquez, embedded; the
   top-bar **window** control drives the Grafana time range.
-- **/agents** — chat with the placeholder echo agent (SSE streaming, tool-call panel).
-  Send `request approval` to pause the run at an approval gate, then approve/deny it
-  on the run-detail page.
+- **/agents** — chat with the agent (the **RCA assistant** once the Phase-5 service is up;
+  see below). SSE streaming with a live tool-call panel; approval gates pause the run and
+  are approved/denied on the run-detail page.
 - **/runbooks** — preview a runbook and "run with executor" (starts a gated run).
 
 All values have working local defaults; see `apps/web/.env.example` to override.
+
+### Run the Claude agents (Phase 5)
+
+The agent-service runs on the **host** (not in compose) so the Claude Agent SDK can
+authenticate against your local Claude Code session.
+
+```bash
+# 1. Full lab up (subject + observability + lineage) with traffic, per Phase 3.
+bash scripts/dev-up.sh --build
+
+# 2. Start the agent-service on the host (needs Postgres + the telemetry backends).
+cd apps/agent-service && uv sync && uv run python -m agent_service   # :8090
+
+# 3. Start the control plane on the host, pointed at the agent-service.
+bun --cwd apps/web run dev   # :3003
+```
+
+Then, in the UI (or via the API directly):
+
+- **/agents** — chat with the **RCA assistant**; it runs real Loki/Tempo/Mimir/Postgres
+  queries (shown live in the tool timeline) to answer "why is X happening".
+- **/incidents** — postmortems the **incident reporter** wrote. Trigger one with a synthetic
+  Grafana alert (Grafana also posts here automatically via the `agent-webhook` contact point):
+  ```bash
+  curl -X POST localhost:8090/webhook/grafana-alert -H 'content-type: application/json' \
+    -d '{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"Gateway 5xx rate > 2%","severity":"page"},"annotations":{"summary":"gateway 5xx above 2%"}}]}'
+  ```
+- **Generate a Grafana dashboard** from a brief:
+  ```bash
+  curl -X POST localhost:8090/generate-dashboard -H 'content-type: application/json' \
+    -d '{"brief":"gateway health: request rate, p95 latency, and 5xx share over time"}'
+  ```
+- **Run a runbook** with per-step approvals (approve/deny on the run page):
+  ```bash
+  curl -X POST localhost:8090/runbooks/snapshot-agent-audit.md/execute
+  ```
+- **Auto-fix a bug** behind an approval gate (opens a PR against a local remote):
+  ```bash
+  curl -X POST localhost:8090/auto-fix -H 'content-type: application/json' \
+    -d '{"error_pattern":"describe the bug and the file it lives in"}'
+  ```
+
+Every agent run is also a trace in Tempo (Explore → Tempo, search `service.name=agent-service`):
+the `agent.<kind>` parent span with a `tool.<name>` child per tool call.
+
+> The agent-service binds IPv4; the web's `AGENT_SERVICE_URL` defaults to
+> `http://127.0.0.1:8090` (on Windows, `localhost` may resolve to IPv6 first and refuse
+> the BFF's server-side fetch).
 
 ### Service addresses (after `docker compose up`)
 

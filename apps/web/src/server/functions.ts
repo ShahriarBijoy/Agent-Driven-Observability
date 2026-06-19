@@ -10,16 +10,13 @@ import { SAMPLE_INCIDENT } from "./sample-incident";
 
 /** Everything the home page needs, fetched in parallel on the server. */
 export const getOverview = createServerFn({ method: "GET" }).handler(async () => {
-  const [signals, incidents, dbRuns, liveRuns] = await Promise.all([
+  // Runs come from the DB directly: agent-service is the same source of truth,
+  // one fewer hop, and the overview still renders if the service is down.
+  const [signals, incidents, runs] = await Promise.all([
     fetchGoldenSignals(),
     recentIncidents(10),
     recentAgentRunsFromDb(10),
-    agentClient.listAgentRuns(),
   ]);
-  // DB-recorded runs (Phase 5) and live BFF echo runs, newest first.
-  const runs = [...liveRuns, ...dbRuns]
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 10);
   return { signals, incidents, runs };
 });
 

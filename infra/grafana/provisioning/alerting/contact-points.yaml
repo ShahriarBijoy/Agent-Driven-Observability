@@ -1,6 +1,9 @@
 # Grafana unified-alerting contact points (apiVersion 1).
-# "agent-webhook" is a placeholder receiver; the real agent endpoint is wired
-# in Phase 5. Grafana posts firing/resolved alerts here as JSON.
+# "agent-webhook" delivers firing/resolved alerts to the Phase-5 agent-service,
+# which spawns the incident reporter. agent-service runs on the host (it needs
+# the local Claude Code session for live auth), so Grafana — running in compose —
+# reaches it via host.docker.internal. A firing alert produces a postmortem in
+# the incident inbox within ~2 minutes.
 apiVersion: 1
 
 contactPoints:
@@ -10,6 +13,6 @@ contactPoints:
       - uid: agent-webhook
         type: webhook
         settings:
-          url: http://agent-service:9099/alert
+          url: http://host.docker.internal:8090/webhook/grafana-alert
           httpMethod: POST
         disableResolveMessage: false
