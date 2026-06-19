@@ -272,6 +272,25 @@ async def list_runs(tenant: str | None) -> list[dict]:
     ]
 
 
+async def record_incident(
+    *,
+    incident_id: str,
+    title: str,
+    severity: str,
+    tenant: str,
+    summary: str,
+    postmortem_md: str | None,
+    run_id: str,
+    status: str = "open",
+) -> None:
+    await _require_pool().execute(
+        """INSERT INTO incidents
+             (id, title, severity, status, tenant, summary, postmortem_md, run_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING""",
+        incident_id, title, severity, status, tenant, summary, postmortem_md, run_id,
+    )
+
+
 async def run_select(sql: str, params: list, limit: int = 200) -> list[dict]:
     """Execute a read-only SELECT in a read-only transaction. Callers MUST have
     validated the SQL against the allow-list first (tools.validation)."""

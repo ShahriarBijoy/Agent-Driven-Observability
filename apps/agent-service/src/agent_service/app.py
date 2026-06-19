@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from . import db
 from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
+from .agents.incident import run_incident_reporter, summarize_alert
 from .agents.rca import run_rca
 from .config import config
 from .tools import backends
@@ -129,6 +130,25 @@ async def generate_dashboard(request: Request) -> JSONResponse:
     await db.create_run(ctx.run, "generate-dashboard")  # pre-persist: no GET race
     asyncio.create_task(_guard_run(ctx, run_dashboard_generator(ctx, body.brief)))
     return JSONResponse({"runId": ctx.run_id}, status_code=202)
+
+
+@app.post("/webhook/grafana-alert")
+async def grafana_alert(request: Request) -> JSONResponse:
+    """Grafana unified-alerting contact point. A firing alert spawns the
+    incident reporter; resolved/test pings are acknowledged without a run."""
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    info = summarize_alert(payload)
+    if info["status"] != "firing":
+        return JSONResponse({"status": "ignored", "reason": f"alert {info['status']}"})
+    ctx = new_run("incident-reporter", info["tenant"], info["alertname"])
+    await db.create_run(ctx.run, "grafana-alert")
+    asyncio.create_task(_guard_run(ctx, run_incident_reporter(ctx, payload)))
+    return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
 
 
 @app.get("/runs")
