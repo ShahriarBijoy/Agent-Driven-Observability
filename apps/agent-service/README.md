@@ -12,14 +12,14 @@ in-memory echo agent for this service without any change above the seam.
 
 ## API
 
-| Method + path | Purpose |
-| --- | --- |
-| `GET /health` | liveness |
-| `POST /chat` | interactive SSE run (echo, rca) — body is `AgentChatRequest` |
-| `GET /runs?tenant=` | `AgentRunSummary[]` |
-| `GET /runs/:id` | full `AgentRun` |
-| `GET /runs/:id/stream` | follow a run's SSE events live (with replay) |
-| `POST /runs/:id/approve` | resolve an approval gate, returns `AgentRun` |
+| Method + path            | Purpose                                                      |
+| ------------------------ | ------------------------------------------------------------ |
+| `GET /health`            | liveness                                                     |
+| `POST /chat`             | interactive SSE run (echo, rca) — body is `AgentChatRequest` |
+| `GET /runs?tenant=`      | `AgentRunSummary[]`                                          |
+| `GET /runs/:id`          | full `AgentRun`                                              |
+| `GET /runs/:id/stream`   | follow a run's SSE events live (with replay)                 |
+| `POST /runs/:id/approve` | resolve an approval gate, returns `AgentRun`                 |
 
 Triggered entrypoints (`/generate-dashboard`, `/webhook/grafana-alert`,
 `/runbooks/:name/execute`, `/auto-fix`) are added per agent milestone.

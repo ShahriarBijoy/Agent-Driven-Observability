@@ -482,9 +482,10 @@
         By the end of Phase 4 the lab had a lot going for it. The app writes down everything it does
         (<strong>logs</strong>), counts and measures itself (<strong>metrics</strong>), records the
         journey of every request (<strong>traces</strong>), tracks where its data comes from
-        (<strong>lineage</strong>), and checks whether that data is any good (<strong>data
-        quality</strong>). And there's a nice web <strong>control plane</strong> — a single website —
-        to look at all of it.
+        (<strong>lineage</strong>), and checks whether that data is any good (<strong
+          >data quality</strong
+        >). And there's a nice web <strong>control plane</strong> — a single website — to look at
+        all of it.
       </p>
       <p>
         But notice who's still doing all the <em>thinking</em>: <strong>you</strong>. When something
@@ -517,7 +518,8 @@
           <h4>A model</h4>
           <div class="sub">THE BRAIN</div>
           <p>
-            Claude — the AI that can read, reason, and decide what to do next. On its own it can only
+            Claude — the AI that can read, reason, and decide what to do next. On its own it can
+            only
             <em>talk</em>. It can't see your logs or touch your system.
           </p>
         </div>
@@ -532,53 +534,52 @@
         </div>
       </div>
       <p>
-        Put them in a loop and you have an agent: the model looks at the goal, <strong>picks a
-        tool</strong>, we run it and hand back the result, the model looks again, picks the next
-        tool, and so on — until it has enough to answer or act. The model never touches your system
-        directly; it can only ask for one of the tools we gave it. <strong>That's the whole safety
-        story in one sentence:</strong> the agent can only do what's in its toolbox.
+        Put them in a loop and you have an agent: the model looks at the goal,
+        <strong>picks a tool</strong>, we run it and hand back the result, the model looks again,
+        picks the next tool, and so on — until it has enough to answer or act. The model never
+        touches your system directly; it can only ask for one of the tools we gave it.
+        <strong>That's the whole safety story in one sentence:</strong> the agent can only do what's
+        in its toolbox.
       </p>
       <div class="analogy">
         <span class="tag">Think of it like…</span>
-        A detective who can't leave the office. They can't go anywhere themselves — but they can send
-        a runner: "fetch me the door logs for last night," "pull the CCTV for camera 3." Each request
-        comes back, they think, they send the next request. The runner (our tools) only knows how to
-        do a few specific, safe errands. The detective (Claude) does the reasoning.
-      </p>
+        A detective who can't leave the office. They can't go anywhere themselves — but they can
+        send a runner: "fetch me the door logs for last night," "pull the CCTV for camera 3." Each
+        request comes back, they think, they send the next request. The runner (our tools) only
+        knows how to do a few specific, safe errands. The detective (Claude) does the reasoning.
+      </div>
 
       <p>
-        We built this with Anthropic's <strong>Claude Agent SDK</strong> — a toolkit for running this
-        loop. One nice detail: it signs in using the <strong>Claude Code session already on your
-        machine</strong>, so there's no separate API key to manage.
+        We built this with Anthropic's <strong>Claude Agent SDK</strong> — a toolkit for running
+        this loop. One nice detail: it signs in using the
+        <strong>Claude Code session already on your machine</strong>, so there's no separate API key
+        to manage.
       </p>
 
       <!-- ───────────────────── 3 ───────────────────── -->
       <h2 id="p3"><span class="section-num">03</span>The big picture, in one diagram</h2>
       <p>
-        We built a new service called <code>agent-service</code> (written in Python). It sits between
-        the website you click on and the telemetry the agents need to read. Here's the whole journey
-        of a request:
+        We built a new service called <code>agent-service</code> (written in Python). It sits
+        between the website you click on and the telemetry the agents need to read. Here's the whole
+        journey of a request:
       </p>
-      <div class="flow"><span class="dim"># You, in the browser</span>
-   <span class="violet">Control plane (web UI :3003)</span>
-            │  "Why is the gateway slow?"
-            ▼
-   <span class="violet">agent-service (:8090)</span>  ◀── the new Phase-5 backend
-            │
-            ├─▶ <span class="amber">Claude</span> (the brain) decides: "I should check the metrics"
-            │        │
-            │        ▼  picks a tool
-            ├─▶ <span class="teal">mimir_query</span>  ──▶ reads charts/numbers   (Mimir)
-            ├─▶ <span class="teal">loki_query</span>   ──▶ searches the logs      (Loki)
-            ├─▶ <span class="teal">tempo_query</span>  ──▶ follows one request    (Tempo)
-            │        │
-            │        ▼  results come back, Claude reasons again…
-            ▼
-   <span class="green">An answer</span> streams back to your screen, word by word,
-   with the list of searches it ran shown alongside.
+      <div class="flow">
+        <span class="dim"># You, in the browser</span>
+        <span class="violet">Control plane (web UI :3003)</span>
+        │ "Why is the gateway slow?" ▼
+        <span class="violet">agent-service (:8090)</span> ◀── the new Phase-5 backend │ ├─▶
+        <span class="amber">Claude</span> (the brain) decides: "I should check the metrics" │ │ │ ▼
+        picks a tool ├─▶ <span class="teal">mimir_query</span> ──▶ reads charts/numbers (Mimir) ├─▶
+        <span class="teal">loki_query</span> ──▶ searches the logs (Loki) ├─▶
+        <span class="teal">tempo_query</span> ──▶ follows one request (Tempo) │ │ │ ▼ results come
+        back, Claude reasons again… ▼ <span class="green">An answer</span> streams back to your
+        screen, word by word, with the list of searches it ran shown alongside.
 
-   <span class="dim">Everything that happened is written down (audit trail)</span>
-   <span class="dim">and also shows up as a traceable timeline (just like the app itself).</span></div>
+        <span class="dim">Everything that happened is written down (audit trail)</span>
+        <span class="dim"
+          >and also shows up as a traceable timeline (just like the app itself).</span
+        >
+      </div>
       <p>
         The clever part: the website didn't change. Phase 4 was built with a tidy "plug here later"
         seam, and Phase 5 simply plugged the real agents into it. The format of the messages flowing
@@ -588,10 +589,11 @@
       <!-- ───────────────────── 4 ───────────────────── -->
       <h2 id="p4"><span class="section-num">04</span>The toolkit — every tool, in plain words</h2>
       <p>
-        All five agents share one toolbox. The only difference between agents is <strong>which tools
-        each is allowed to use</strong> and <strong>what job we tell it to do</strong>. Below is
-        every tool. The coloured pills tell you whether a tool only <span class="pill read">reads</span>
-        (safe, can't break anything), <span class="pill write">changes things</span>, or
+        All five agents share one toolbox. The only difference between agents is
+        <strong>which tools each is allowed to use</strong> and
+        <strong>what job we tell it to do</strong>. Below is every tool. The coloured pills tell you
+        whether a tool only <span class="pill read">reads</span> (safe, can't break anything),
+        <span class="pill write">changes things</span>, or
         <span class="pill gate">pauses for your approval</span>.
       </p>
 
@@ -603,10 +605,11 @@
         </div>
         <p>
           <span class="plain">Searches the logs.</span> Logs are the diary lines every service
-          writes — "received a request from <em>acme</em>", "error: timed out talking to model-proxy".
-          The agent gives it a search (in a small query language called <strong>LogQL</strong>, e.g.
-          "show me lines from the gateway that contain the word <em>error</em>") and gets back the
-          matching lines. This is how an agent finds error messages and specific events.
+          writes — "received a request from <em>acme</em>", "error: timed out talking to
+          model-proxy". The agent gives it a search (in a small query language called
+          <strong>LogQL</strong>, e.g. "show me lines from the gateway that contain the word
+          <em>error</em>") and gets back the matching lines. This is how an agent finds error
+          messages and specific events.
         </p>
       </div>
       <div class="tool">
@@ -615,11 +618,12 @@
           <div class="role"><span class="pill read">reads</span></div>
         </div>
         <p>
-          <span class="plain">Follows one request's whole journey.</span> A <strong>trace</strong> is
-          the timeline of a single request as it hops from service to service (gateway → retriever →
-          model-proxy), showing how long each hop took. Each hop is called a <strong>span</strong>.
-          The agent uses this to find <em>the slow step</em> — "the request waited 30 seconds inside
-          model-proxy." It can search for slow traces, or pull up one trace by its ID.
+          <span class="plain">Follows one request's whole journey.</span> A
+          <strong>trace</strong> is the timeline of a single request as it hops from service to
+          service (gateway → retriever → model-proxy), showing how long each hop took. Each hop is
+          called a <strong>span</strong>. The agent uses this to find <em>the slow step</em> — "the
+          request waited 30 seconds inside model-proxy." It can search for slow traces, or pull up
+          one trace by its ID.
         </p>
       </div>
       <div class="tool">
@@ -631,8 +635,8 @@
           <span class="plain">Reads the numbers and charts.</span> Metrics are counts and
           measurements over time: requests per second, the share of requests that failed, the
           "95th-percentile" response time (the slow end of normal). The query language here is
-          <strong>PromQL</strong>. The agent uses this to <em>measure</em> a problem — "errors are at
-          5%, which is above the 2% limit."
+          <strong>PromQL</strong>. The agent uses this to <em>measure</em> a problem — "errors are
+          at 5%, which is above the 2% limit."
         </p>
       </div>
       <div class="tool">
@@ -653,11 +657,12 @@
           <div class="role"><span class="pill read">reads</span></div>
         </div>
         <p>
-          <span class="plain">Looks things up in the database — read-only.</span> The lab stores rows
-          in a Postgres database (past requests, data-quality violations, the agents' own history).
-          This tool can run <em>only</em> "SELECT" queries (the read kind) and <em>only</em> on a
-          short list of safe tables. It is physically unable to change or delete anything — we check
-          every query before running it and refuse anything that isn't a plain read.
+          <span class="plain">Looks things up in the database — read-only.</span> The lab stores
+          rows in a Postgres database (past requests, data-quality violations, the agents' own
+          history). This tool can run <em>only</em> "SELECT" queries (the read kind) and
+          <em>only</em> on a short list of safe tables. It is physically unable to change or delete
+          anything — we check every query before running it and refuse anything that isn't a plain
+          read.
         </p>
       </div>
 
@@ -668,10 +673,10 @@
           <div class="role"><span class="pill write">changes things</span></div>
         </div>
         <p>
-          <span class="plain">Builds a new chart page in Grafana.</span> Grafana is the dashboard app.
-          The agent hands it a description of the panels it wants, and Grafana saves a real, openable
-          dashboard. We treat this as safe-enough to not need approval, because a dashboard is just a
-          view — you can always delete it, it can't hurt the running system.
+          <span class="plain">Builds a new chart page in Grafana.</span> Grafana is the dashboard
+          app. The agent hands it a description of the panels it wants, and Grafana saves a real,
+          openable dashboard. We treat this as safe-enough to not need approval, because a dashboard
+          is just a view — you can always delete it, it can't hurt the running system.
         </p>
       </div>
       <div class="tool">
@@ -680,9 +685,10 @@
           <div class="role"><span class="pill read">reads</span></div>
         </div>
         <p>
-          <span class="plain">Opens a printed instruction sheet.</span> A <strong>runbook</strong> is
-          a checklist document for handling a specific problem ("gateway error rate is high — here's
-          what to check and how to fix it"). They live as plain text files in the <code>runbooks/</code>
+          <span class="plain">Opens a printed instruction sheet.</span> A
+          <strong>runbook</strong> is a checklist document for handling a specific problem ("gateway
+          error rate is high — here's what to check and how to fix it"). They live as plain text
+          files in the <code>runbooks/</code>
           folder. This tool reads one so the agent knows the steps. It's locked to that folder — it
           can't be tricked into reading files elsewhere.
         </p>
@@ -690,14 +696,17 @@
       <div class="tool">
         <div>
           <div class="name">gh_open_pr</div>
-          <div class="role"><span class="pill write">changes things</span> <span class="pill gate">needs approval</span></div>
+          <div class="role">
+            <span class="pill write">changes things</span>
+            <span class="pill gate">needs approval</span>
+          </div>
         </div>
         <p>
-          <span class="plain">Proposes a code change as a pull request.</span> A <strong>pull
-          request</strong> (PR) is a <em>suggested</em> edit to the code that a human reviews before
-          it's accepted — nothing is changed on the live system, it's just a proposal on a side
-          branch. The agent only ever calls this <em>after</em> you've approved. In the lab it pushes
-          to a local practice copy, so it's a safe dry run.
+          <span class="plain">Proposes a code change as a pull request.</span> A
+          <strong>pull request</strong> (PR) is a <em>suggested</em> edit to the code that a human
+          reviews before it's accepted — nothing is changed on the live system, it's just a proposal
+          on a side branch. The agent only ever calls this <em>after</em> you've approved. In the
+          lab it pushes to a local practice copy, so it's a safe dry run.
         </p>
       </div>
 
@@ -711,8 +720,8 @@
           <span class="plain">Asks your permission, and waits.</span> This is the safety valve. When
           an agent is about to do something that changes the system, it calls this tool with a
           one-sentence description ("restart the gateway?"). The agent <strong>freezes</strong> — it
-          literally stops and does nothing — until you click <em>Approve</em> or <em>Deny</em> on the
-          run's page. If you deny, it skips the action.
+          literally stops and does nothing — until you click <em>Approve</em> or <em>Deny</em> on
+          the run's page. If you deny, it skips the action.
         </p>
       </div>
       <div class="tool">
@@ -722,8 +731,8 @@
         </div>
         <p>
           <span class="plain">Saves its work as a file you can read later.</span> When an agent
-          produces something worth keeping — a written-up incident report, a summary — it stores it as
-          an <strong>artifact</strong> attached to that run, so you can open it from the web UI.
+          produces something worth keeping — a written-up incident report, a summary — it stores it
+          as an <strong>artifact</strong> attached to that run, so you can open it from the web UI.
         </p>
       </div>
 
@@ -733,24 +742,43 @@
         built-in tools so they can work with the system and the code directly:
       </p>
       <div class="tool">
-        <div><div class="name">Read · Glob</div><div class="role"><span class="pill read">reads</span></div></div>
-        <p><span class="plain">Open a file; find files by name.</span> How the auto-fixer locates the buggy file and reads it before changing anything.</p>
+        <div>
+          <div class="name">Read · Glob</div>
+          <div class="role"><span class="pill read">reads</span></div>
+        </div>
+        <p>
+          <span class="plain">Open a file; find files by name.</span> How the auto-fixer locates the
+          buggy file and reads it before changing anything.
+        </p>
       </div>
       <div class="tool">
-        <div><div class="name">Edit</div><div class="role"><span class="pill write">changes a file</span></div></div>
-        <p><span class="plain">Change a few lines in a file.</span> The auto-fixer makes the smallest correct edit — and only inside a safe <em>copy</em> of the code, never the real one (more on that in §10).</p>
+        <div>
+          <div class="name">Edit</div>
+          <div class="role"><span class="pill write">changes a file</span></div>
+        </div>
+        <p>
+          <span class="plain">Change a few lines in a file.</span> The auto-fixer makes the smallest
+          correct edit — and only inside a safe <em>copy</em> of the code, never the real one (more
+          on that in §10).
+        </p>
       </div>
       <div class="tool">
-        <div><div class="name">Bash</div><div class="role"><span class="pill write">runs a command</span></div></div>
-        <p><span class="plain">Run a terminal command.</span> Used to run a check or carry out a runbook step. State-changing commands are gated behind <code>request_approval</code>.</p>
+        <div>
+          <div class="name">Bash</div>
+          <div class="role"><span class="pill write">runs a command</span></div>
+        </div>
+        <p>
+          <span class="plain">Run a terminal command.</span> Used to run a check or carry out a
+          runbook step. State-changing commands are gated behind <code>request_approval</code>.
+        </p>
       </div>
 
       <!-- ───────────────────── 5 ───────────────────── -->
       <h2 id="p5"><span class="section-num">05</span>The five agents</h2>
       <p>
         Same toolbox, same brain — five different jobs. Each agent is really just a
-        <strong>job description</strong> (what we tell Claude its role is) plus an <strong>allowed
-        tools list</strong> (which of the tools above it may use).
+        <strong>job description</strong> (what we tell Claude its role is) plus an
+        <strong>allowed tools list</strong> (which of the tools above it may use).
       </p>
 
       <h3>① RCA Assistant <span class="pill read">read-only</span></h3>
@@ -765,26 +793,26 @@
         <span class="tag">We watched it do this</span>
         When asked about the gateway, it first guessed a metric name, found nothing, then
         <em>queried to discover the real names</em>, and only then answered — "≈3.1 requests/second,
-        zero errors, but a recurring warning about lineage." That self-correction is the whole point:
-        it didn't guess, it looked.
+        zero errors, but a recurring warning about lineage." That self-correction is the whole
+        point: it didn't guess, it looked.
       </div>
 
       <h3>② Incident Reporter <span class="pill read">read-only</span></h3>
       <p>
-        <strong>The night-shift writer.</strong> When an alarm fires in Grafana (say, "gateway errors
-        above 2%"), Grafana pings the agent-service, which wakes this agent up. It investigates with
-        the read tools, then writes a <strong>postmortem</strong> — a tidy report of what happened,
-        who was affected, the likely cause (naming the exact slow step), and what to do next — and
-        files it in the <code>/incidents</code> inbox. In our test it produced an 8-page report that
-        correctly fingered the slow <code>model-proxy</code> step.
+        <strong>The night-shift writer.</strong> When an alarm fires in Grafana (say, "gateway
+        errors above 2%"), Grafana pings the agent-service, which wakes this agent up. It
+        investigates with the read tools, then writes a <strong>postmortem</strong> — a tidy report
+        of what happened, who was affected, the likely cause (naming the exact slow step), and what
+        to do next — and files it in the <code>/incidents</code> inbox. In our test it produced an
+        8-page report that correctly fingered the slow <code>model-proxy</code> step.
       </p>
 
       <h3>③ Dashboard Generator <span class="pill write">makes a dashboard</span></h3>
       <p>
         <strong>The chart-maker.</strong> You describe a dashboard in one sentence ("gateway health:
         request rate, slow-end latency, and error share over time") and it builds a real Grafana
-        dashboard you can open. It first checks that the numbers it wants actually exist, then creates
-        the page. No approval needed — a dashboard is just a view.
+        dashboard you can open. It first checks that the numbers it wants actually exist, then
+        creates the page. No approval needed — a dashboard is just a view.
       </p>
 
       <h3>④ Runbook Executor <span class="pill gate">approval at each risky step</span></h3>
@@ -793,15 +821,15 @@
         checklist and works through it one step at a time. The read-only steps it just does — but
         before <em>any</em> step that changes the system (restart a service, write a file) it
         <strong>stops and asks you</strong>. In our test it ran the safe checks, paused at the
-        "write a snapshot file" step, and when we clicked <em>Deny</em>, it skipped it and finished —
-        the file was never written. That's the guarantee working.
+        "write a snapshot file" step, and when we clicked <em>Deny</em>, it skipped it and finished
+        — the file was never written. That's the guarantee working.
       </p>
 
       <h3>⑤ Auto-Fixer <span class="pill gate">approval before the pull request</span></h3>
       <p>
         <strong>The junior engineer.</strong> The boldest agent, built last and most carefully. Give
-        it a description of a bug and it finds the file, makes the smallest fix, double-checks it, and
-        opens a pull request — but <strong>only after you approve</strong>, and only inside a
+        it a description of a bug and it finds the file, makes the smallest fix, double-checks it,
+        and opens a pull request — but <strong>only after you approve</strong>, and only inside a
         throwaway copy of the code (so the real project is never touched). In our test we planted a
         deliberately-wrong setting; it found it, changed it to the right value, paused for approval,
         and — once we clicked <em>Approve</em> in the web UI — opened the PR.
@@ -813,39 +841,50 @@
       <div class="step">
         <span class="step-num">1</span>
         <div class="body">
-          <p><strong>You ask.</strong> You type a question in the web UI and hit send. The website
-          forwards it to the agent-service.</p>
+          <p>
+            <strong>You ask.</strong> You type a question in the web UI and hit send. The website
+            forwards it to the agent-service.
+          </p>
         </div>
       </div>
       <div class="step">
         <span class="step-num">2</span>
         <div class="body">
-          <p><strong>A "run" is created.</strong> The agent-service opens a new record (a <em>run</em>)
-          to track everything about to happen, and starts streaming updates back to your screen.</p>
+          <p>
+            <strong>A "run" is created.</strong> The agent-service opens a new record (a
+            <em>run</em>) to track everything about to happen, and starts streaming updates back to
+            your screen.
+          </p>
         </div>
       </div>
       <div class="step">
         <span class="step-num">3</span>
         <div class="body">
-          <p><strong>Claude picks a tool.</strong> It reads your question and decides, say,
-          <code>mimir_query</code> is the right move. The agent-service runs that tool against the
-          real metrics and hands the result back.</p>
+          <p>
+            <strong>Claude picks a tool.</strong> It reads your question and decides, say,
+            <code>mimir_query</code> is the right move. The agent-service runs that tool against the
+            real metrics and hands the result back.
+          </p>
         </div>
       </div>
       <div class="step">
         <span class="step-num">4</span>
         <div class="body">
-          <p><strong>It loops.</strong> Claude looks at what came back and picks the next tool — maybe
-          a log search, maybe a follow-up metric. Each tool call appears live in the "tool timeline"
-          panel so you can watch it work.</p>
+          <p>
+            <strong>It loops.</strong> Claude looks at what came back and picks the next tool —
+            maybe a log search, maybe a follow-up metric. Each tool call appears live in the "tool
+            timeline" panel so you can watch it work.
+          </p>
         </div>
       </div>
       <div class="step">
         <span class="step-num">5</span>
         <div class="body">
-          <p><strong>It answers.</strong> Once it has enough, it writes the answer, which streams to
-          your screen word by word. The whole thing — every message, every tool call, the final
-          answer — is saved to the database.</p>
+          <p>
+            <strong>It answers.</strong> Once it has enough, it writes the answer, which streams to
+            your screen word by word. The whole thing — every message, every tool call, the final
+            answer — is saved to the database.
+          </p>
         </div>
       </div>
 
@@ -853,21 +892,21 @@
       <h2 id="p7"><span class="section-num">07</span>The human in the loop: approvals</h2>
       <p>
         The most important safety feature is also the simplest: for anything risky, the agent
-        <strong>stops and asks</strong>. Technically, when an agent calls <code>request_approval</code>,
-        its whole run freezes mid-thought and parks itself, waiting. Nothing else happens. The run's
-        status changes to <em>"awaiting approval,"</em> and a card with <strong>Approve</strong> /
-        <strong>Deny</strong> buttons appears on its page.
+        <strong>stops and asks</strong>. Technically, when an agent calls
+        <code>request_approval</code>, its whole run freezes mid-thought and parks itself, waiting.
+        Nothing else happens. The run's status changes to <em>"awaiting approval,"</em> and a card
+        with <strong>Approve</strong> / <strong>Deny</strong> buttons appears on its page.
       </p>
       <p>
-        When you click a button, your decision travels back to the frozen agent, which un-freezes and
-        either continues (Approve) or skips the action and explains why (Deny). You are always the one
-        who pulls the trigger on anything that changes the system.
+        When you click a button, your decision travels back to the frozen agent, which un-freezes
+        and either continues (Approve) or skips the action and explains why (Deny). You are always
+        the one who pulls the trigger on anything that changes the system.
       </p>
       <div class="analogy">
         <span class="tag">Think of it like…</span>
-        A trainee who's been told: "do all the looking and prep work yourself, but <strong>never push
-        the big red button without a manager standing next to you.</strong>" They'll get everything
-        ready, then wait at the button until you say go.
+        A trainee who's been told: "do all the looking and prep work yourself, but
+        <strong>never push the big red button without a manager standing next to you.</strong>"
+        They'll get everything ready, then wait at the button until you say go.
       </div>
 
       <!-- ───────────────────── 8 ───────────────────── -->
@@ -877,12 +916,30 @@
         happens — not as an afterthought. There are five record books (database tables):
       </p>
       <table>
-        <tr><th>Record book</th><th>What it holds</th></tr>
-        <tr><td><code>agent_runs</code></td><td>One row per run: which agent, when, and how it ended.</td></tr>
-        <tr><td><code>agent_messages</code></td><td>Every message — what you said, what the agent said back.</td></tr>
-        <tr><td><code>agent_tool_calls</code></td><td>Every tool the agent used, with its inputs, results, and how long it took.</td></tr>
-        <tr><td><code>agent_approvals</code></td><td>Every time it asked permission, and what you decided.</td></tr>
-        <tr><td><code>agent_artifacts</code></td><td>Every file it produced (postmortems, summaries).</td></tr>
+        <tr>
+          <th>Record book</th>
+          <th>What it holds</th>
+        </tr>
+        <tr>
+          <td><code>agent_runs</code></td>
+          <td>One row per run: which agent, when, and how it ended.</td>
+        </tr>
+        <tr>
+          <td><code>agent_messages</code></td>
+          <td>Every message — what you said, what the agent said back.</td>
+        </tr>
+        <tr>
+          <td><code>agent_tool_calls</code></td>
+          <td>Every tool the agent used, with its inputs, results, and how long it took.</td>
+        </tr>
+        <tr>
+          <td><code>agent_approvals</code></td>
+          <td>Every time it asked permission, and what you decided.</td>
+        </tr>
+        <tr>
+          <td><code>agent_artifacts</code></td>
+          <td>Every file it produced (postmortems, summaries).</td>
+        </tr>
       </table>
       <p>
         Because it's all in the database, the web UI can show you any past run in full — and nothing
@@ -898,36 +955,51 @@
         run shows up in <strong>Tempo</strong> (the trace viewer) exactly like a normal request: one
         big timeline for the run, with a smaller timeline nested inside for each tool it used.
       </p>
-      <div class="flow"><span class="violet">agent.incident-reporter</span>   <span class="dim">← the whole run (one trace)</span>
-  ├─ <span class="teal">tool.mimir_query</span>      <span class="dim">← each tool call is a nested step</span>
-  ├─ <span class="teal">tool.loki_query</span>
-  ├─ <span class="teal">tool.tempo_query</span>
-  └─ <span class="teal">tool.save_artifact</span></div>
+      <div class="flow">
+        <span class="violet">agent.incident-reporter</span>
+        <span class="dim">← the whole run (one trace)</span> ├─
+        <span class="teal">tool.mimir_query</span>
+        <span class="dim">← each tool call is a nested step</span> ├─
+        <span class="teal">tool.loki_query</span> ├─ <span class="teal">tool.tempo_query</span> └─
+        <span class="teal">tool.save_artifact</span>
+      </div>
       <p>
         We verified this live: a real incident-reporter run appeared in Tempo as one parent timeline
-        with <strong>22 nested tool steps</strong>. The principle: <em>an agent you can't see in your
-        traces is an agent you can't trust.</em>
+        with <strong>22 nested tool steps</strong>. The principle:
+        <em>an agent you can't see in your traces is an agent you can't trust.</em>
       </p>
 
       <!-- ───────────────────── 10 ───────────────────── -->
       <h2 id="p10"><span class="section-num">10</span>Keeping it safe</h2>
       <p>Several layers, each easy to state:</p>
       <ul>
-        <li><strong>The agent can only use its toolbox.</strong> It cannot run arbitrary actions —
-          only the specific, reviewed tools we handed it, and only the ones on its allow-list.</li>
-        <li><strong>Reading is separated from changing.</strong> Most agents (RCA, incident reporter)
-          get <em>only</em> read tools. They are incapable of altering anything.</li>
-        <li><strong>The database tool can't write.</strong> <code>pg_select</code> checks every query
-          and refuses anything that isn't a plain read of a known-safe table.</li>
-        <li><strong>Risky actions stop for you.</strong> Restarting a service or opening a pull
-          request always waits for your <em>Approve</em>.</li>
-        <li><strong>The auto-fixer works on a copy.</strong> It edits a throwaway clone of the code
+        <li>
+          <strong>The agent can only use its toolbox.</strong> It cannot run arbitrary actions —
+          only the specific, reviewed tools we handed it, and only the ones on its allow-list.
+        </li>
+        <li>
+          <strong>Reading is separated from changing.</strong> Most agents (RCA, incident reporter)
+          get <em>only</em> read tools. They are incapable of altering anything.
+        </li>
+        <li>
+          <strong>The database tool can't write.</strong> <code>pg_select</code> checks every query
+          and refuses anything that isn't a plain read of a known-safe table.
+        </li>
+        <li>
+          <strong>Risky actions stop for you.</strong> Restarting a service or opening a pull
+          request always waits for your <em>Approve</em>.
+        </li>
+        <li>
+          <strong>The auto-fixer works on a copy.</strong> It edits a throwaway clone of the code
           with its own private practice "remote," so the real project is never touched during a dry
-          run.</li>
-        <li><strong>We fixed a real flaw during the build.</strong> An automated security review
+          run.
+        </li>
+        <li>
+          <strong>We fixed a real flaw during the build.</strong> An automated security review
           noticed that the "save a file" tool trusted a filename the AI chose — which could, in
           theory, write outside its folder. We tightened it to only allow plain, safe filenames, and
-          added a test so it can't regress.</li>
+          added a test so it can't regress.
+        </li>
       </ul>
       <div class="note">
         <span class="tag">One practical gotcha</span>
@@ -946,26 +1018,43 @@
         the browser. Every one of the plan's success criteria came back green:
       </p>
       <table>
-        <tr><th>The goal</th><th>What we saw</th></tr>
+        <tr>
+          <th>The goal</th>
+          <th>What we saw</th>
+        </tr>
         <tr>
           <td>An alert produces a postmortem in the inbox.</td>
-          <td>A test "gateway latency" alert → an 8-page report naming the slow <code>model-proxy</code> step and the affected tenant, in <code>/incidents</code>.</td>
+          <td>
+            A test "gateway latency" alert → an 8-page report naming the slow
+            <code>model-proxy</code> step and the affected tenant, in <code>/incidents</code>.
+          </td>
         </tr>
         <tr>
           <td>Ask the RCA assistant "why is X happening?" and get a real, query-backed answer.</td>
-          <td>It ran 10+ real metric/log searches (shown in the timeline) and answered with actual numbers.</td>
+          <td>
+            It ran 10+ real metric/log searches (shown in the timeline) and answered with actual
+            numbers.
+          </td>
         </tr>
         <tr>
           <td>The dashboard generator creates a real dashboard from a sentence.</td>
-          <td>A "Gateway Health" dashboard appeared in Grafana, confirmed via Grafana's own search.</td>
+          <td>
+            A "Gateway Health" dashboard appeared in Grafana, confirmed via Grafana's own search.
+          </td>
         </tr>
         <tr>
           <td>The auto-fixer opens a PR for a planted bug, with an approval gate the UI honors.</td>
-          <td>We planted a wrong setting; it fixed it, paused, and opened the PR <em>after</em> we clicked Approve in the web UI.</td>
+          <td>
+            We planted a wrong setting; it fixed it, paused, and opened the PR <em>after</em> we
+            clicked Approve in the web UI.
+          </td>
         </tr>
         <tr>
           <td>The runbook executor walks a runbook with per-step approvals.</td>
-          <td>It paused at the risky step; we clicked Deny and it correctly skipped it (file never written).</td>
+          <td>
+            It paused at the risky step; we clicked Deny and it correctly skipped it (file never
+            written).
+          </td>
         </tr>
         <tr>
           <td>Every agent run is a trace in Tempo, tool calls nested inside.</td>
@@ -975,7 +1064,10 @@
 
       <!-- ───────────────────── 12 ───────────────────── -->
       <h2 id="p12"><span class="section-num">12</span>Try it yourself</h2>
-      <p>Three terminals. The lab's backends run in Docker; the agent-service and website run directly on your machine.</p>
+      <p>
+        Three terminals. The lab's backends run in Docker; the agent-service and website run
+        directly on your machine.
+      </p>
       <pre><code><span class="c-com"># 1) Bring the whole lab up in Docker (databases, Grafana, the app, traffic):</span>
 bash scripts/dev-up.sh --build
 
@@ -988,36 +1080,42 @@ uv run python -m agent_service        <span class="c-com"># listens on :8090</sp
 bun --cwd apps/web run dev            <span class="c-com"># open http://localhost:3003</span></code></pre>
       <p>Then, in the browser:</p>
       <ul>
-        <li><strong>/agents</strong> — chat with the RCA assistant and watch the tool timeline fill in.</li>
-        <li><strong>/incidents</strong> — read postmortems. Make one by firing a pretend alert:
+        <li>
+          <strong>/agents</strong> — chat with the RCA assistant and watch the tool timeline fill
+          in.
+        </li>
+        <li>
+          <strong>/incidents</strong> — read postmortems. Make one by firing a pretend alert:
           <pre><code>curl -X POST localhost:8090/webhook/grafana-alert \
   -H 'content-type: application/json' \
   -d '{"status":"firing","alerts":[{"status":"firing",
        "labels":{"alertname":"Gateway 5xx rate > 2%","severity":"page"},
        "annotations":{"summary":"gateway 5xx above 2%"}}]}'</code></pre>
         </li>
-        <li><strong>Make a dashboard:</strong>
+        <li>
+          <strong>Make a dashboard:</strong>
           <pre><code>curl -X POST localhost:8090/generate-dashboard \
   -H 'content-type: application/json' \
   -d '{"brief":"gateway health: request rate, slow-end latency, error share"}'</code></pre>
         </li>
-        <li><strong>Run a runbook</strong> (then Approve/Deny on the run's page):
+        <li>
+          <strong>Run a runbook</strong> (then Approve/Deny on the run's page):
           <pre><code>curl -X POST localhost:8090/runbooks/snapshot-agent-audit.md/execute</code></pre>
         </li>
       </ul>
       <div class="safe">
         <span class="tag">The takeaway</span>
-        Phase 5 turns the lab from a system you <em>watch</em> into a system that has <em>helpers who
-        watch it for you</em> — helpers that only ever look unless you say otherwise, write down
-        everything they do, and show up in the very telemetry they're reading. That last bit is the
-        whole spirit of the project: even the watchers are watched.
+        Phase 5 turns the lab from a system you <em>watch</em> into a system that has
+        <em>helpers who watch it for you</em> — helpers that only ever look unless you say
+        otherwise, write down everything they do, and show up in the very telemetry they're reading.
+        That last bit is the whole spirit of the project: even the watchers are watched.
       </div>
 
       <div class="footer">
         AI Observability Lab · Phase 5 (Claude agents) · companion to
         <code>docs/PLAN.html</code> §p5 ·<br />
-        Builds on Phase 2 (app observability), Phase 3 (data observability), and Phase 4 (the control
-        plane).
+        Builds on Phase 2 (app observability), Phase 3 (data observability), and Phase 4 (the
+        control plane).
       </div>
     </div>
   </body>
