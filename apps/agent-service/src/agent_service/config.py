@@ -20,6 +20,12 @@ def _env(name: str, default: str) -> str:
     return value if value else default
 
 
+# Repo root, four levels up from this file (src/agent_service/config.py ->
+# apps/agent-service -> apps -> root). The service starts in apps/agent-service,
+# so runbook/artifact paths must anchor here, not the process cwd.
+LAB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+
+
 @dataclass(frozen=True)
 class Config:
     port: int
@@ -36,6 +42,9 @@ class Config:
 
     # Claude model id; None lets the Agent SDK / CLI pick its default.
     model: str | None
+
+    # Repo root the runbook executor uses as its working directory.
+    lab_root: str
 
     # Filesystem roots the mutating agents are scoped to.
     runbooks_dir: str
@@ -63,9 +72,10 @@ def load_config() -> Config:
         mimir_url=_env("MIMIR_URL", "http://localhost:9009"),
         marquez_url=_env("MARQUEZ_URL", "http://localhost:5000"),
         model=model,
-        runbooks_dir=_env("RUNBOOKS_DIR", "runbooks"),
+        lab_root=LAB_ROOT,
+        runbooks_dir=_env("RUNBOOKS_DIR", os.path.join(LAB_ROOT, "runbooks")),
         subject_repo_dir=subject_repo,
-        artifacts_dir=_env("ARTIFACTS_DIR", ".artifacts"),
+        artifacts_dir=_env("ARTIFACTS_DIR", os.path.join(LAB_ROOT, ".artifacts")),
         dev_tenant=_env("DEV_TENANT", "acme"),
     )
 

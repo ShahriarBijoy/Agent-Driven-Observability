@@ -25,6 +25,7 @@ from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
 from .agents.incident import run_incident_reporter, summarize_alert
 from .agents.rca import run_rca
+from .agents.runbook import run_runbook_executor
 from .config import config
 from .tools import backends
 from .context import RunContext, new_run
@@ -148,6 +149,19 @@ async def grafana_alert(request: Request) -> JSONResponse:
     ctx = new_run("incident-reporter", info["tenant"], info["alertname"])
     await db.create_run(ctx.run, "grafana-alert")
     asyncio.create_task(_guard_run(ctx, run_incident_reporter(ctx, payload)))
+    return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+
+
+@app.post("/runbooks/{name}/execute")
+async def execute_runbook(name: str, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    tenant = (body or {}).get("tenant", config.dev_tenant) if isinstance(body, dict) else config.dev_tenant
+    ctx = new_run("runbook-executor", tenant, f"runbook: {name}")
+    await db.create_run(ctx.run, "runbook-execute")
+    asyncio.create_task(_guard_run(ctx, run_runbook_executor(ctx, name)))
     return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
 
 
