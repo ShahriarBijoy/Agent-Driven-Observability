@@ -14,13 +14,16 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from . import db
+from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
+from .config import config
 from .tools import backends
 from .context import RunContext, new_run
 from .hub import hub
@@ -69,11 +72,11 @@ def _stream_response(run_id: str) -> StreamingResponse:
     )
 
 
-async def _guarded(agent: ChatAgent, ctx: RunContext, message: str) -> None:
-    """Run an agent so a terminal event always fires — a crashed agent must not
-    leave a stream hanging forever."""
+async def _guard_run(ctx: RunContext, coro: Coroutine) -> None:
+    """Run an agent coroutine so a terminal event always fires — a crashed agent
+    must not leave a stream hanging forever."""
     try:
-        await agent(ctx, message)
+        await coro
     except Exception as exc:  # noqa: BLE001
         await ctx.fail(f"agent crashed: {exc}")
 
@@ -100,8 +103,30 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
         body.agent, body.tenant, body.message
     )
 
-    asyncio.create_task(_guarded(agent, ctx, body.message))
+    asyncio.create_task(_guard_run(ctx, agent(ctx, body.message)))
     return _stream_response(ctx.run_id)
+
+
+# ---- triggered agents (background run; follow via GET /runs/:id/stream) ------
+
+
+class DashboardRequest(BaseModel):
+    tenant: str = config.dev_tenant
+    brief: str
+
+
+@app.post("/generate-dashboard")
+async def generate_dashboard(request: Request) -> JSONResponse:
+    try:
+        body = DashboardRequest.model_validate(await request.json())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    ctx = new_run("dashboard-generator", body.tenant, body.brief)
+    await db.create_run(ctx.run, "generate-dashboard")  # pre-persist: no GET race
+    asyncio.create_task(_guard_run(ctx, run_dashboard_generator(ctx, body.brief)))
+    return JSONResponse({"runId": ctx.run_id}, status_code=202)
 
 
 @app.get("/runs")
