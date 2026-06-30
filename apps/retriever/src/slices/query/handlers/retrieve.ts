@@ -9,6 +9,8 @@ import {
   withChildRun,
 } from "@obs/lineage";
 import { ErrorResponseSchema, RetrieveRequestSchema, RetrieveResponseSchema } from "@obs/contracts";
+import { ServiceUnavailableError } from "../../../platform/errors";
+import { getChaos, shouldFail } from "../../chaos/state";
 import type { RetrieveService } from "../service";
 
 const retrieveRoute = createRoute({
@@ -30,6 +32,10 @@ const retrieveRoute = createRoute({
       content: { "application/json": { schema: ErrorResponseSchema } },
       description: "Invalid request body",
     },
+    503: {
+      content: { "application/json": { schema: ErrorResponseSchema } },
+      description: "Simulated outage (chaos control plane)",
+    },
   },
 });
 
@@ -39,6 +45,10 @@ export function registerRetrieveRoute(
   lineage: LineageEmitter,
 ): void {
   app.openapi(retrieveRoute, async (c) => {
+    // Chaos control plane (dev/lab only): short-circuit BEFORE opening a lineage
+    // run so a simulated outage doesn't emit a spurious retrieve run.
+    if (shouldFail(getChaos())) throw new ServiceUnavailableError();
+
     const { embedding, topK } = c.req.valid("json");
     // When called as part of an inference, emit a `rag.retrieve` sub-run linked
     // to the gateway's parent run (propagated via x-ol-parent-* headers).

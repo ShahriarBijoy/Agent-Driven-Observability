@@ -1,0 +1,18 @@
+# Compressed demo cycle (~6 min) used by scripts/demo-incident.sh.
+#
+#   ~45s healthy baseline, then a sustained gateway error burst for 4 minutes
+#   (model-proxy 500s → gateway 502s), then a 60s cooldown to recover.
+#
+# The burst is long and strong enough that the gateway "5xx rate > 2% for 2m"
+# alert fires, which webhooks the agent-service and produces a postmortem in the
+# incident inbox — the moment the demo is built around.
+description: "compressed demo — a sustained gateway error burst"
+cooldownSeconds: 60
+
+phases:
+  - name: error-burst
+    target: model-proxy
+    startSeconds: 45
+    durationSeconds: 240 # 4 minutes
+    params:
+      p500: 0.6

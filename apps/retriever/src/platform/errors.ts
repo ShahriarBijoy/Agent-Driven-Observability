@@ -24,6 +24,14 @@ export class UpstreamError extends AppError {
   }
 }
 
+/** 503 — the retriever is in a simulated outage (Phase-6 chaos control plane). */
+export class ServiceUnavailableError extends AppError {
+  constructor(message = "retriever is unavailable", requestId?: string) {
+    super("service_unavailable", message, 503, requestId);
+    this.name = "ServiceUnavailableError";
+  }
+}
+
 export function toErrorResponse(err: AppError): ErrorResponse {
   return {
     error: {

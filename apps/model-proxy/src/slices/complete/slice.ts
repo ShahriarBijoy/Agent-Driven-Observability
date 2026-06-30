@@ -6,6 +6,8 @@ import { registerCompleteRoute } from "./handlers/complete";
 
 export interface CompleteSliceDeps {
   faults: FaultConfig;
+  /** Resolve the effective (chaos-overridden) fault config per request. */
+  resolveFaults?: () => FaultConfig;
   rng?: Rng;
   now?: () => number;
 }

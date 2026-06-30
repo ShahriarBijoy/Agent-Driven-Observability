@@ -1,0 +1,37 @@
+# Plan §p6 chaos cycle — the repeatable "synthetic incident" timeline.
+#
+#   minute 0–6   happy path (baseline traffic only)
+#   minute 7     latency spike      (3 min)  → model-proxy slow but under timeout
+#   minute 13    error burst        (2 min)  → model-proxy 500s → gateway 502s
+#   minute 19    retriever outage   (2 min)  → retriever 503s → gateway 502s
+#   minute 21–26 back to baseline (cooldown — SLIs recover, burn alerts resolve)
+#
+# Each phase POSTs `params` to the target service's /admin/chaos control plane at
+# its start and clears it at its end. Knobs are deliberately conservative so the
+# latency spike trips the latency SLO without tipping into timeouts.
+description: "happy → latency spike → error burst → retriever outage → baseline"
+cooldownSeconds: 300
+
+phases:
+  - name: latency-spike
+    target: model-proxy
+    startSeconds: 420 # minute 7
+    durationSeconds: 180 # 3 minutes
+    params:
+      latencyBaseMs: 2500
+      latencyGammaScaleMs: 600
+      latencyMaxMs: 6000 # < gateway UPSTREAM_TIMEOUT_MS (8000): slow, not timed out
+
+  - name: error-burst
+    target: model-proxy
+    startSeconds: 780 # minute 13
+    durationSeconds: 120 # 2 minutes
+    params:
+      p500: 0.6
+
+  - name: retriever-outage
+    target: retriever
+    startSeconds: 1140 # minute 19
+    durationSeconds: 120 # 2 minutes
+    params:
+      outage: true
