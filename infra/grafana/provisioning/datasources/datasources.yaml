@@ -49,7 +49,23 @@ datasources:
             value: service_name
       tracesToMetrics:
         datasourceUid: mimir
+      # Phase 6: from a span, jump to the CPU profile of that service around the
+      # span's time window — the "why was this request slow" drill-down.
+      tracesToProfiles:
+        datasourceUid: pyroscope
+        profileTypeId: "process_cpu:cpu:nanoseconds:cpu:nanoseconds"
+        tags:
+          - key: service.name
+            value: service_name
       serviceMap:
         datasourceUid: mimir
       nodeGraph:
         enabled: true
+
+  # Pyroscope (continuous profiling) — Phase 6. Backs the Profiles dashboard and
+  # the trace -> profile drill-down configured on the Tempo data source above.
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    access: proxy
+    url: http://pyroscope:4040

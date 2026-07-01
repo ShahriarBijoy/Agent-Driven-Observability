@@ -6,6 +6,12 @@ import { generateCompletion } from "./generator";
 
 export interface CompleteServiceDeps {
   readonly faults: FaultConfig;
+  /**
+   * Resolve the *effective* fault config per request — lets the Phase-6 chaos
+   * control plane apply runtime overrides without restarting. Defaults to the
+   * static `faults` (so tests stay deterministic).
+   */
+  readonly resolveFaults?: () => FaultConfig;
   /** Injected RNG (defaults to Math.random); overridden in tests. */
   readonly rng?: Rng;
   /** Injected clock for clustering windows (defaults to Date.now). */
@@ -25,10 +31,11 @@ export interface CompleteService {
 export function createCompleteService(deps: CompleteServiceDeps): CompleteService {
   const rng = deps.rng ?? Math.random;
   const clock = deps.now ?? Date.now;
+  const resolveFaults = deps.resolveFaults ?? (() => deps.faults);
 
   return {
     async complete(req) {
-      const outcome = decideFault(deps.faults, rng, clock());
+      const outcome = decideFault(resolveFaults(), rng, clock());
 
       switch (outcome.kind) {
         case "error_500":

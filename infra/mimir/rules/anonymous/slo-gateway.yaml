@@ -1,0 +1,89 @@
+# SLO recording rules for the gateway (Plan §p6 task 3), compiled from
+# slo/gateway-availability.yaml and slo/gateway-latency.yaml.
+#
+# The Mimir ruler loads these because they live under the anonymous/ tenant dir
+# (multitenancy_enabled: false → the effective tenant is "anonymous").
+#
+# For each SLO we record:
+#   - the error ratio (bad / total) over each burn-rate window (5m/1h/30m/6h),
+#     which the Grafana burn-rate alerts compare against a fixed threshold;
+#   - an instantaneous SLI (success ratio, 5m) for dashboards;
+#   - the rolling 28-day compliance number.
+#
+# Denominators are clamp_min(..., 1) so an idle window reads as 0 error, not a
+# divide-by-zero. Numerators are counts (not ratios) so no-traffic → 0 slow/bad.
+groups:
+  - name: slo-gateway-availability
+    interval: 1m
+    rules:
+      # bad = 5xx /v1/chat responses; error ratio = bad / total.
+      - record: slo:gateway_availability:error_ratio5m
+        expr: |
+          sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code=~"5.."}[5m]))
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[5m])), 1)
+      - record: slo:gateway_availability:error_ratio1h
+        expr: |
+          sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code=~"5.."}[1h]))
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[1h])), 1)
+      - record: slo:gateway_availability:error_ratio30m
+        expr: |
+          sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code=~"5.."}[30m]))
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[30m])), 1)
+      - record: slo:gateway_availability:error_ratio6h
+        expr: |
+          sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code=~"5.."}[6h]))
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[6h])), 1)
+      # Instantaneous SLI (success ratio) for dashboards.
+      - record: slo:gateway_availability:sli_ratio5m
+        expr: 1 - slo:gateway_availability:error_ratio5m
+
+  - name: slo-gateway-latency
+    interval: 1m
+    rules:
+      # bad = requests slower than 1.5s = total - (requests in the le=1.5 bucket).
+      - record: slo:gateway_latency:error_ratio5m
+        expr: |
+          (
+            sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[5m]))
+            - sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[5m]))
+          )
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[5m])), 1)
+      - record: slo:gateway_latency:error_ratio1h
+        expr: |
+          (
+            sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[1h]))
+            - sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[1h]))
+          )
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[1h])), 1)
+      - record: slo:gateway_latency:error_ratio30m
+        expr: |
+          (
+            sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[30m]))
+            - sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[30m]))
+          )
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[30m])), 1)
+      - record: slo:gateway_latency:error_ratio6h
+        expr: |
+          (
+            sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[6h]))
+            - sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[6h]))
+          )
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[6h])), 1)
+      - record: slo:gateway_latency:sli_ratio5m
+        expr: 1 - slo:gateway_latency:error_ratio5m
+
+  - name: slo-gateway-compliance
+    interval: 5m
+    rules:
+      # Rolling 28-day compliance (the SLO number you report). Expensive range,
+      # so recorded at a slower interval than the burn-rate ratios above.
+      - record: slo:gateway_availability:ratio28d
+        expr: |
+          1 - (
+            sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code=~"5.."}[28d]))
+            / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[28d])), 1)
+          )
+      - record: slo:gateway_latency:ratio28d
+        expr: |
+          sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[28d]))
+          / clamp_min(sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[28d])), 1)

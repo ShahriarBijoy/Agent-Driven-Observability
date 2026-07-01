@@ -4,6 +4,8 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 
 ## Status
 
+Phase 6 (Chaos, SLOs & production polish) complete — the lab can now produce an incident on purpose and narrate it end to end. A clock-driven **chaos scheduler** (`bun run chaos:run`) reads a YAML timeline (happy → latency spike → error burst → retriever outage → baseline) and drives dev-only `/admin/chaos` control planes on the model-proxy and retriever, so failures are repeatable and genuinely move the SLIs. Three **SLOs** live as source-of-truth specs in `slo/*.yaml` (availability 99.5%, latency 95% < 1.5s, RAG quality 90% top-1 ≥ 0.6), compiled into **Mimir recording rules** and **multi-window multi-burn-rate** Grafana alerts (fast-burn pages, slow-burn tickets) that route to the incident reporter. Alloy gains **cardinality control** (drops unbounded metric labels; a Mimir series cap + self-scrape + alert) and **tail-based sampling** (keep every error/slow trace + 10% of the rest). **Pyroscope** profiles the Bun services via an opt-in **eBPF** profiler (Bun uses JavaScriptCore, so V8-based Node profilers can't; trace→profile correlation + a Profiles dashboard). Browser **RUM** now emits real metrics (request rate, error rate, LCP) behind a "Frontend" dashboard row. The keystone is `bun run demo:incident` — one script that injects chaos, waits for the postmortem in the incident inbox, and runs an RCA follow-up. See `docs/adr/005-chaos-slos-and-production-polish.md`, `docs/learning-notes.md`, and `docs/PLAN.html` section #p6.
+
 Phase 5 (Claude agents) complete — the control plane is now backed by a real agent-service. **`apps/agent-service`** (FastAPI + the **Claude Agent SDK**, managed with `uv`) hosts five agents that read the telemetry plane and act on it: an **RCA assistant** (interactive chat), an **incident reporter** (triggered by a Grafana alert → Markdown postmortem + an `incidents` row), a **dashboard generator** (natural-language brief → a real Grafana dashboard), a **runbook executor** (walks `runbooks/*.md` with **blocking per-step approvals**), and an **auto-fixer** (fixes a bug in a **contained clone** and opens a PR behind an approval gate). All five share one toolkit — `loki_query` / `tempo_query` / `mimir_query` / `marquez_lineage` / `pg_select` / `grafana_create_dashboard` / `gh_open_pr` / `runbook_read` / `request_approval` / `save_artifact`, registered as Claude Agent SDK tools — so only the system prompt and allow-list differ per agent. Every run streams over **SSE** in the `@obs/contracts` wire format (the Phase-4 web UI is unchanged), persists to a five-table audit schema in Postgres, and appears in **Tempo** as one `agent.<kind>` trace with a `tool.<name>` child span per tool call. The web BFF's echo agent is gone: `agent-client.ts` and `/api/agents/chat` now proxy the real service. The SDK authenticates against your local Claude Code session — no API key. See `docs/PLAN.html` section #p5.
 
 Phase 4 (Frontend) complete — the lab has a real control plane. **`apps/web`** is a TanStack Start app (React 19, Tailwind v4) on **http://localhost:3003**, themed entirely from **`@obs/ui`** design tokens (warm off-black, sodium amber, Fraunces/IBM Plex Sans/JetBrains Mono). The home page reads golden signals from Mimir and recent incidents/agent-runs from Postgres; `/telemetry` and `/lineage` embed Grafana (kiosk, anonymous) and Marquez in iframes driven by a top-bar time-range control; `/agents` streams a chat over **SSE** against a placeholder **echo agent** in the BFF — including live tool-call events and a working **approval gate** on the run-detail page; `/incidents` renders Markdown postmortems; `/runbooks` lists `runbooks/*.md` with a "run with executor" launcher; `/settings` shows the dev token, tenant registry, and the agent permission matrix. The browser itself is instrumented (OTel web SDK → Alloy), so frontend fetch spans join the gateway's trace tree. The agent wire contract (runs, stream events, approvals) lives in `@obs/contracts`; Phase 5's agent-service replaces the echo agent behind the same seam (`apps/web/src/server/agent-client.ts`).
@@ -209,6 +211,34 @@ the `agent.<kind>` parent span with a `tool.<name>` child per tool call.
 > The agent-service binds IPv4; the web's `AGENT_SERVICE_URL` defaults to
 > `http://127.0.0.1:8090` (on Windows, `localhost` may resolve to IPv6 first and refuse
 > the BFF's server-side fetch).
+
+### Run chaos, SLOs & the incident demo (Phase 6)
+
+With the full lab up (subject + observability) and the agent-service on the host:
+
+```bash
+# Scheduled chaos on a clock (full 26-min cycle; drives the SLO burn-rate alerts).
+bun run chaos:run                       # apps/load-generator/chaos/full.yaml
+
+# The keystone: one on-purpose incident, end to end (~6-8 min). Injects a chaos
+# error burst, waits for the reporter's postmortem in the incident inbox, then
+# runs an RCA follow-up. Needs the agent-service on :8090 (it can't auto-start it).
+bun run demo:incident
+```
+
+The SLO specs live in `slo/*.yaml`; recording rules in `infra/mimir/rules/anonymous/`; burn-rate
+and cardinality alerts in `infra/grafana/provisioning/alerting/rules.yaml`. Cardinality scrubbing
+and tail sampling are in `infra/alloy/config.alloy`. Continuous profiling is **opt-in** (needs a
+host with eBPF/BTF):
+
+```bash
+docker compose -f infra/compose.yml -f infra/compose.observability.yml \
+  --profile profiling up -d alloy-profiler   # then open Grafana → "Gateway · Profiles"
+```
+
+New in Grafana: SLO burn-rate + cardinality alerts, a **Frontend (browser RUM)** row on the
+gateway dashboard, and a **Profiles** flame-graph dashboard (Pyroscope on :4040). A plain-language
+walkthrough is in `docs/phase-6-explained.html`.
 
 ### Service addresses (after `docker compose up`)
 

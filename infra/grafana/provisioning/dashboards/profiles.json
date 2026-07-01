@@ -1,0 +1,61 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "content": "## Continuous profiling (Pyroscope)\n\nCPU flame graph for the **gateway**, pushed by the eBPF profiler. To correlate a *slow request* to a CPU profile: open a slow gateway trace in **Explore → Tempo**, expand a span, and follow **Profiles for this span** (Tempo → Pyroscope `tracesToProfiles`).\n\nThe gateway runs on Bun (JavaScriptCore, not V8), so profiles come from eBPF — enable the opt-in profiler with `--profile profiling`. If this panel is empty, the profiler isn't running or your host lacks eBPF/BTF.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "13.0.1",
+      "title": "How to read this",
+      "type": "text"
+    },
+    {
+      "datasource": { "type": "grafana-pyroscope-datasource", "uid": "pyroscope" },
+      "description": "Gateway CPU time by call stack (eBPF process_cpu profile).",
+      "gridPos": { "h": 20, "w": 24, "x": 0, "y": 4 },
+      "id": 2,
+      "targets": [
+        {
+          "datasource": { "type": "grafana-pyroscope-datasource", "uid": "pyroscope" },
+          "groupBy": [],
+          "labelSelector": "{service_name=\"gateway\"}",
+          "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+          "queryType": "profile",
+          "refId": "A"
+        }
+      ],
+      "title": "Gateway · CPU flame graph",
+      "type": "flamegraph"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["gateway", "profiles", "pyroscope"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Gateway · Profiles",
+  "uid": "gateway-profiles",
+  "version": 1,
+  "weekStart": ""
+}

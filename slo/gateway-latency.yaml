@@ -1,0 +1,45 @@
+# SLO: gateway latency
+#
+# 95% of /v1/chat requests complete under 1.5s over a rolling 28-day window.
+# Compiled by hand into:
+#   - Mimir recording rules  → infra/mimir/rules/slo-gateway.yaml
+#   - Grafana burn-rate alerts → infra/grafana/provisioning/alerting/rules.yaml (group "slo-burn")
+slo:
+  name: gateway-latency
+  service: gateway
+  description: 95% of /v1/chat requests complete under 1.5s.
+  objective: 0.95 # target fast-enough ratio
+  window: 28d
+  # error budget = 1 - objective = 0.05 (5% of requests may be slow)
+
+  # SLI: a latency-threshold ratio. "good" counts requests in the le=1.5s
+  # histogram bucket (the 1.5 boundary is provisioned in @obs/telemetry so this
+  # is exact); "total" is all /v1/chat requests.
+  sli:
+    type: ratio
+    unit: request
+    threshold: 1.5s
+    good: |
+      sum(rate(request_duration_seconds_bucket{service="gateway", http_route="/v1/chat", le="1.5"}[$window]))
+    total: |
+      sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[$window]))
+
+  # A loose (95%) objective has a large 5% budget, so the burn-rate thresholds
+  # translate to high bad-ratios — the alerts fire only on a real latency storm
+  # (>56–67% of requests slow), which is exactly what the Phase-6 latency-spike
+  # chaos produces.
+  burn_rate:
+    fast: # page: 2% of the 28d budget in 1h
+      budget_fraction: 0.02
+      long_window: 1h
+      short_window: 5m
+      burn_rate_threshold: 13.44 # 0.02 * (28d / 1h)
+      error_ratio_threshold: 0.672 # 13.44 * 0.05
+      severity: page
+    slow: # ticket: 10% of the budget in 6h
+      budget_fraction: 0.10
+      long_window: 6h
+      short_window: 30m
+      burn_rate_threshold: 11.2 # 0.10 * (28d / 6h)
+      error_ratio_threshold: 0.56 # 11.2 * 0.05
+      severity: warning

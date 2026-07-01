@@ -1,0 +1,36 @@
+# SLO recording rules for RAG retrieval quality (Plan §p6 task 3), compiled from
+# slo/rag-quality.yaml. Loaded by the Mimir ruler under the anonymous/ tenant.
+#
+# RAG quality has a loose (90%) objective, so burn-rate alerting saturates (see
+# slo/rag-quality.yaml). We therefore record the SLI over the alert window (1h)
+# and the 28-day compliance; the alert compares sli_ratio1h to the objective.
+#
+# The SLI is written as 1 - bad_ratio (bad = top-1 score <= 0.6, the le=0.6
+# bucket). That way an *idle* window reads 1.0 (healthy) rather than 0, so the
+# "SLI below objective" alert never false-fires when there is no traffic.
+groups:
+  - name: slo-rag-quality
+    interval: 1m
+    rules:
+      - record: slo:rag_quality:sli_ratio1h
+        expr: |
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[1h]))
+            / clamp_min(sum(rate(retrieval_top_score_count[1h])), 1)
+          )
+      - record: slo:rag_quality:sli_ratio5m
+        expr: |
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[5m]))
+            / clamp_min(sum(rate(retrieval_top_score_count[5m])), 1)
+          )
+
+  - name: slo-rag-compliance
+    interval: 5m
+    rules:
+      - record: slo:rag_quality:ratio28d
+        expr: |
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[28d]))
+            / clamp_min(sum(rate(retrieval_top_score_count[28d])), 1)
+          )

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run src/main.ts",
     "start": "bun run src/main.ts",
+    "chaos": "bun run src/chaos.ts",
     "build": "echo \"@obs/load-generator: build (noop)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -14,6 +15,7 @@
   "dependencies": {
     "@obs/contracts": "workspace:*",
     "@obs/domain": "workspace:*",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

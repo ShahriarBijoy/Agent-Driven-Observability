@@ -16,6 +16,7 @@ import { runWithParent } from "../../platform/lineage-context";
 import {
   recordCacheHit,
   recordRetrievalRelevance,
+  recordRetrievalTopScore,
   recordTokensIn,
   recordTokensOut,
 } from "../../platform/metrics";
@@ -103,9 +104,12 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
             }),
           );
 
-          // Relevance + cache metrics from the retrieval outcome.
+          // Relevance + cache metrics from the retrieval outcome. The top-1
+          // (best) score feeds the RAG-quality SLO; per-chunk scores feed the
+          // relevance histogram.
           const scores = chunks.map((chunk) => chunk.score);
           for (const score of scores) recordRetrievalRelevance(score);
+          if (scores.length > 0) recordRetrievalTopScore(Math.max(...scores));
           recordCacheHit(embedded.cached);
 
           // 2. build the context from chunk bodies
