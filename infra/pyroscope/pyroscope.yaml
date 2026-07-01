@@ -1,0 +1,6 @@
+# Pyroscope (continuous profiling) — monolithic dev config. Runs all-in-one with
+# local filesystem storage; profiles are pushed in by the eBPF profiler (see
+# infra/alloy/profiler.alloy). Dev-only — not for production.
+server:
+  http_listen_port: 4040
+  log_level: warn

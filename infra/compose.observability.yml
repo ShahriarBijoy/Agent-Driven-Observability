@@ -23,6 +23,7 @@ volumes:
   tempo-data:
   mimir-data:
   grafana-data:
+  pyroscope-data:
 
 services:
   alloy:
@@ -77,6 +78,44 @@ services:
       - mimir-data:/data/mimir
     ports:
       - "9009:9009"
+    networks:
+      - obs
+
+  # Continuous profiling (Phase 6). The server is always up so its Grafana
+  # datasource and the profiles dashboard resolve; profiles are pushed in by the
+  # opt-in eBPF profiler below.
+  pyroscope:
+    image: grafana/pyroscope:1.14.0
+    command: ["-config.file=/etc/pyroscope/pyroscope.yaml"]
+    volumes:
+      - ./pyroscope/pyroscope.yaml:/etc/pyroscope/pyroscope.yaml:ro
+      - pyroscope-data:/data
+    ports:
+      - "4040:4040"
+    networks:
+      - obs
+
+  # eBPF profiler (Phase 6) — OPT-IN via `--profile profiling` so it can never
+  # affect the default `obs up` stack. Bun runs on JavaScriptCore (not V8), so
+  # V8-based Node profilers can't see the gateway; eBPF profiles at the kernel
+  # level, language-agnostic. Needs a Linux host / Docker Desktop with eBPF+BTF,
+  # privileged, and pid: host. See infra/alloy/profiler.alloy.
+  alloy-profiler:
+    image: grafana/alloy:v1.16.2
+    command:
+      - run
+      - /etc/alloy/profiler.alloy
+      - --server.http.listen-addr=0.0.0.0:12346
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./alloy/profiler.alloy:/etc/alloy/profiler.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    privileged: true
+    pid: host
+    profiles:
+      - profiling
+    depends_on:
+      - pyroscope
     networks:
       - obs
 

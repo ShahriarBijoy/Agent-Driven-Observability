@@ -1,0 +1,59 @@
+// Grafana Alloy — eBPF profiler (Phase 6). Ships CPU profiles of the lab's
+// subject services to Pyroscope so a slow span can be correlated to a flame
+// graph in Grafana.
+//
+// WHY eBPF and not the Node SDK: the gateway (and the other TS services) run on
+// Bun, which uses JavaScriptCore, not V8. Pyroscope's Node integration
+// (@pyroscope/nodejs) relies on the V8 CPU profiler, so it cannot see a Bun
+// process. eBPF profiles at the kernel level and is language-agnostic — it works
+// for Bun, Python, anything.
+//
+// REQUIREMENTS (why this is opt-in, behind the compose `profiling` profile):
+// a Linux host — or Docker Desktop's Linux VM — with eBPF and kernel BTF, run
+// privileged with `pid: host` and the docker socket mounted. This is the one
+// Phase-6 piece that depends on the host kernel; if profiles don't appear,
+// check that your kernel exposes BTF and that the container is privileged. The
+// container/service labels below may need tuning for your Docker runtime.
+
+logging {
+  level = "warn"
+}
+
+// Discover running containers via the Docker socket.
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Keep only the subject services and stamp service_name to match the trace and
+// metric service labels (so Tempo's tracesToProfiles link lines up).
+discovery.relabel "subjects" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_id"]
+    target_label  = "__container_id__"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(gateway|embedder|retriever|model-proxy)"
+    target_label  = "service_name"
+    action        = "replace"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(gateway|embedder|retriever|model-proxy)"
+    action        = "keep"
+  }
+}
+
+// Profile the selected containers with eBPF and forward to Pyroscope.
+pyroscope.ebpf "subjects" {
+  forward_to = [pyroscope.write.default.receiver]
+  targets    = discovery.relabel.subjects.output
+}
+
+pyroscope.write "default" {
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+}
