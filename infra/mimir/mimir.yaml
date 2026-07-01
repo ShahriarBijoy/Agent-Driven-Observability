@@ -52,3 +52,12 @@ limits:
   out_of_order_time_window: 1h
   # Apply Prometheus-style suffixes (_total, _seconds) to OTLP metrics.
   otel_metric_suffixes_enabled: true
+  # Phase 6 — cardinality budget. Cap the active series a single tenant may hold.
+  # The lab's healthy footprint is a few thousand series, so this is generous
+  # headroom; a label-cardinality explosion (e.g. an un-scrubbed user_id) trips
+  # it and Mimir rejects the excess, incrementing
+  # cortex_discarded_samples_total{reason=~".*series.*"} — which the
+  # "mimir-cardinality" Grafana alert watches. To *see* it fire, lower this to a
+  # few hundred and drive traffic. Alloy also drops the usual offenders upstream
+  # (see infra/alloy/config.alloy) so this limit is a backstop, not the first line.
+  max_global_series_per_user: 100000

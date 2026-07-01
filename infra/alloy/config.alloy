@@ -3,8 +3,11 @@
 //
 // Metrics take the OTLP-direct path to Mimir (otelcol.exporter.otlphttp -> /otlp)
 // rather than the otelcol.exporter.prometheus -> remote_write chain, because the
-// latter drops OTLP exemplars during conversion. Kept intentionally small; it is
-// extended in Phase 6.
+// latter drops OTLP exemplars during conversion.
+//
+// Phase 6 adds two collector-layer controls on the metrics and trace paths:
+//   - cardinality: strip unbounded labels from metric datapoints before Mimir
+//   - tail sampling: keep every error / slow trace, sample the boring rest
 
 otelcol.receiver.otlp "default" {
   grpc {
@@ -22,9 +25,77 @@ otelcol.receiver.otlp "default" {
   }
 
   output {
-    metrics = [otelcol.processor.batch.default.input]
+    // Metrics pass through the cardinality scrub before batching; traces pass
+    // through the tail-sampling processor; logs go straight to the batcher.
+    metrics = [otelcol.processor.attributes.scrub.input]
     logs    = [otelcol.processor.batch.default.input]
-    traces  = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.tail_sampling.default.input]
+  }
+}
+
+// Cardinality control (Phase 6). Storage cost in Mimir is roughly proportional
+// to the number of distinct label combinations, so unbounded labels are the
+// classic way to blow up a metrics bill. Drop the usual offenders from metric
+// datapoints BEFORE they reach Mimir. Traces and logs keep these attributes —
+// they legitimately need per-request context (and Tempo/Loki are not indexed by
+// them). Note: *dropping* reduces cardinality; *hashing* only pseudonymises and
+// keeps the same cardinality, so for metrics we delete.
+otelcol.processor.attributes "scrub" {
+  action {
+    key    = "user_id"
+    action = "delete"
+  }
+  action {
+    key    = "request_id"
+    action = "delete"
+  }
+  action {
+    key    = "session_id"
+    action = "delete"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Tail-based sampling (Phase 6). Decides whether to keep a trace AFTER it ends,
+// so the interesting ones survive: every error and every slow (>1.5s) trace is
+// kept, and 10% of the boring remainder. This cuts Tempo storage sharply while
+// preserving exactly the traces you reach for during an incident.
+otelcol.processor.tail_sampling "default" {
+  // Buffer a trace this long after its last span before deciding.
+  decision_wait = "10s"
+
+  // Keep anything with an error status on any span.
+  policy {
+    name = "errors"
+    type = "status_code"
+    status_code {
+      status_codes = ["ERROR"]
+    }
+  }
+
+  // Keep slow traces — total duration at or above the 1.5s latency SLO.
+  policy {
+    name = "slow"
+    type = "latency"
+    latency {
+      threshold_ms = 1500
+    }
+  }
+
+  // Sample 10% of everything else.
+  policy {
+    name = "sample-rest"
+    type = "probabilistic"
+    probabilistic {
+      sampling_percentage = 10
+    }
+  }
+
+  output {
+    traces = [otelcol.processor.batch.default.input]
   }
 }
 
@@ -57,5 +128,27 @@ otelcol.exporter.otlphttp "mimir" {
 otelcol.exporter.otlphttp "loki" {
   client {
     endpoint = "http://loki:3100/otlp"
+  }
+}
+
+// --- Mimir self-monitoring (Phase 6 cardinality guardrail) -------------------
+// Scrape Mimir's own /metrics so the "mimir-cardinality" alert has something to
+// watch: crossing max_global_series_per_user increments
+// cortex_discarded_samples_total{reason=~".*series.*"}. These internal metrics
+// carry no exemplars, so plain remote-write is fine here — the app-metric OTLP
+// path above stays exemplar-safe and untouched.
+prometheus.scrape "mimir_self" {
+  targets = [{
+    "__address__" = "mimir:9009",
+    "job"         = "mimir",
+  }]
+  metrics_path    = "/metrics"
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.mimir_self.receiver]
+}
+
+prometheus.remote_write "mimir_self" {
+  endpoint {
+    url = "http://mimir:9009/api/v1/push"
   }
 }
