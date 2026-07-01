@@ -5,34 +5,32 @@
 # slo/rag-quality.yaml). We therefore record the SLI over the alert window (1h)
 # and the 28-day compliance; the alert compares sli_ratio1h to the objective.
 #
-# bad  = retrievals whose top-1 score is <= 0.6 (the le=0.6 histogram bucket).
-# good = total - bad.
+# The SLI is written as 1 - bad_ratio (bad = top-1 score <= 0.6, the le=0.6
+# bucket). That way an *idle* window reads 1.0 (healthy) rather than 0, so the
+# "SLI below objective" alert never false-fires when there is no traffic.
 groups:
   - name: slo-rag-quality
     interval: 1m
     rules:
       - record: slo:rag_quality:sli_ratio1h
         expr: |
-          (
-            sum(rate(retrieval_top_score_count[1h]))
-            - sum(rate(retrieval_top_score_bucket{le="0.6"}[1h]))
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[1h]))
+            / clamp_min(sum(rate(retrieval_top_score_count[1h])), 1)
           )
-          / clamp_min(sum(rate(retrieval_top_score_count[1h])), 1)
       - record: slo:rag_quality:sli_ratio5m
         expr: |
-          (
-            sum(rate(retrieval_top_score_count[5m]))
-            - sum(rate(retrieval_top_score_bucket{le="0.6"}[5m]))
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[5m]))
+            / clamp_min(sum(rate(retrieval_top_score_count[5m])), 1)
           )
-          / clamp_min(sum(rate(retrieval_top_score_count[5m])), 1)
 
   - name: slo-rag-compliance
     interval: 5m
     rules:
       - record: slo:rag_quality:ratio28d
         expr: |
-          (
-            sum(rate(retrieval_top_score_count[28d]))
-            - sum(rate(retrieval_top_score_bucket{le="0.6"}[28d]))
+          1 - (
+            sum(rate(retrieval_top_score_bucket{le="0.6"}[28d]))
+            / clamp_min(sum(rate(retrieval_top_score_count[28d])), 1)
           )
-          / clamp_min(sum(rate(retrieval_top_score_count[28d])), 1)

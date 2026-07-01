@@ -146,3 +146,181 @@ groups:
           severity: page
         annotations:
           summary: prompt-length drift (KS) above 0.4 for 10 minutes
+
+  # SLO burn-rate alerts (Phase 6), queried against the Mimir recording rules in
+  # infra/mimir/rules/anonymous/. Each burn-rate alert fires only when BOTH its
+  # short and long windows exceed the burn-rate threshold — encoded directly in
+  # PromQL as (short > bool T) * (long > bool T), which is 1 iff both do, so the
+  # Grafana threshold is simply "> 0". severity=page routes to the agent-webhook
+  # (incident reporter) as sev1; severity=warning as sev2. tenant=acme so the
+  # incident lands in the default inbox. See slo/*.yaml for the maths.
+  - orgId: 1
+    name: slo-burn
+    folder: Lab Alerts
+    interval: 1m
+    rules:
+      - uid: slo-avail-fast
+        title: SLO gateway availability — fast burn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: "(slo:gateway_availability:error_ratio5m > bool 0.0672) * (slo:gateway_availability:error_ratio1h > bool 0.0672)"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 2m
+        labels:
+          severity: page
+          slo: gateway-availability
+          tenant: acme
+        annotations:
+          summary: gateway availability error budget burning fast (2% of the 28d budget in 1h; 5m & 1h windows)
+      - uid: slo-avail-slow
+        title: SLO gateway availability — slow burn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: "(slo:gateway_availability:error_ratio30m > bool 0.056) * (slo:gateway_availability:error_ratio6h > bool 0.056)"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 15m
+        labels:
+          severity: warning
+          slo: gateway-availability
+          tenant: acme
+        annotations:
+          summary: gateway availability error budget burning slowly (10% of the 28d budget in 6h; 30m & 6h windows)
+      - uid: slo-latency-fast
+        title: SLO gateway latency — fast burn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: "(slo:gateway_latency:error_ratio5m > bool 0.672) * (slo:gateway_latency:error_ratio1h > bool 0.672)"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 2m
+        labels:
+          severity: page
+          slo: gateway-latency
+          tenant: acme
+        annotations:
+          summary: gateway latency error budget burning fast (2% of the 28d budget in 1h; 5m & 1h windows)
+      - uid: slo-latency-slow
+        title: SLO gateway latency — slow burn
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: "(slo:gateway_latency:error_ratio30m > bool 0.56) * (slo:gateway_latency:error_ratio6h > bool 0.56)"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 15m
+        labels:
+          severity: warning
+          slo: gateway-latency
+          tenant: acme
+        annotations:
+          summary: gateway latency error budget burning slowly (10% of the 28d budget in 6h; 30m & 6h windows)
+      - uid: slo-rag-quality
+        title: SLO RAG quality — below objective
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: "slo:rag_quality:sli_ratio1h"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 0.9
+        noDataState: OK
+        execErrState: OK
+        for: 10m
+        labels:
+          severity: warning
+          slo: rag-quality
+          tenant: acme
+        annotations:
+          summary: RAG top-1 relevance below the 90% objective over the last hour (burn-rate alerting saturates for a loose SLO)
