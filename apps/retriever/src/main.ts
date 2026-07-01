@@ -23,7 +23,7 @@ const lineage = createLineageEmitter({
 const app = createApp("retriever");
 mountQuerySlice(app, { store, lineage });
 
-// Dev/lab-only runtime chaos control plane (ADR-006). Set CHAOS_CONTROL_ENABLED
+// Dev/lab-only runtime chaos control plane (ADR-005). Set CHAOS_CONTROL_ENABLED
 // =false to harden the service (drops the /admin/chaos routes entirely).
 const chaosEnabled = process.env["CHAOS_CONTROL_ENABLED"] !== "false";
 if (chaosEnabled) mountChaosSlice(app);

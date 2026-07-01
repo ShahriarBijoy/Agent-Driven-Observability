@@ -31,7 +31,7 @@ const OverrideSchema = z
   .strict();
 
 /**
- * Mount the runtime fault-control plane (dev/lab only, ADR-006):
+ * Mount the runtime fault-control plane (dev/lab only, ADR-005):
  *   GET    /admin/chaos  → { base, override, effective }
  *   POST   /admin/chaos  → merge a partial fault override, returns the snapshot
  *   DELETE /admin/chaos  → clear the override (back to the env base)

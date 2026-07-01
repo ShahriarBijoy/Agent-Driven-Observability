@@ -1,7 +1,7 @@
 import type { FaultConfig } from "../../platform/config";
 
 /**
- * Runtime fault overrides — a dev/lab-only control plane (ADR-006). The Phase-6
+ * Runtime fault overrides — a dev/lab-only control plane (ADR-005). The Phase-6
  * chaos scheduler POSTs partial fault knobs to `/admin/chaos` to modulate the
  * model-proxy on a clock (latency spikes, error bursts) WITHOUT restarting the
  * container; the override is merged over the env-loaded base config on every

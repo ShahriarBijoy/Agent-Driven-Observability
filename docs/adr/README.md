@@ -4,3 +4,4 @@
 - [ADR-002: The subject system (Phase 1)](002-subject-system.md)
 - [ADR-003: Application observability (Phase 2)](003-application-observability.md)
 - [ADR-004: Data observability (Phase 3)](004-data-observability.md)
+- [ADR-005: Chaos, SLOs, and production-grade polish (Phase 6)](005-chaos-slos-and-production-polish.md)

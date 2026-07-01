@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phase 6, Explained Simply — Chaos, SLOs &amp; Polish</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0e0d0b;
+        --bg-elev: #16140f;
+        --bg-card: #1b1814;
+        --ink: #ece4d4;
+        --ink-dim: #b8ad95;
+        --ink-faint: #7a7163;
+        --rule: #2a261e;
+        --rule-soft: #1f1c16;
+        --signal: #e5a663; /* telemetry amber — the Phase 6 accent */
+        --signal-dim: #b5814a;
+        --data: #7ab0a6; /* cool teal */
+        --warn: #d96e4e;
+        --good: #8bbf6b;
+        --shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 24px 60px -30px rgba(0, 0, 0, 0.7);
+        --maxw: 820px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: var(--bg);
+        color: var(--ink);
+      }
+      body {
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
+        font-size: 16.5px;
+        line-height: 1.62;
+        margin: 0;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        background-image:
+          radial-gradient(1200px 600px at 80% -10%, rgba(229, 166, 99, 0.08), transparent 60%),
+          radial-gradient(900px 500px at -10% 110%, rgba(217, 110, 78, 0.05), transparent 60%);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 72px 28px 140px;
+      }
+      h1,
+      h2,
+      h3 {
+        font-family: "Fraunces", Georgia, serif;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        line-height: 1.18;
+      }
+      h1 {
+        font-size: 44px;
+        margin: 0 0 8px;
+      }
+      h2 {
+        font-size: 29px;
+        margin: 64px 0 6px;
+        scroll-margin-top: 24px;
+      }
+      h3 {
+        font-size: 21px;
+        margin: 38px 0 6px;
+      }
+      .eyebrow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--signal);
+        margin-bottom: 18px;
+      }
+      .lede {
+        font-size: 19px;
+        color: var(--ink-dim);
+        font-family: "Fraunces", Georgia, serif;
+        font-style: italic;
+        font-weight: 300;
+        line-height: 1.5;
+        margin: 14px 0 0;
+      }
+      p {
+        margin: 14px 0;
+      }
+      a {
+        color: var(--signal);
+      }
+      strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .section-num {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        color: var(--signal);
+        display: block;
+        margin-bottom: 2px;
+        letter-spacing: 0.04em;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid var(--rule);
+        margin: 56px 0;
+      }
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 22px 24px;
+        margin: 22px 0;
+        box-shadow: var(--shadow);
+      }
+      .analogy {
+        border-left: 3px solid var(--signal);
+        background: linear-gradient(90deg, rgba(229, 166, 99, 0.09), transparent 70%);
+        border-radius: 0 10px 10px 0;
+        padding: 14px 20px;
+        margin: 18px 0;
+      }
+      .analogy .tag,
+      .note .tag,
+      .safe .tag {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        display: block;
+        margin-bottom: 4px;
+      }
+      .analogy .tag {
+        color: var(--signal);
+      }
+      .note {
+        border-left: 3px solid var(--warn);
+        background: linear-gradient(90deg, rgba(217, 110, 78, 0.08), transparent 70%);
+        border-radius: 0 10px 10px 0;
+        padding: 14px 20px;
+        margin: 18px 0;
+        font-size: 15.5px;
+      }
+      .note .tag {
+        color: var(--warn);
+      }
+      .safe {
+        border-left: 3px solid var(--good);
+        background: linear-gradient(90deg, rgba(139, 191, 107, 0.08), transparent 70%);
+        border-radius: 0 10px 10px 0;
+        padding: 14px 20px;
+        margin: 18px 0;
+        font-size: 15.5px;
+      }
+      .safe .tag {
+        color: var(--good);
+      }
+      .pillars {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin: 26px 0;
+      }
+      @media (max-width: 720px) {
+        .pillars {
+          grid-template-columns: 1fr;
+        }
+      }
+      .pillar {
+        background: var(--bg-card);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 20px;
+        border-top: 2px solid var(--signal);
+      }
+      .pillar .icon {
+        font-size: 26px;
+        display: block;
+        margin-bottom: 8px;
+      }
+      .pillar h4 {
+        font-family: "Fraunces", serif;
+        font-size: 18px;
+        font-weight: 500;
+        margin: 0 0 6px;
+      }
+      .pillar p {
+        font-size: 14.5px;
+        color: var(--ink-dim);
+        margin: 6px 0 0;
+      }
+      .flow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        line-height: 1.85;
+        background: var(--bg-elev);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        padding: 24px 22px;
+        margin: 24px 0;
+        overflow-x: auto;
+        color: var(--ink-dim);
+        white-space: pre;
+      }
+      .flow .amber {
+        color: var(--signal);
+      }
+      .flow .teal {
+        color: var(--data);
+      }
+      .flow .red {
+        color: var(--warn);
+      }
+      .flow .green {
+        color: var(--good);
+      }
+      .flow .dim {
+        color: var(--ink-faint);
+      }
+      pre {
+        background: #100f0c;
+        border: 1px solid var(--rule);
+        border-radius: 10px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        line-height: 1.7;
+        color: #d8cfbd;
+        margin: 18px 0;
+      }
+      code {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.88em;
+        background: rgba(229, 166, 99, 0.13);
+        color: var(--signal);
+        padding: 1px 6px;
+        border-radius: 5px;
+      }
+      pre code {
+        background: none;
+        color: inherit;
+        padding: 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 22px 0;
+        font-size: 15px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--rule-soft);
+        vertical-align: top;
+      }
+      th {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-faint);
+        border-bottom: 1px solid var(--rule);
+      }
+      td code {
+        font-size: 0.82em;
+      }
+      ul,
+      ol {
+        padding-left: 22px;
+      }
+      li {
+        margin: 7px 0;
+      }
+      .foot {
+        margin-top: 72px;
+        padding-top: 24px;
+        border-top: 1px solid var(--rule);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        line-height: 1.8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="eyebrow">Phase 6 · Explained simply</div>
+      <h1>Breaking things on purpose</h1>
+      <p class="lede">
+        The lab already watches everything. Phase 6 is where it earns its keep: we cause a real
+        incident on a timer, let the system notice, alert, and narrate it — then explain it back.
+      </p>
+
+      <div class="card">
+        <strong>The one-sentence version.</strong> We taught the fake outages to run on a clock,
+        wrote down what "healthy" means as budgets we can spend, made the collector cheaper without
+        going blind, learned to profile a runtime that hides from normal profilers, and wrapped it
+        all in a single script that produces an incident and a written postmortem end to end.
+      </div>
+
+      <hr />
+
+      <h2><span class="section-num">01</span>Chaos you can schedule</h2>
+      <p>
+        A dashboard nobody has ever seen turn red is a dashboard nobody trusts. So we made failure
+        <em>repeatable</em>. A chaos scheduler reads a simple timeline and, minute by minute, tells
+        the subject services to misbehave — then tells them to stop.
+      </p>
+      <div class="analogy">
+        <span class="tag">Analogy</span>
+        Like a fire drill. The building isn't really burning, but the alarms, the exits, and the
+        people all get exercised exactly as if it were — on a schedule, so you can watch what
+        happens and do it again tomorrow.
+      </div>
+      <p>
+        The trick is that the misbehaviour has to be <em>real</em> enough to move the numbers the
+        alerts watch. So each service that owns a failure mode got a tiny, clearly-fenced
+        "control-plane" switch (dev/lab only):
+      </p>
+      <div class="pillars">
+        <div class="pillar">
+          <span class="icon">🐌</span>
+          <h4>Latency spike</h4>
+          <p>
+            Tell the model-proxy to answer slowly (but under the timeout) — requests get sluggish,
+            not broken.
+          </p>
+        </div>
+        <div class="pillar">
+          <span class="icon">💥</span>
+          <h4>Error burst</h4>
+          <p>
+            Tell the model-proxy to fail a large share of calls — the gateway turns those into 5xx.
+          </p>
+        </div>
+        <div class="pillar">
+          <span class="icon">🔌</span>
+          <h4>Dependency outage</h4>
+          <p>
+            Tell the retriever to go dark — the gateway can't complete a request and errors out.
+          </p>
+        </div>
+      </div>
+      <p>
+        The schedule lives in YAML (<code>chaos/full.yaml</code> is the full 26-minute cycle;
+        <code>chaos/demo.yaml</code> is a compressed one for the demo), and the scheduler always
+        turns the chaos back off when it's done — a service is never left broken.
+      </p>
+
+      <h2>
+        <span class="section-num">02</span>SLOs: turning "is it up?" into "how much budget is left?"
+      </h2>
+      <p>
+        "Is the site up" is a yes/no question with no room to plan. An <strong>SLO</strong> (Service
+        Level Objective) reframes it: <em>99.5% of chat requests should succeed.</em> That leftover
+        0.5% is an <strong>error budget</strong> — a real allowance you're allowed to spend.
+      </p>
+      <div class="analogy">
+        <span class="tag">Analogy</span>
+        A monthly data plan. You don't panic at the first megabyte — you watch the <em>rate</em>
+        you're burning through it. Chew up a third of the month's data in an afternoon and
+        <em>that's</em> worth a phone call.
+      </div>
+      <p>We wrote down three of these:</p>
+      <table>
+        <tr>
+          <th>SLO</th>
+          <th>Target</th>
+          <th>Meaning</th>
+        </tr>
+        <tr>
+          <td>Availability</td>
+          <td>99.5%</td>
+          <td>chat requests that don't 5xx</td>
+        </tr>
+        <tr>
+          <td>Latency</td>
+          <td>95%</td>
+          <td>chat requests finishing under 1.5s</td>
+        </tr>
+        <tr>
+          <td>RAG quality</td>
+          <td>90%</td>
+          <td>searches whose best match is actually relevant</td>
+        </tr>
+      </table>
+      <p>
+        The clever part is the alert. A naive "error rate &gt; 2%" pages you on every hiccup. A
+        <strong>multi-window burn-rate</strong> alert only fires when you're burning the budget too
+        fast over <em>two</em> timescales at once — a fast one to react quickly and a slow one to
+        confirm it isn't a blip. Fast burn pages a human; slow burn files a ticket.
+      </p>
+      <div class="note">
+        <span class="tag">An honest caveat</span>
+        This maths only works for <em>strict</em> targets. Our 90% RAG-quality SLO has a big 10%
+        budget — so big that "burning too fast" would require failing more than 100% of requests,
+        which is impossible. Rather than ship a dead alert, RAG quality just alerts when it dips
+        below the target. Knowing when a pattern <em>doesn't</em> apply is half of using it well.
+      </div>
+
+      <h2><span class="section-num">03</span>Spending less without going blind</h2>
+      <p>
+        Observability isn't free — storage grows with two things, and we tamed both at the
+        collector.
+      </p>
+      <div class="pillars">
+        <div class="pillar" style="grid-column: span 3">
+          <h4>Cardinality — the label explosion</h4>
+          <p>
+            A metric's cost is roughly the number of distinct label combinations. Attach a
+            <code>user_id</code> and one metric becomes millions. We strip those unbounded labels
+            off <em>metrics</em> before they land (traces and logs keep them — they need the
+            detail), and set a hard ceiling with an alarm if anything ever crosses it.
+          </p>
+        </div>
+      </div>
+      <div class="pillars">
+        <div class="pillar" style="grid-column: span 3">
+          <h4>Tail sampling — keep the interesting traces</h4>
+          <p>
+            Storing every single trace is wasteful; most are boring and identical. So we decide
+            <em>after</em> each trace finishes: keep <strong>every error</strong>, keep
+            <strong>every slow one</strong> (≥ 1.5s), and keep a random 10% of the rest. You lose
+            the noise and keep exactly the traces you'd reach for in an incident.
+          </p>
+        </div>
+      </div>
+      <div class="note">
+        <span class="tag">The catch we wrote down</span>
+        Throwing away traces means any count derived <em>from</em> traces is now an undercount. So
+        the numbers that must be exact — the RED dashboards and the SLOs — come from real counters,
+        not from sampled traces. Every efficiency has a measurement cost; the trick is knowing
+        which.
+      </div>
+
+      <h2><span class="section-num">04</span>Profiling a runtime that hides</h2>
+      <p>
+        A <strong>profile</strong> answers "what is the CPU actually <em>doing</em> when a request
+        is slow" — a flame graph of where the time went. The usual way is a library inside the app,
+        but ours run on <strong>Bun</strong>, whose engine (JavaScriptCore) the standard profilers
+        can't see.
+      </p>
+      <div class="analogy">
+        <span class="tag">Analogy</span>
+        The app won't wear the fitness tracker, so we watch from the outside instead — a thermal
+        camera on the whole room. <strong>eBPF</strong> profiles at the kernel level, so it doesn't
+        care what language or engine the program uses.
+      </div>
+      <p>
+        Because that camera needs special permissions on the host, it's <em>opt-in</em> — it never
+        touches the normal stack. When it's on, a slow trace in Grafana links straight to the CPU
+        flame graph for that service and moment.
+      </p>
+
+      <h2><span class="section-num">05</span>Watching from the user's chair</h2>
+      <p>
+        All the numbers so far are the <em>server's</em> view. <strong>RUM</strong> (Real User
+        Monitoring) adds the browser's: how many requests the page made, how many failed, and
+        <strong>LCP</strong> — Largest Contentful Paint, i.e. how long until the main content
+        actually appears. A new "Frontend" row on the dashboard shows it, and because the browser's
+        request is stitched into the same trace as the server's, a slow API call shows up in
+        <em>both</em> views at once.
+      </p>
+
+      <h2><span class="section-num">06</span>The whole thing, in one command</h2>
+      <p>
+        <code>bun run demo:incident</code> is the elevator pitch. It runs the entire loop while you
+        watch:
+      </p>
+      <div class="flow">
+        <span class="dim"># scripts/demo-incident.sh</span> inject chaos
+        <span class="red">error burst</span> <span class="dim">→</span> gateway starts returning 5xx
+        <span class="dim">↓</span>
+        the <span class="amber">burn-rate alert</span> fires <span class="dim">→</span> webhook to
+        the agent-service
+        <span class="dim">↓</span>
+        the <span class="teal">incident reporter</span> investigates the telemetry
+        <span class="dim">↓</span>
+        a written <span class="green">postmortem</span> appears in the incident inbox
+        <span class="dim">↓</span>
+        you ask the <span class="teal">RCA assistant</span> a follow-up — it answers from real data
+        <span class="dim">↓</span>
+        chaos ends <span class="dim">→</span> the SLIs recover <span class="dim">→</span> the alert
+        resolves
+      </div>
+      <div class="safe">
+        <span class="tag">Why it matters</span>
+        This is the payoff of every earlier phase at once: instrumentation, correlation, lineage,
+        alerting, and agents. You cause a problem on purpose, and the system notices it, explains
+        it, and recovers — and you can watch the whole story in six minutes.
+      </div>
+
+      <hr />
+      <p>
+        Observability work feels finished the day you can produce an incident on purpose, have the
+        system narrate what happened, and explain it back in your own words. That's Phase 6 — and
+        with it, the lab is complete.
+      </p>
+
+      <div class="foot">
+        AI Observability Lab · Phase 6 of 6 — Chaos, SLOs &amp; production polish<br />
+        Deeper detail: <code>docs/adr/005-chaos-slos-and-production-polish.md</code> ·
+        <code>docs/learning-notes.md</code> · <code>docs/PLAN.html#p6</code>
+      </div>
+    </div>
+  </body>
+</html>

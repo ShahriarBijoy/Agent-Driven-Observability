@@ -11,7 +11,7 @@ const ChaosSchema = z
   .strict();
 
 /**
- * Mount the retriever's chaos control plane (dev/lab only, ADR-006):
+ * Mount the retriever's chaos control plane (dev/lab only, ADR-005):
  *   GET    /admin/chaos  → current chaos state
  *   POST   /admin/chaos  → merge a partial patch ({ outage } / { errorRate })
  *   DELETE /admin/chaos  → clear chaos (back to healthy)

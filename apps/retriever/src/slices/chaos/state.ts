@@ -1,5 +1,5 @@
 /**
- * Runtime chaos state for the retriever — a dev/lab-only control plane (ADR-006).
+ * Runtime chaos state for the retriever — a dev/lab-only control plane (ADR-005).
  * The Phase-6 chaos scheduler POSTs to `/admin/chaos` to simulate a dependency
  * outage (every `/v1/retrieve` 503s) or a partial brownout (`errorRate`), which
  * the gateway surfaces as 502s — exercising the availability SLO. Module-level

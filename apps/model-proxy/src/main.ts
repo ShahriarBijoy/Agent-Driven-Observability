@@ -8,7 +8,7 @@ import { mountCompleteSlice } from "./slices/complete/slice";
 
 const config = loadConfig();
 
-// Dev/lab-only runtime fault-control plane (ADR-006). Set CHAOS_CONTROL_ENABLED
+// Dev/lab-only runtime fault-control plane (ADR-005). Set CHAOS_CONTROL_ENABLED
 // =false to harden the service (drops the /admin/chaos routes entirely).
 const chaosEnabled = process.env["CHAOS_CONTROL_ENABLED"] !== "false";
 
