@@ -1,0 +1,40 @@
+# SLO: RAG retrieval quality
+#
+# 90% of retrievals return a top-1 (best) chunk with relevance score >= 0.6,
+# over a rolling 28-day window. Compiled by hand into:
+#   - Mimir recording rules  → infra/mimir/rules/slo-rag.yaml
+#   - Grafana threshold alert → infra/grafana/provisioning/alerting/rules.yaml (group "slo-burn")
+slo:
+  name: rag-quality
+  service: gateway
+  description: 90% of retrievals have a top-1 score >= 0.6.
+  objective: 0.90
+  window: 28d
+  # error budget = 1 - objective = 0.10 (10% of retrievals may be low-relevance)
+
+  # SLI: a quality-threshold ratio over the gateway's retrieval_top_score
+  # histogram (top-1 score per request; the 0.6 boundary is provisioned so this
+  # is exact). "good" = retrievals whose best chunk scored above 0.6.
+  sli:
+    type: ratio
+    unit: retrieval
+    threshold: 0.6
+    good: |
+      (
+        sum(rate(retrieval_top_score_count[$window]))
+        - sum(rate(retrieval_top_score_bucket{le="0.6"}[$window]))
+      )
+    total: |
+      sum(rate(retrieval_top_score_count[$window]))
+
+  # NOTE — no burn-rate alert. With a 10% budget the standard burn-rate
+  # thresholds translate to an error-ratio > 1.0 (13.44 * 0.10 = 1.34), which a
+  # ratio can never exceed: multi-window burn-rate alerting is designed for
+  # *tight* SLOs (99.9%), not loose ones. For RAG quality we alert directly on
+  # the SLI falling below the objective instead (see the slo-burn group).
+  alert:
+    type: threshold
+    expr_below: 0.90 # fire when the 1h SLI drops under the objective
+    window: 1h
+    for: 10m
+    severity: warning

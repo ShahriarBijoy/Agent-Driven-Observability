@@ -1,0 +1,45 @@
+# SLO: gateway availability
+#
+# 99.5% of /v1/chat requests succeed (non-5xx) over a rolling 28-day window.
+# This is the source-of-truth spec; it is compiled by hand into:
+#   - Mimir recording rules  → infra/mimir/rules/slo-gateway.yaml
+#   - Grafana burn-rate alerts → infra/grafana/provisioning/alerting/rules.yaml (group "slo-burn")
+slo:
+  name: gateway-availability
+  service: gateway
+  description: 99.5% of /v1/chat requests succeed (non-5xx).
+  objective: 0.995 # target success ratio
+  window: 28d # rolling SLO / error-budget window
+  # error budget = 1 - objective = 0.005 (0.5% of requests may fail)
+
+  # SLI: an event ratio. "good" = non-5xx /v1/chat responses, "total" = all
+  # /v1/chat responses. $window is substituted per recording rule.
+  sli:
+    type: ratio
+    unit: request
+    good: |
+      sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat", http_status_code!~"5.."}[$window]))
+    total: |
+      sum(rate(request_duration_seconds_count{service="gateway", http_route="/v1/chat"}[$window]))
+
+  # Multi-window, multi-burn-rate alerting (Google SRE workbook). An alert fires
+  # only when BOTH its short and long windows exceed the burn-rate threshold,
+  # which suppresses single-spike false positives while staying fast.
+  #
+  #   burn_rate_threshold = budget_fraction * (window / long_window)
+  #   error_ratio_threshold = burn_rate_threshold * (1 - objective)
+  burn_rate:
+    fast: # page: burning 2% of the 28d budget in 1h
+      budget_fraction: 0.02
+      long_window: 1h
+      short_window: 5m
+      burn_rate_threshold: 13.44 # 0.02 * (28d / 1h)
+      error_ratio_threshold: 0.0672 # 13.44 * 0.005
+      severity: page
+    slow: # ticket: burning 10% of the budget in 6h
+      budget_fraction: 0.10
+      long_window: 6h
+      short_window: 30m
+      burn_rate_threshold: 11.2 # 0.10 * (28d / 6h)
+      error_ratio_threshold: 0.056 # 11.2 * 0.005
+      severity: warning

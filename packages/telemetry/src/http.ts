@@ -25,8 +25,11 @@ const HEADER_GETTER = {
   },
 };
 
-/** Second-scale buckets for HTTP server latency (RED duration). */
-const DURATION_BUCKETS_S = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
+// Second-scale buckets for HTTP server latency (RED duration). The 1.5s
+// boundary exists so the Phase-6 latency SLO ("95% of /v1/chat under 1.5s") has
+// an exact bucket edge to count against — choose your histogram boundaries to
+// match your SLO thresholds.
+const DURATION_BUCKETS_S = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2.5, 5, 10];
 
 /**
  * Hono middleware that produces one SERVER span per request and the fleet-wide
