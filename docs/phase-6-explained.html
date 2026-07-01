@@ -23,7 +23,7 @@
         --signal: #e5a663; /* telemetry amber — the Phase 6 accent */
         --signal-dim: #b5814a;
         --data: #7ab0a6; /* cool teal */
-        --warn: #d96e4e;
+        --warn: #d96e4e; /* chaos / danger */
         --good: #8bbf6b;
         --shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 24px 60px -30px rgba(0, 0, 0, 0.7);
         --maxw: 820px;
@@ -50,7 +50,7 @@
       .wrap {
         max-width: var(--maxw);
         margin: 0 auto;
-        padding: 72px 28px 140px;
+        padding: 72px 28px 60px;
       }
       h1,
       h2,
@@ -72,6 +72,7 @@
       h3 {
         font-size: 21px;
         margin: 38px 0 6px;
+        color: var(--ink);
       }
       .eyebrow {
         font-family: "JetBrains Mono", monospace;
@@ -100,6 +101,9 @@
         color: var(--ink);
         font-weight: 600;
       }
+      em {
+        color: var(--ink);
+      }
       .section-num {
         font-family: "JetBrains Mono", monospace;
         font-size: 13px;
@@ -113,6 +117,8 @@
         border-top: 1px solid var(--rule);
         margin: 56px 0;
       }
+
+      /* cards & callouts */
       .card {
         background: var(--bg-card);
         border: 1px solid var(--rule);
@@ -121,12 +127,26 @@
         margin: 22px 0;
         box-shadow: var(--shadow);
       }
-      .analogy {
-        border-left: 3px solid var(--signal);
-        background: linear-gradient(90deg, rgba(229, 166, 99, 0.09), transparent 70%);
+      .analogy,
+      .note,
+      .safe {
         border-radius: 0 10px 10px 0;
         padding: 14px 20px;
         margin: 18px 0;
+      }
+      .analogy {
+        border-left: 3px solid var(--signal);
+        background: linear-gradient(90deg, rgba(229, 166, 99, 0.09), transparent 70%);
+      }
+      .note {
+        border-left: 3px solid var(--warn);
+        background: linear-gradient(90deg, rgba(217, 110, 78, 0.08), transparent 70%);
+        font-size: 15.5px;
+      }
+      .safe {
+        border-left: 3px solid var(--good);
+        background: linear-gradient(90deg, rgba(139, 191, 107, 0.08), transparent 70%);
+        font-size: 15.5px;
       }
       .analogy .tag,
       .note .tag,
@@ -141,36 +161,26 @@
       .analogy .tag {
         color: var(--signal);
       }
-      .note {
-        border-left: 3px solid var(--warn);
-        background: linear-gradient(90deg, rgba(217, 110, 78, 0.08), transparent 70%);
-        border-radius: 0 10px 10px 0;
-        padding: 14px 20px;
-        margin: 18px 0;
-        font-size: 15.5px;
-      }
       .note .tag {
         color: var(--warn);
-      }
-      .safe {
-        border-left: 3px solid var(--good);
-        background: linear-gradient(90deg, rgba(139, 191, 107, 0.08), transparent 70%);
-        border-radius: 0 10px 10px 0;
-        padding: 14px 20px;
-        margin: 18px 0;
-        font-size: 15.5px;
       }
       .safe .tag {
         color: var(--good);
       }
+
+      /* pillar grids */
       .pillars {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 16px;
         margin: 26px 0;
       }
+      .pillars.duo {
+        grid-template-columns: repeat(2, 1fr);
+      }
       @media (max-width: 720px) {
-        .pillars {
+        .pillars,
+        .pillars.duo {
           grid-template-columns: 1fr;
         }
       }
@@ -179,7 +189,6 @@
         border: 1px solid var(--rule);
         border-radius: 12px;
         padding: 20px;
-        border-top: 2px solid var(--signal);
       }
       .pillar .icon {
         font-size: 26px;
@@ -188,15 +197,72 @@
       }
       .pillar h4 {
         font-family: "Fraunces", serif;
-        font-size: 18px;
+        font-size: 19px;
         font-weight: 500;
-        margin: 0 0 6px;
+        margin: 0 0 2px;
+      }
+      .pillar .sub {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--ink-faint);
+        letter-spacing: 0.06em;
+        margin-bottom: 10px;
       }
       .pillar p {
         font-size: 14.5px;
         color: var(--ink-dim);
-        margin: 6px 0 0;
+        margin: 8px 0 0;
       }
+      .pillar.chaos {
+        border-top: 2px solid var(--warn);
+      }
+      .pillar.slo {
+        border-top: 2px solid var(--signal);
+      }
+      .pillar.cost {
+        border-top: 2px solid var(--data);
+      }
+
+      /* who-does-what tool rows */
+      .tool {
+        display: grid;
+        grid-template-columns: 148px 1fr;
+        gap: 18px;
+        padding: 18px 0;
+        border-bottom: 1px solid var(--rule-soft);
+      }
+      @media (max-width: 600px) {
+        .tool {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        }
+      }
+      .tool .name {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--signal);
+        word-break: break-word;
+      }
+      .tool .role {
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+        color: var(--ink-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-top: 3px;
+      }
+      .tool p {
+        margin: 0;
+        font-size: 15px;
+        color: var(--ink-dim);
+      }
+      .tool .reused {
+        color: var(--data);
+        font-weight: 600;
+      }
+
+      /* flow diagram */
       .flow {
         font-family: "JetBrains Mono", monospace;
         font-size: 13px;
@@ -225,6 +291,8 @@
       .flow .dim {
         color: var(--ink-faint);
       }
+
+      /* code */
       pre {
         background: #100f0c;
         border: 1px solid var(--rule);
@@ -232,7 +300,7 @@
         padding: 18px 20px;
         overflow-x: auto;
         font-family: "JetBrains Mono", monospace;
-        font-size: 13px;
+        font-size: 12.5px;
         line-height: 1.7;
         color: #d8cfbd;
         margin: 18px 0;
@@ -250,6 +318,15 @@
         color: inherit;
         padding: 0;
       }
+      .c-com {
+        color: var(--ink-faint);
+        font-style: italic;
+      }
+      .c-str {
+        color: var(--good);
+      }
+
+      /* tables */
       table {
         width: 100%;
         border-collapse: collapse;
@@ -274,6 +351,7 @@
       td code {
         font-size: 0.82em;
       }
+
       ul,
       ol {
         padding-left: 22px;
@@ -281,7 +359,42 @@
       li {
         margin: 7px 0;
       }
-      .foot {
+      .pill {
+        display: inline-block;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        padding: 2px 9px;
+        border-radius: 20px;
+        border: 1px solid var(--rule);
+        color: var(--ink-dim);
+        margin-right: 6px;
+      }
+      .sev-high {
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+      .sev-med {
+        color: var(--signal);
+        border-color: var(--signal-dim);
+      }
+      .sev-low {
+        color: var(--good);
+        border-color: var(--good);
+      }
+      .step-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: rgba(229, 166, 99, 0.15);
+        color: var(--signal);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        margin-right: 8px;
+      }
+      .footer {
         margin-top: 72px;
         padding-top: 24px;
         border-top: 1px solid var(--rule);
@@ -294,223 +407,692 @@
   </head>
   <body>
     <div class="wrap">
-      <div class="eyebrow">Phase 6 · Explained simply</div>
-      <h1>Breaking things on purpose</h1>
+      <div class="eyebrow">AI Observability Lab · Phase 6</div>
+      <h1>Chaos, SLOs &amp; Polish, explained simply</h1>
       <p class="lede">
-        The lab already watches everything. Phase 6 is where it earns its keep: we cause a real
-        incident on a timer, let the system notice, alert, and narrate it — then explain it back.
+        We spent five phases building a system that watches everything. Phase 6 asks the only
+        question that really matters: when something breaks, does any of that watching actually
+        <em>help</em>? So we break it — on purpose, on a schedule — and make the system notice,
+        alert, investigate, and explain itself. Here's the whole idea, jargon unpacked, with a
+        worked example.
       </p>
-
-      <div class="card">
-        <strong>The one-sentence version.</strong> We taught the fake outages to run on a clock,
-        wrote down what "healthy" means as budgets we can spend, made the collector cheaper without
-        going blind, learned to profile a runtime that hides from normal profilers, and wrapped it
-        all in a single script that produces an incident and a written postmortem end to end.
-      </div>
 
       <hr />
 
-      <h2><span class="section-num">01</span>Chaos you can schedule</h2>
+      <!-- ───────────────────── 1 ───────────────────── -->
+      <h2 id="p1"><span class="section-num">01</span>The problem we're solving</h2>
       <p>
-        A dashboard nobody has ever seen turn red is a dashboard nobody trusts. So we made failure
-        <em>repeatable</em>. A chaos scheduler reads a simple timeline and, minute by minute, tells
-        the subject services to misbehave — then tells them to stop.
+        By the end of Phase 5 the lab was impressive: dashboards, traces, data lineage, and even AI
+        agents that read the telemetry. But there was a quiet, awkward truth hanging over all of it
+        —
+        <strong>we had never actually seen a single dashboard turn red.</strong> Everything was
+        green because nothing had ever really gone wrong.
       </p>
-      <div class="analogy">
-        <span class="tag">Analogy</span>
-        Like a fire drill. The building isn't really burning, but the alarms, the exits, and the
-        people all get exercised exactly as if it were — on a schedule, so you can watch what
-        happens and do it again tomorrow.
-      </div>
       <p>
-        The trick is that the misbehaviour has to be <em>real</em> enough to move the numbers the
-        alerts watch. So each service that owns a failure mode got a tiny, clearly-fenced
-        "control-plane" switch (dev/lab only):
+        That's a trap. A smoke detector you've never tested isn't "working" — it's
+        <em>unknown</em>. An alert nobody has ever watched fire is a guess. A runbook that's never
+        been followed is fiction. Until you break the system on purpose, you don't have
+        observability; you have decoration.
+      </p>
+
+      <div class="analogy">
+        <span class="tag">Think of it like…</span>
+        A new office building. It has smoke detectors, sprinklers, fire exits, and an evacuation
+        plan printed on every door. Are they any good? You have absolutely no idea — until you run a
+        <strong>fire drill</strong>. Phase 6 is the fire drill: we start a controlled fire, and then
+        we watch whether the alarms sound, the right people get paged, and everyone finds the exit.
+        Nobody actually gets hurt, and afterwards you <em>know</em>.
+      </div>
+
+      <p>Phase 6 adds five capabilities, each answering a very practical question:</p>
+
+      <div class="pillars">
+        <div class="pillar chaos">
+          <span class="icon">🔥</span>
+          <h4>Chaos</h4>
+          <div class="sub">"CAN WE BREAK IT ON DEMAND?"</div>
+          <p>
+            A scheduler that causes real, repeatable failures on a clock — slow-downs, error bursts,
+            an outage.
+          </p>
+        </div>
+        <div class="pillar slo">
+          <span class="icon">🎯</span>
+          <h4>SLOs &amp; alerts</h4>
+          <div class="sub">"HOW MUCH BROKEN IS TOO MUCH?"</div>
+          <p>
+            Written-down reliability targets, and smart alarms that page you when you're burning
+            through them too fast.
+          </p>
+        </div>
+        <div class="pillar cost">
+          <span class="icon">💰</span>
+          <h4>Cost control</h4>
+          <div class="sub">"CAN WE AFFORD ALL THIS DATA?"</div>
+          <p>Trimming the flood of telemetry down to what matters, without going blind.</p>
+        </div>
+      </div>
+      <div class="pillars duo">
+        <div class="pillar cost">
+          <span class="icon">🔬</span>
+          <h4>Profiling &amp; RUM</h4>
+          <div class="sub">"WHY IS IT SLOW, AND WHAT DOES THE USER SEE?"</div>
+          <p>A CPU X-ray of the server, plus the browser's own view of speed and errors.</p>
+        </div>
+        <div class="pillar slo">
+          <span class="icon">🎬</span>
+          <h4>The demo</h4>
+          <div class="sub">"CAN WE SHOW THE WHOLE STORY IN ONE GO?"</div>
+          <p>One script that causes an incident and produces a written postmortem, end to end.</p>
+        </div>
+      </div>
+
+      <!-- ───────────────────── 2 ───────────────────── -->
+      <h2 id="p2"><span class="section-num">02</span>Chaos you can schedule</h2>
+      <p>
+        <strong>Chaos engineering</strong> is a fancy name for a simple idea: deliberately inject
+        failure into a running system to see how it copes. The key word is <em>deliberately</em> —
+        the failures have to be controlled, repeatable, and easy to stop.
+      </p>
+      <p>
+        Our lab already had a "fault model" baked into the fake LLM (the <code>model-proxy</code>):
+        it randomly fails a small fraction of requests and occasionally has a "bad minute." But that
+        randomness is decided once, at startup, and just ticks along on its own. For a fire drill we
+        need to <strong>choose</strong> exactly when the fire starts and stops.
+      </p>
+
+      <h3>The little control switch inside each service</h3>
+      <p>
+        So we gave the two services that own the interesting failure modes a tiny, clearly-labelled
+        "chaos switch" — an admin endpoint called <code>/admin/chaos</code> that's only for the lab
+        (it can be turned off entirely with one environment variable). It lets us flip failure on
+        and off <em>while the service keeps running</em>, no restart required.
       </p>
       <div class="pillars">
-        <div class="pillar">
+        <div class="pillar chaos">
           <span class="icon">🐌</span>
           <h4>Latency spike</h4>
+          <div class="sub">MODEL-PROXY</div>
           <p>
-            Tell the model-proxy to answer slowly (but under the timeout) — requests get sluggish,
-            not broken.
+            Tell the model to answer slowly — around 2–3 seconds instead of milliseconds, but still
+            under the timeout. Requests get <em>sluggish</em>, not broken.
           </p>
         </div>
-        <div class="pillar">
+        <div class="pillar chaos">
           <span class="icon">💥</span>
           <h4>Error burst</h4>
+          <div class="sub">MODEL-PROXY</div>
           <p>
-            Tell the model-proxy to fail a large share of calls — the gateway turns those into 5xx.
+            Tell the model to fail most calls (return a <code>500</code>). The gateway can't get an
+            answer, so it returns a <code>502</code> — a real server error.
           </p>
         </div>
-        <div class="pillar">
+        <div class="pillar chaos">
           <span class="icon">🔌</span>
           <h4>Dependency outage</h4>
+          <div class="sub">RETRIEVER</div>
           <p>
-            Tell the retriever to go dark — the gateway can't complete a request and errors out.
+            Tell the search service (<code>retriever</code>) to go completely dark. The gateway
+            can't build an answer without it, so those requests fail too.
           </p>
         </div>
       </div>
+
+      <div class="note">
+        <span class="tag">Why real failures, not fake numbers</span>
+        We could have <em>faked</em> a red dashboard by writing bad numbers straight into the
+        metrics. But then we'd only be testing the dashboard, not the system. By making the actual
+        services actually fail, the whole chain gets exercised for real — the gateway's error
+        handling, the metrics, the alerts, the agents — exactly as it would in a genuine incident.
+      </div>
+
+      <h3>The schedule: a fire drill on a timer</h3>
       <p>
-        The schedule lives in YAML (<code>chaos/full.yaml</code> is the full 26-minute cycle;
-        <code>chaos/demo.yaml</code> is a compressed one for the demo), and the scheduler always
-        turns the chaos back off when it's done — a service is never left broken.
+        A separate program, the <strong>chaos scheduler</strong>, reads a plain-text timeline and,
+        minute by minute, flips those switches on and off while also sending normal traffic through
+        the gateway the whole time. The timeline lives in a simple <code>YAML</code> file so you can
+        read and edit it without touching code:
+      </p>
+      <pre><code><span class="c-com"># chaos/full.yaml — the 26-minute drill</span>
+phases:
+  - name: latency-spike      <span class="c-com"># minute 7, for 3 minutes</span>
+    target: model-proxy
+    startSeconds: 420
+    durationSeconds: 180
+    params: { latencyBaseMs: 2500 }
+
+  - name: error-burst        <span class="c-com"># minute 13, for 2 minutes</span>
+    target: model-proxy
+    startSeconds: 780
+    durationSeconds: 120
+    params: { p500: 0.6 }     <span class="c-com"># fail 60% of calls</span>
+
+  - name: retriever-outage   <span class="c-com"># minute 19, for 2 minutes</span>
+    target: retriever
+    startSeconds: 1140
+    durationSeconds: 120
+    params: { outage: true }</code></pre>
+      <p>
+        The scheduler <strong>always turns the chaos back off</strong> when a phase ends (and again
+        at the very end, just in case) — a service is never accidentally left broken. Run it with
+        <code>bun run chaos:run</code>. There's a shorter <code>chaos/demo.yaml</code> for the
+        6-minute demo.
       </p>
 
-      <h2>
-        <span class="section-num">02</span>SLOs: turning "is it up?" into "how much budget is left?"
+      <!-- ───────────────────── 3 ───────────────────── -->
+      <h2 id="p3">
+        <span class="section-num">03</span>SLOs: turning "is it up?" into "how much is left?"
       </h2>
       <p>
-        "Is the site up" is a yes/no question with no room to plan. An <strong>SLO</strong> (Service
-        Level Objective) reframes it: <em>99.5% of chat requests should succeed.</em> That leftover
-        0.5% is an <strong>error budget</strong> — a real allowance you're allowed to spend.
+        Once you can break things on demand, you need to decide
+        <strong>how much breakage is acceptable</strong>. "Is the site up?" is a yes/no question
+        with no room to think. Real teams use a better frame, and it comes with its own three-letter
+        soup — let's unpack it.
       </p>
-      <div class="analogy">
-        <span class="tag">Analogy</span>
-        A monthly data plan. You don't panic at the first megabyte — you watch the <em>rate</em>
-        you're burning through it. Chew up a third of the month's data in an afternoon and
-        <em>that's</em> worth a phone call.
-      </div>
-      <p>We wrote down three of these:</p>
       <table>
-        <tr>
-          <th>SLO</th>
-          <th>Target</th>
-          <th>Meaning</th>
-        </tr>
-        <tr>
-          <td>Availability</td>
-          <td>99.5%</td>
-          <td>chat requests that don't 5xx</td>
-        </tr>
-        <tr>
-          <td>Latency</td>
-          <td>95%</td>
-          <td>chat requests finishing under 1.5s</td>
-        </tr>
-        <tr>
-          <td>RAG quality</td>
-          <td>90%</td>
-          <td>searches whose best match is actually relevant</td>
-        </tr>
+        <thead>
+          <tr>
+            <th>Term</th>
+            <th>Plain meaning</th>
+            <th>In our lab</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>SLI</strong></td>
+            <td>A <em>measurement</em> — the actual number you track.</td>
+            <td>the % of chat requests that succeed</td>
+          </tr>
+          <tr>
+            <td><strong>SLO</strong></td>
+            <td>The <em>target</em> for that number — your goal.</td>
+            <td>"99.5% of chat requests should succeed"</td>
+          </tr>
+          <tr>
+            <td><strong>Error budget</strong></td>
+            <td>The <em>allowance</em> — how much failure the target leaves room for.</td>
+            <td>the leftover 0.5% you're "allowed" to fail</td>
+          </tr>
+        </tbody>
       </table>
-      <p>
-        The clever part is the alert. A naive "error rate &gt; 2%" pages you on every hiccup. A
-        <strong>multi-window burn-rate</strong> alert only fires when you're burning the budget too
-        fast over <em>two</em> timescales at once — a fast one to react quickly and a slow one to
-        confirm it isn't a blip. Fast burn pages a human; slow burn files a ticket.
-      </p>
-      <div class="note">
-        <span class="tag">An honest caveat</span>
-        This maths only works for <em>strict</em> targets. Our 90% RAG-quality SLO has a big 10%
-        budget — so big that "burning too fast" would require failing more than 100% of requests,
-        which is impossible. Rather than ship a dead alert, RAG quality just alerts when it dips
-        below the target. Knowing when a pattern <em>doesn't</em> apply is half of using it well.
+
+      <div class="analogy">
+        <span class="tag">Think of it like…</span>
+        A monthly mobile data plan. Your <strong>SLO</strong> is "don't run out of data this month."
+        Your <strong>error budget</strong> is the gigabytes you're allowed to use. You don't panic
+        at the first megabyte — but if you burn a third of the month's data in one afternoon, that
+        <em>rate</em> is alarming. SLO thinking watches the rate you spend reliability, not just
+        whether you've run out.
       </div>
 
-      <h2><span class="section-num">03</span>Spending less without going blind</h2>
-      <p>
-        Observability isn't free — storage grows with two things, and we tamed both at the
-        collector.
-      </p>
-      <div class="pillars">
-        <div class="pillar" style="grid-column: span 3">
-          <h4>Cardinality — the label explosion</h4>
-          <p>
-            A metric's cost is roughly the number of distinct label combinations. Attach a
-            <code>user_id</code> and one metric becomes millions. We strip those unbounded labels
-            off <em>metrics</em> before they land (traces and logs keep them — they need the
-            detail), and set a hard ceiling with an alarm if anything ever crosses it.
-          </p>
-        </div>
-      </div>
-      <div class="pillars">
-        <div class="pillar" style="grid-column: span 3">
-          <h4>Tail sampling — keep the interesting traces</h4>
-          <p>
-            Storing every single trace is wasteful; most are boring and identical. So we decide
-            <em>after</em> each trace finishes: keep <strong>every error</strong>, keep
-            <strong>every slow one</strong> (≥ 1.5s), and keep a random 10% of the rest. You lose
-            the noise and keep exactly the traces you'd reach for in an incident.
-          </p>
-        </div>
-      </div>
+      <p>We wrote down three SLOs for the lab, each as a small file in <code>slo/</code>:</p>
+      <table>
+        <thead>
+          <tr>
+            <th>SLO</th>
+            <th>Target</th>
+            <th>What it measures</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Availability</strong></td>
+            <td>99.5%</td>
+            <td>chat requests that don't return a server error</td>
+          </tr>
+          <tr>
+            <td><strong>Latency</strong></td>
+            <td>95%</td>
+            <td>chat requests that finish in under 1.5 seconds</td>
+          </tr>
+          <tr>
+            <td><strong>RAG quality</strong></td>
+            <td>90%</td>
+            <td>searches whose <em>best</em> match is actually relevant (score ≥ 0.6)</td>
+          </tr>
+        </tbody>
+      </table>
+
       <div class="note">
-        <span class="tag">The catch we wrote down</span>
-        Throwing away traces means any count derived <em>from</em> traces is now an undercount. So
-        the numbers that must be exact — the RED dashboards and the SLOs — come from real counters,
-        not from sampled traces. Every efficiency has a measurement cost; the trick is knowing
-        which.
+        <span class="tag">A tiny but important detail: measure exactly</span>
+        To count "requests under 1.5 seconds" precisely, the stopwatch needs a mark at exactly 1.5s
+        — so we added one to the histogram of request times. Same for RAG quality: we added a metric
+        that records the <em>single best</em> match per search (the old one recorded every match).
+        The lesson generalises:
+        <strong>choose your measurement buckets to line up with the targets you care about</strong>,
+        or your SLO is fuzzy.
       </div>
 
-      <h2><span class="section-num">04</span>Profiling a runtime that hides</h2>
+      <!-- ───────────────────── 4 ───────────────────── -->
+      <h2 id="p4"><span class="section-num">04</span>The clever alarm: multi-window burn-rate</h2>
       <p>
-        A <strong>profile</strong> answers "what is the CPU actually <em>doing</em> when a request
-        is slow" — a flame graph of where the time went. The usual way is a library inside the app,
-        but ours run on <strong>Bun</strong>, whose engine (JavaScriptCore) the standard profilers
-        can't see.
+        Here's where SLOs get genuinely smart. A naïve alarm says "error rate above 2% → page
+        someone." That pages you at 3&nbsp;a.m. for a two-second blip, and soon everyone ignores it.
+        A <strong>burn-rate</strong> alarm asks a better question:
+        <em>how fast are we spending the error budget?</em>
+      </p>
+      <p>
+        And the best version, the <strong>multi-window</strong> pattern, only fires when the budget
+        is burning too fast over <em>two</em> time windows at once — a short one to react quickly
+        and a long one to confirm it isn't a fluke.
       </p>
       <div class="analogy">
-        <span class="tag">Analogy</span>
-        The app won't wear the fitness tracker, so we watch from the outside instead — a thermal
-        camera on the whole room. <strong>eBPF</strong> profiles at the kernel level, so it doesn't
-        care what language or engine the program uses.
+        <span class="tag">Think of it like…</span>
+        A smoke detector with two timers. If it senses smoke for <em>five seconds</em> it perks up,
+        but it only shrieks if it <em>also</em> still senses smoke over the last <em>hour</em>. A
+        puff of steam from your shower trips the five-second timer but not the hour, so it stays
+        quiet. A real fire trips both — and only then does it wake the house. Two windows = fast
+        <em>and</em> trustworthy.
+      </div>
+      <p>We set up two flavours per SLO:</p>
+      <div class="pillars duo">
+        <div class="pillar chaos">
+          <span class="icon">🚨</span>
+          <h4>Fast burn → page</h4>
+          <p>
+            Burning <strong>2% of the whole month's budget in one hour</strong>. Checked over both a
+            5-minute and a 1-hour window. This is "wake someone up."
+          </p>
+        </div>
+        <div class="pillar slo">
+          <span class="icon">🎫</span>
+          <h4>Slow burn → ticket</h4>
+          <p>
+            Burning <strong>10% of the budget in six hours</strong>. Checked over 30-minute and
+            6-hour windows. This is "look at it during business hours."
+          </p>
+        </div>
       </div>
       <p>
-        Because that camera needs special permissions on the host, it's <em>opt-in</em> — it never
-        touches the normal stack. When it's on, a slow trace in Grafana links straight to the CPU
-        flame graph for that service and moment.
+        When either fires, it flows straight to the Phase-5 <strong>incident reporter</strong> agent
+        (via the same alert-webhook we built last phase), which investigates and writes a
+        postmortem. The reliability alarm and the AI investigator are wired together.
       </p>
 
-      <h2><span class="section-num">05</span>Watching from the user's chair</h2>
+      <div class="note">
+        <span class="tag">An honest caveat we chose not to hide</span>
+        This maths only works for <em>strict</em> targets. Our 90% RAG-quality SLO has a huge 10%
+        budget — so huge that "burning it too fast" would require failing <em>more than 100%</em> of
+        requests, which is impossible. Rather than ship an alarm that can never ring, RAG quality
+        simply alerts when it dips below 90%. Knowing when a textbook pattern <em>doesn't</em> apply
+        is half of using it well, and we wrote that down in the design notes instead of pretending.
+      </div>
+
+      <!-- ───────────────────── 5 ───────────────────── -->
+      <h2 id="p5"><span class="section-num">05</span>Spending less without going blind</h2>
       <p>
-        All the numbers so far are the <em>server's</em> view. <strong>RUM</strong> (Real User
-        Monitoring) adds the browser's: how many requests the page made, how many failed, and
-        <strong>LCP</strong> — Largest Contentful Paint, i.e. how long until the main content
-        actually appears. A new "Frontend" row on the dashboard shows it, and because the browser's
-        request is stitched into the same trace as the server's, a slow API call shows up in
-        <em>both</em> views at once.
+        Watching everything isn't free. Telemetry storage grows with two things in particular, and
+        we tamed both — importantly, at the <strong>collector</strong> (Alloy), so the services
+        themselves don't have to change.
       </p>
 
-      <h2><span class="section-num">06</span>The whole thing, in one command</h2>
+      <h3>Cardinality — the label explosion</h3>
       <p>
-        <code>bun run demo:incident</code> is the elevator pitch. It runs the entire loop while you
-        watch:
+        A metric's cost is roughly the number of <strong>distinct label combinations</strong> it
+        has. Attach a customer's <code>user_id</code> to a metric and suddenly one metric becomes
+        millions — one per user. That's called a <strong>cardinality</strong> explosion, and it's
+        the classic way to accidentally run up a giant bill.
+      </p>
+      <div class="analogy">
+        <span class="tag">Think of it like…</span>
+        A library. Shelving books by <em>genre</em> (a handful of labels) is cheap and fast.
+        Shelving a separate copy for <em>every reader who ever borrowed it</em> would need a
+        warehouse. So we strip the "one per reader" labels (<code>user_id</code>,
+        <code>request_id</code>) off the metrics before they're stored. The traces and logs keep
+        that detail — they need it — but the metrics stay cheap. As a backstop, we cap how many
+        series any one tenant can create and raise an alarm if it's ever crossed.
+      </div>
+
+      <h3>Tail sampling — keep only the interesting traces</h3>
+      <p>
+        Storing a <strong>trace</strong> (the detailed timeline) of <em>every single</em> request is
+        wasteful — most requests are boring and identical. <strong>Tail sampling</strong> decides
+        <em>after</em> each request finishes whether it's worth keeping. Our rule:
+      </p>
+      <ul>
+        <li>keep <strong>every error</strong> trace,</li>
+        <li>keep <strong>every slow</strong> trace (1.5&nbsp;s or longer),</li>
+        <li>and keep a random <strong>10%</strong> of the boring rest.</li>
+      </ul>
+      <p>
+        You throw away the noise and keep exactly the traces you'd actually reach for during an
+        incident, and Tempo's storage shrinks dramatically.
+      </p>
+
+      <div class="note">
+        <span class="tag">The catch — and we wrote it down</span>
+        If you throw away 90% of traces, any <em>count</em> derived from traces is now an
+        undercount. So the numbers that must be exact — the RED dashboards and the SLOs — come from
+        the services' own request counters (which are never sampled), not from traces. The browser
+        metrics in the next section are real counters for the same reason. Every efficiency has a
+        measurement cost; the skill is knowing which numbers you're allowed to approximate.
+      </div>
+
+      <!-- ───────────────────── 6 ───────────────────── -->
+      <h2 id="p6"><span class="section-num">06</span>Profiling a runtime that hides</h2>
+      <p>
+        Sometimes you know a request is slow but not <em>why</em>. A
+        <strong>profile</strong> answers that: it's a picture of what the CPU was actually
+        <em>doing</em> — which functions ate the time — usually drawn as a "flame graph." Grafana
+        <strong>Pyroscope</strong> is the tool that stores and shows them.
+      </p>
+      <p>
+        The usual way to collect profiles is a small library inside the app. But our services run on
+        <strong>Bun</strong>, whose engine (JavaScriptCore) the standard profilers simply can't see
+        — they're built for a different engine (V8). So the normal approach is a dead end here.
+      </p>
+      <div class="analogy">
+        <span class="tag">Think of it like…</span>
+        The runner refuses to wear a fitness tracker, so instead you point a thermal camera at the
+        whole track. <strong>eBPF</strong> is that camera: it watches from <em>outside</em> the
+        program, down at the operating-system level, so it doesn't care what language or engine the
+        program uses. It profiles Bun just fine.
+      </div>
+      <p>
+        Because that "camera" needs special permissions on the host machine, we made it
+        <strong>opt-in</strong> — it never touches the normal stack unless you deliberately turn it
+        on. When it's running, a slow trace in Grafana links straight to the CPU flame graph for
+        that exact service and moment, and there's a dedicated "Profiles" dashboard.
+      </p>
+
+      <!-- ───────────────────── 7 ───────────────────── -->
+      <h2 id="p7"><span class="section-num">07</span>Watching from the user's chair (RUM)</h2>
+      <p>
+        Every number so far is the <em>server's</em> point of view. But the server can be perfectly
+        happy while the actual person staring at the screen has a miserable time — a slow network, a
+        heavy page, a failed button. <strong>RUM</strong> (Real User Monitoring) adds the
+        <em>browser's</em> point of view.
+      </p>
+      <p>The lab already traced every click; Phase 6 makes the browser report proper numbers:</p>
+      <ul>
+        <li>
+          <strong>Request rate &amp; error rate</strong> — how many calls the page made, and how
+          many failed.
+        </li>
+        <li>
+          <strong>LCP</strong> (Largest Contentful Paint) — a standard "web vital" that measures how
+          long until the <em>main</em> content actually appears on screen. Under 2.5&nbsp;s is
+          considered good.
+        </li>
+      </ul>
+      <p>
+        These show up in a new <strong>"Frontend" row</strong> on the gateway dashboard, right
+        beside the server's numbers. And because the browser's request is stitched into the
+        <em>same trace</em> as the server's work, a slow API call is visible in both views at once —
+        the user's slowness and yours are literally the same trace.
+      </p>
+
+      <!-- ───────────────────── 8 ───────────────────── -->
+      <h2 id="p8"><span class="section-num">08</span>The pieces — who does what</h2>
+      <p>
+        Phase 6 introduces a few new players and <strong style="color: var(--data)">re-uses</strong>
+        a lot from earlier phases. Read it as one team with a job each.
+      </p>
+      <div class="tool">
+        <div>
+          <div class="name">/admin/chaos</div>
+          <div class="role">The switch</div>
+        </div>
+        <p>
+          A dev-only endpoint on the model-proxy and retriever that turns specific failures on and
+          off at runtime.
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">chaos scheduler</div>
+          <div class="role">The drill sergeant</div>
+        </div>
+        <p>
+          Reads the YAML timeline, drives traffic, and flips the switches on a clock (<code
+            >bun run chaos:run</code
+          >).
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">slo/*.yaml</div>
+          <div class="role">The targets</div>
+        </div>
+        <p>
+          The written-down reliability goals — the single source of truth the alarms are built from.
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">recording rules</div>
+          <div class="role">Mimir maths</div>
+        </div>
+        <p>
+          Pre-computed SLO numbers (error rates over each window, 28-day compliance) that the alarms
+          read.
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">burn-rate alerts</div>
+          <div class="role">The smoke detectors</div>
+        </div>
+        <p>Grafana alarms that fire on fast/slow budget burn and route to the incident reporter.</p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">Alloy</div>
+          <div class="role"><span class="reused">reused</span> · now trims</div>
+        </div>
+        <p>
+          The collector — now also drops high-cardinality labels and tail-samples traces before
+          storing them.
+        </p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">Pyroscope</div>
+          <div class="role">CPU X-ray</div>
+        </div>
+        <p>Stores and draws the CPU flame graphs, fed by an opt-in eBPF profiler.</p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">browser RUM</div>
+          <div class="role">The user's view</div>
+        </div>
+        <p>The web app reports its own request rate, error rate, and LCP as real metrics.</p>
+      </div>
+      <div class="tool">
+        <div>
+          <div class="name">incident reporter</div>
+          <div class="role"><span class="reused">reused from Phase 5</span></div>
+        </div>
+        <p>
+          The AI agent that an alarm wakes up; it investigates the telemetry and writes the
+          postmortem.
+        </p>
+      </div>
+
+      <!-- ───────────────────── 9 ───────────────────── -->
+      <h2 id="p9"><span class="section-num">09</span>How it all connects</h2>
+      <p>
+        Here is the full loop — from a healthy system to a written postmortem and back to healthy:
       </p>
       <div class="flow">
-        <span class="dim"># scripts/demo-incident.sh</span> inject chaos
-        <span class="red">error burst</span> <span class="dim">→</span> gateway starts returning 5xx
-        <span class="dim">↓</span>
-        the <span class="amber">burn-rate alert</span> fires <span class="dim">→</span> webhook to
-        the agent-service
-        <span class="dim">↓</span>
-        the <span class="teal">incident reporter</span> investigates the telemetry
-        <span class="dim">↓</span>
-        a written <span class="green">postmortem</span> appears in the incident inbox
-        <span class="dim">↓</span>
-        you ask the <span class="teal">RCA assistant</span> a follow-up — it answers from real data
-        <span class="dim">↓</span>
-        chaos ends <span class="dim">→</span> the SLIs recover <span class="dim">→</span> the alert
-        resolves
+        <span class="dim">minutes 0–6</span> happy path
+        <span class="green">gateway all green ✓</span>
+        <span class="dim">│</span>
+        <span class="red">chaos: error burst</span> <span class="dim">→</span> model-proxy returns
+        500s <span class="dim">→</span> gateway → <span class="red">502s</span>
+        <span class="dim">│</span>
+        the SLI moves <span class="dim">→</span> availability starts eating its error budget
+        <span class="dim">│</span>
+        <span class="amber">burn-rate alert fires</span>
+        <span class="dim">(5m AND 1h windows agree)</span>
+        <span class="dim">│</span>
+        Grafana webhook <span class="dim">→</span> the <span class="teal">agent-service</span> on
+        the host
+        <span class="dim">│</span>
+        the <span class="teal">incident reporter</span> queries Loki / Tempo / Mimir to investigate
+        <span class="dim">│</span>
+        a written <span class="green">postmortem</span> lands in the incident inbox
+        <span class="dim">│</span>
+        you ask the <span class="teal">RCA assistant</span> a follow-up
+        <span class="dim">→</span> it answers from real data
+        <span class="dim">│</span>
+        <span class="green">chaos ends</span> <span class="dim">→</span> SLIs recover
+        <span class="dim">→</span> the alert resolves itself
       </div>
-      <div class="safe">
-        <span class="tag">Why it matters</span>
-        This is the payoff of every earlier phase at once: instrumentation, correlation, lineage,
-        alerting, and agents. You cause a problem on purpose, and the system notices it, explains
-        it, and recovers — and you can watch the whole story in six minutes.
-      </div>
-
-      <hr />
       <p>
-        Observability work feels finished the day you can produce an incident on purpose, have the
-        system narrate what happened, and explain it back in your own words. That's Phase 6 — and
-        with it, the lab is complete.
+        Notice how much of this is <em>reused</em>: the metrics pipeline, the traces, the alert
+        webhook, the AI agents — all from earlier phases. Phase 6 didn't rebuild them; it finally
+        gave them a real incident to prove themselves on.
       </p>
 
-      <div class="foot">
+      <!-- ───────────────────── 10 ───────────────────── -->
+      <h2 id="p10"><span class="section-num">10</span>A tiny worked example</h2>
+      <p>Let's follow one run of the demo, minute by minute, as a story.</p>
+      <p>
+        <span class="step-num">1</span><strong>Warm-up.</strong> Traffic flows through the gateway;
+        every request succeeds in a few hundred milliseconds. The availability SLI sits at 100%. All
+        dashboards green.
+      </p>
+      <p>
+        <span class="step-num">2</span><strong>The fire starts.</strong> At the scheduled minute the
+        scheduler POSTs <code>{ p500: 0.6 }</code> to the model-proxy's chaos switch. Now 60% of
+        model calls fail. The gateway, unable to get answers, starts returning <code>502</code>s.
+      </p>
+      <p>
+        <span class="step-num">3</span><strong>The numbers move.</strong> In Grafana the gateway's
+        error-rate line climbs from ~0% to ~40%. The availability SLI drops below its 99.5% target
+        and starts burning error budget fast.
+      </p>
+      <p>
+        <span class="step-num">4</span><strong>The alarm agrees with itself.</strong> The 5-minute
+        burn-rate window crosses the threshold quickly; a couple of minutes later the 1-hour window
+        crosses it too. Both agree → the alert fires. (A one-second blip would never have convinced
+        the 1-hour window — that's the point.)
+      </p>
+      <p>
+        <span class="step-num">5</span><strong>The AI wakes up.</strong> Grafana webhooks the
+        agent-service. The incident reporter spins up, runs real queries against the logs, traces,
+        and metrics, works out that the model-proxy is the culprit, and writes a Markdown
+        <strong>postmortem</strong> — summary, impact, timeline, evidence, likely cause, recommended
+        actions — into the incident inbox.
+      </p>
+      <p>
+        <span class="step-num">6</span><strong>You ask a follow-up.</strong> The demo poses a
+        scripted question to the RCA assistant — "what's the failing dependency and why?" — and it
+        streams back an answer grounded in the same telemetry, citing what it looked at.
+      </p>
+      <p>
+        <span class="step-num">7</span><strong>Recovery.</strong> The burst ends, the scheduler
+        flips chaos off, the gateway recovers, the SLI climbs back to healthy, and the alert
+        <em>resolves itself</em> — no human needed to clear it. The drill is over, and everything
+        worked.
+      </p>
+
+      <!-- ───────────────────── 11 ───────────────────── -->
+      <h2 id="p11"><span class="section-num">11</span>How we actually wired it in code</h2>
+      <p>A few of the load-bearing pieces, in miniature.</p>
+
+      <h3>The chaos switch merges over the base config, per request</h3>
+      <pre><code><span class="c-com">// model-proxy decides each request against base config + any live override</span>
+export function effectiveFaults(base) {
+  return { ...base, ...override };   <span class="c-com">// override is {} until chaos POSTs to it</span>
+}</code></pre>
+
+      <h3>An SLO recording rule (pre-computed for the alarm)</h3>
+      <pre><code><span class="c-com"># the 5-minute error ratio for availability</span>
+- record: slo:gateway_availability:error_ratio5m
+  expr: |
+    sum(rate(request_duration_seconds_count{service="gateway",
+             http_route="/v1/chat", http_status_code=~"5.."}[5m]))
+    / clamp_min(sum(rate(request_duration_seconds_count{service="gateway",
+             http_route="/v1/chat"}[5m])), 1)</code></pre>
+
+      <h3>The "two windows must agree" alert, in one line of query</h3>
+      <pre><code><span class="c-com"># 1 only if BOTH the 5m and 1h error ratios exceed the threshold</span>
+(slo:gateway_availability:error_ratio5m &gt; bool 0.0672)
+  * (slo:gateway_availability:error_ratio1h &gt; bool 0.0672)</code></pre>
+
+      <h3>The tail-sampling rule</h3>
+      <pre><code><span class="c-com">// Alloy: keep errors, keep slow, sample the rest</span>
+policy { name = <span class="c-str">"errors"</span>       type = <span class="c-str">"status_code"</span>  ... }  <span class="c-com">// keep all errors</span>
+policy { name = <span class="c-str">"slow"</span>         type = <span class="c-str">"latency"</span>      ... }  <span class="c-com">// keep ≥ 1.5s</span>
+policy { name = <span class="c-str">"sample-rest"</span>  type = <span class="c-str">"probabilistic"</span> ... }  <span class="c-com">// 10% of the rest</span></code></pre>
+
+      <!-- ───────────────────── 12 ───────────────────── -->
+      <h2 id="p12"><span class="section-num">12</span>See it yourself</h2>
+      <p>
+        With the full lab up and the host agent-service running (it needs your local Claude
+        session):
+      </p>
+      <pre><code><span class="c-com"># the whole story in one command (~6–8 min)</span>
+bun run demo:incident
+
+<span class="c-com"># or drive the full 26-minute chaos cycle by hand</span>
+bun run chaos:run
+
+<span class="c-com"># turn on the (opt-in) CPU profiler</span>
+docker compose -f infra/compose.yml -f infra/compose.observability.yml \
+  --profile profiling up -d alloy-profiler</code></pre>
+      <p>Then look around:</p>
+      <ul>
+        <li>
+          <strong>Grafana</strong> (<code>localhost:3001</code>) — watch the gateway error rate
+          climb, the SLO burn-rate alerts fire, the new <em>Frontend</em> row, and the
+          <em>Profiles</em> flame graph.
+        </li>
+        <li>
+          <strong>The control plane</strong> (<code>localhost:3003</code>) → <em>Incidents</em> —
+          read the postmortem the reporter wrote.
+        </li>
+      </ul>
+      <div class="safe">
+        <span class="tag">The payoff</span>
+        This is every earlier phase firing at once — instrumentation, correlation, lineage,
+        alerting, and agents — triggered by a problem you caused on purpose. You break it, and the
+        system notices, explains, and recovers, and you can watch the whole story in a few minutes.
+      </div>
+
+      <!-- ───────────────────── 13 ───────────────────── -->
+      <h2 id="p13"><span class="section-num">13</span>One-screen recap</h2>
+      <div class="card">
+        <ul>
+          <li>
+            <strong>Chaos</strong> — a scheduler flips dev-only failure switches on the services on
+            a clock, so incidents are real and repeatable.
+          </li>
+          <li>
+            <strong>SLOs</strong> — three written-down reliability targets, each with an error
+            budget you're allowed to spend.
+          </li>
+          <li>
+            <strong>Burn-rate alerts</strong> — smart alarms that fire only when you're spending the
+            budget too fast over two time windows at once, and wake the AI incident reporter.
+          </li>
+          <li>
+            <strong>Cost control</strong> — drop runaway labels and keep only the interesting traces
+            (all errors, all slow ones, 10% of the rest), while keeping the exact numbers exact.
+          </li>
+          <li>
+            <strong>Profiling &amp; RUM</strong> — an eBPF CPU X-ray (because Bun hides from normal
+            profilers) and the browser's own view of speed and errors.
+          </li>
+          <li>
+            <strong>The demo</strong> — one command that causes an incident and produces a written
+            postmortem, end to end.
+          </li>
+        </ul>
+        <p style="margin: 14px 0 0; color: var(--ink-dim)">
+          Observability work feels finished the day you can produce an incident on purpose, have the
+          system narrate what happened, and explain it back in your own words. That's Phase 6 — and
+          with it, the lab is complete.
+        </p>
+      </div>
+
+      <div class="footer">
         AI Observability Lab · Phase 6 of 6 — Chaos, SLOs &amp; production polish<br />
-        Deeper detail: <code>docs/adr/005-chaos-slos-and-production-polish.md</code> ·
-        <code>docs/learning-notes.md</code> · <code>docs/PLAN.html#p6</code>
+        Go deeper: docs/adr/005-chaos-slos-and-production-polish.md · docs/learning-notes.md ·
+        docs/PLAN.html#p6
       </div>
     </div>
   </body>
