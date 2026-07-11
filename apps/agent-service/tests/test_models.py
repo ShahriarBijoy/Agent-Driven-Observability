@@ -10,10 +10,12 @@ from __future__ import annotations
 import re
 
 from agent_service.models import (
+    Artifact,
     AgentRun,
     Approval,
     ToolCall,
     ev_approval,
+    ev_artifact,
     ev_done,
     ev_run,
     ev_token,
@@ -66,3 +68,20 @@ def test_stream_event_shapes() -> None:
     out = ev_approval(apr)
     assert out["type"] == "approval_required"
     assert out["approval"]["requestedAt"]
+
+
+def test_artifact_wire_has_created_at_and_html_media() -> None:
+    art = Artifact(id="a1", name="report.html", media_type="text/html",
+                   content="<h1>x</h1>", created_at=now_iso())
+    wire = art.wire()
+    assert wire["mediaType"] == "text/html"
+    assert ISO_RE.match(wire["createdAt"])
+
+
+def test_ev_artifact_shape() -> None:
+    art = Artifact(id="a1", name="report.html", media_type="text/html",
+                   content="<h1>x</h1>", created_at=now_iso())
+    out = ev_artifact(art)
+    assert out["type"] == "artifact"
+    assert out["artifact"]["id"] == "a1"
+    assert out["artifact"]["createdAt"]

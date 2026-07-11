@@ -34,7 +34,7 @@ RunStatus = Literal[
 
 ToolStatus = Literal["pending", "ok", "error"]
 MessageRole = Literal["user", "assistant", "system"]
-MediaType = Literal["text/markdown", "application/json"]
+MediaType = Literal["text/markdown", "application/json", "text/html"]
 Decision = Literal["approved", "denied"]
 
 
@@ -87,6 +87,7 @@ class Artifact(_Wire):
     name: str
     media_type: MediaType
     content: str
+    created_at: str
 
 
 class Approval(_Wire):
@@ -149,6 +150,10 @@ def ev_token(text: str) -> dict[str, Any]:
 
 def ev_tool_call(tc: ToolCall) -> dict[str, Any]:
     return {"type": "tool_call", "toolCall": tc.wire()}
+
+
+def ev_artifact(artifact: Artifact) -> dict[str, Any]:
+    return {"type": "artifact", "artifact": artifact.wire()}
 
 
 def ev_approval(approval: Approval) -> dict[str, Any]:
