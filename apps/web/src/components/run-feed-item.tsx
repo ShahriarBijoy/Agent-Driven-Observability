@@ -1,5 +1,12 @@
 import type { Approval, Artifact, ToolCall } from "@obs/contracts";
-import { CheckIcon, CopyIcon, DownloadIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  DownloadIcon,
+  FileCodeIcon,
+  Maximize2Icon,
+  ShieldAlertIcon,
+} from "lucide-react";
 import { useState } from "react";
 import {
   ArtifactAction,
@@ -22,6 +29,7 @@ import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
 import { Bubble, BubbleContent } from "~/components/ui/bubble";
 import { Message, MessageContent } from "~/components/ui/message";
+import { downloadArtifact } from "~/lib/artifact-view";
 import type { RunFeedPart } from "~/lib/run-feed";
 import { cn } from "~/lib/utils";
 
@@ -33,9 +41,11 @@ import { cn } from "~/lib/utils";
 export function RunFeedItem({
   part,
   streaming = false,
+  onOpenArtifact,
 }: {
   part: RunFeedPart;
   streaming?: boolean;
+  onOpenArtifact?: (artifact: Artifact) => void;
 }) {
   switch (part.kind) {
     case "message":
@@ -58,6 +68,12 @@ export function RunFeedItem({
       return <FeedToolCall toolCall={part.toolCall} />;
     case "approval":
       return <FeedApproval approval={part.approval} />;
+    case "artifact":
+      return part.artifact.mediaType === "text/html" ? (
+        <ArtifactChip artifact={part.artifact} onOpen={onOpenArtifact} />
+      ) : (
+        <ArtifactCard artifact={part.artifact} onOpen={onOpenArtifact} />
+      );
   }
 }
 
@@ -124,23 +140,43 @@ function FeedApproval({ approval }: { approval: Approval }) {
   );
 }
 
-export function ArtifactCard({ artifact }: { artifact: Artifact }) {
+/** Compact Claude-style chip for rendered (HTML) artifacts — click to open. */
+function ArtifactChip({
+  artifact,
+  onOpen,
+}: {
+  artifact: Artifact;
+  onOpen?: (artifact: Artifact) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen?.(artifact)}
+      className="group flex w-full items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-ring/40 hover:bg-muted/50"
+    >
+      <FileCodeIcon className="size-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-sm font-medium">{artifact.name}</span>
+        <span className="text-xs text-muted-foreground">Rendered page · click to open</span>
+      </span>
+      <Maximize2Icon className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+    </button>
+  );
+}
+
+export function ArtifactCard({
+  artifact,
+  onOpen,
+}: {
+  artifact: Artifact;
+  onOpen?: (artifact: Artifact) => void;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
     await navigator.clipboard.writeText(artifact.content);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
-  }
-
-  function download() {
-    const blob = new Blob([artifact.content], { type: artifact.mediaType });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = artifact.name;
-    anchor.click();
-    URL.revokeObjectURL(url);
   }
 
   return (
@@ -153,6 +189,14 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
           </Badge>
         </div>
         <ArtifactActions>
+          {onOpen !== undefined ? (
+            <ArtifactAction
+              icon={Maximize2Icon}
+              tooltip="Open in panel"
+              label="Open in side panel"
+              onClick={() => onOpen(artifact)}
+            />
+          ) : null}
           <ArtifactAction
             icon={copied ? CheckIcon : CopyIcon}
             tooltip={copied ? "Copied" : "Copy contents"}
@@ -163,7 +207,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
             icon={DownloadIcon}
             tooltip="Download"
             label="Download artifact"
-            onClick={download}
+            onClick={() => downloadArtifact(artifact)}
           />
         </ArtifactActions>
       </ArtifactHeader>
