@@ -1,12 +1,11 @@
 import type { Approval, ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { ArrowUpIcon, BotIcon, CheckIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, BotIcon, ShieldAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
-import { Markdown } from "~/components/markdown";
+import { RunFeedItem } from "~/components/run-feed-item";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
-import { Bubble, BubbleContent } from "~/components/ui/bubble";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
@@ -17,7 +16,6 @@ import {
   EmptyTitle,
 } from "~/components/ui/empty";
 import { Marker, MarkerContent, MarkerIcon } from "~/components/ui/marker";
-import { Message, MessageContent } from "~/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -28,7 +26,7 @@ import {
 } from "~/components/ui/message-scroller";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { cn } from "~/lib/utils";
+import { feedPartKey, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
 import { getAgentRuns } from "~/server/functions";
@@ -38,25 +36,69 @@ export const Route = createFileRoute("/agents/")({
   component: AgentsPage,
 });
 
-interface TranscriptEntry {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
-}
-
 function AgentsPage() {
   const runsHistory = Route.useLoaderData();
   const router = useRouter();
   const tenant = tenantStore.use();
 
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [streamText, setStreamText] = useState<string | null>(null);
-  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  // The live transcript is the same part list the run detail page builds from
+  // a persisted run — tokens extend the trailing assistant message, tool_call
+  // events upsert a tool part in place, so tools appear inline mid-stream.
+  const [parts, setParts] = useState<RunFeedPart[]>([]);
   const [approval, setApproval] = useState<Approval | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const runIdRef = useRef<string | undefined>(undefined);
   const nextId = useRef(0);
+
+  function pushMessage(role: "user" | "assistant", content: string) {
+    setParts((p) => [
+      ...p,
+      {
+        kind: "message",
+        message: {
+          id: `live-${nextId.current++}`,
+          role,
+          content,
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+  }
+
+  function appendToken(text: string) {
+    setParts((p) => {
+      const last = p.at(-1);
+      if (last?.kind === "message" && last.message.role === "assistant") {
+        return [
+          ...p.slice(0, -1),
+          { kind: "message", message: { ...last.message, content: last.message.content + text } },
+        ];
+      }
+      return [
+        ...p,
+        {
+          kind: "message",
+          message: {
+            id: `live-${nextId.current++}`,
+            role: "assistant",
+            content: text,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      ];
+    });
+  }
+
+  function upsertToolCall(toolCall: ToolCall) {
+    setParts((p) => {
+      const idx = p.findIndex((x) => x.kind === "tool" && x.toolCall.id === toolCall.id);
+      if (idx === -1) return [...p, { kind: "tool", toolCall }];
+      const next = [...p];
+      next[idx] = { kind: "tool", toolCall };
+      return next;
+    });
+  }
 
   async function send() {
     const message = draft.trim();
@@ -64,10 +106,8 @@ function AgentsPage() {
     setDraft("");
     setBusy(true);
     setApproval(null);
-    setTranscript((t) => [...t, { id: nextId.current++, role: "user", content: message }]);
-    setStreamText("");
+    pushMessage("user", message);
 
-    let assembled = "";
     try {
       const res = await fetch("/api/agents/chat", {
         method: "POST",
@@ -80,42 +120,32 @@ function AgentsPage() {
             runIdRef.current = event.runId;
             break;
           case "token":
-            assembled += event.text;
-            setStreamText(assembled);
+            appendToken(event.text);
             break;
           case "tool_call":
-            setToolCalls((calls) => {
-              const rest = calls.filter((c) => c.id !== event.toolCall.id);
-              return [...rest, event.toolCall].sort((a, b) =>
-                a.startedAt.localeCompare(b.startedAt),
-              );
-            });
+            upsertToolCall(event.toolCall);
             break;
           case "approval_required":
             setApproval(event.approval);
             break;
           case "error":
-            assembled += `\n[stream error: ${event.message}]`;
-            setStreamText(assembled);
+            appendToken(`\n[stream error: ${event.message}]`);
             break;
           case "done":
             break;
         }
       }
     } finally {
-      if (assembled !== "") {
-        setTranscript((t) => [
-          ...t,
-          { id: nextId.current++, role: "assistant", content: assembled },
-        ]);
-      }
-      setStreamText(null);
       setBusy(false);
       router.invalidate();
     }
   }
 
-  const isEmpty = transcript.length === 0 && streamText === null;
+  const lastPart = parts.at(-1);
+  const isEmpty = parts.length === 0;
+  // Nothing streamed back yet for the latest question — show the thinking marker.
+  const awaitingFirstEvent =
+    busy && lastPart?.kind === "message" && lastPart.message.role === "user";
 
   return (
     <div className="mx-auto grid h-full max-w-6xl grid-cols-1 gap-4 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -132,7 +162,7 @@ function AgentsPage() {
           <MessageScrollerProvider autoScroll>
             <MessageScroller className="flex-1">
               <MessageScrollerViewport>
-                <MessageScrollerContent className="px-4 py-5">
+                <MessageScrollerContent className="gap-3 px-4 py-5">
                   {isEmpty ? (
                     <Empty className="my-auto border-0">
                       <EmptyHeader>
@@ -142,38 +172,39 @@ function AgentsPage() {
                         <EmptyTitle>Ask the RCA assistant</EmptyTitle>
                         <EmptyDescription>
                           Ask why something is happening. The assistant runs real Loki, Tempo,
-                          Mimir, and Postgres queries, shows them live in the tool timeline, and
-                          answers from what it finds.
+                          Mimir, and Postgres queries, shows them inline as it works, and answers
+                          from what it finds.
                         </EmptyDescription>
                       </EmptyHeader>
                     </Empty>
                   ) : (
-                    transcript.map((entry) => (
+                    parts.map((part, i) => (
                       <MessageScrollerItem
-                        key={entry.id}
-                        messageId={`msg-${entry.id}`}
-                        scrollAnchor={entry.role === "user"}
+                        key={feedPartKey(part)}
+                        messageId={feedPartKey(part)}
+                        scrollAnchor={part.kind === "message" && part.message.role === "user"}
                       >
-                        <ChatMessage entry={entry} />
+                        <RunFeedItem
+                          part={part}
+                          streaming={
+                            busy &&
+                            i === parts.length - 1 &&
+                            part.kind === "message" &&
+                            part.message.role === "assistant"
+                          }
+                        />
                       </MessageScrollerItem>
                     ))
                   )}
 
-                  {streamText !== null ? (
-                    <MessageScrollerItem messageId="msg-streaming">
-                      {streamText === "" ? (
-                        <Marker role="status">
-                          <MarkerIcon>
-                            <Spinner />
-                          </MarkerIcon>
-                          <MarkerContent>Investigating…</MarkerContent>
-                        </Marker>
-                      ) : (
-                        <ChatMessage
-                          streaming
-                          entry={{ id: -1, role: "assistant", content: streamText }}
-                        />
-                      )}
+                  {awaitingFirstEvent ? (
+                    <MessageScrollerItem messageId="msg-thinking">
+                      <Marker role="status">
+                        <MarkerIcon>
+                          <Spinner />
+                        </MarkerIcon>
+                        <MarkerContent>Investigating…</MarkerContent>
+                      </Marker>
                     </MessageScrollerItem>
                   ) : null}
 
@@ -246,49 +277,7 @@ function AgentsPage() {
       </div>
 
       <div className="flex min-h-0 flex-col gap-4">
-        <Card size="sm" className="panel-rise panel-rise-2 max-h-72 min-h-0">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              Tool calls
-              {busy ? <Spinner className="size-3.5 text-muted-foreground" /> : null}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="min-h-0 overflow-y-auto">
-            {toolCalls.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Tool activity for this conversation appears here.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {toolCalls.map((tc) => (
-                  <div key={tc.id} className="min-w-0">
-                    <Marker>
-                      <MarkerIcon>
-                        {tc.status === "ok" ? (
-                          <CheckIcon className="text-success" />
-                        ) : tc.status === "error" ? (
-                          <XIcon className="text-destructive" />
-                        ) : (
-                          <Spinner />
-                        )}
-                      </MarkerIcon>
-                      <MarkerContent className="truncate font-mono text-xs">
-                        {tc.name}
-                      </MarkerContent>
-                    </Marker>
-                    {tc.result !== undefined ? (
-                      <p className="mt-0.5 line-clamp-2 pl-6 text-xs text-muted-foreground/80">
-                        {tc.result}
-                      </p>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card size="sm" className="panel-rise panel-rise-3 min-h-0 flex-1">
+        <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
           <CardHeader>
             <CardTitle>Recent runs</CardTitle>
           </CardHeader>
@@ -322,39 +311,5 @@ function AgentsPage() {
         </Card>
       </div>
     </div>
-  );
-}
-
-function ChatMessage({
-  entry,
-  streaming = false,
-}: {
-  entry: TranscriptEntry;
-  streaming?: boolean;
-}) {
-  if (entry.role === "user") {
-    return (
-      <Message align="end">
-        <MessageContent>
-          <Bubble align="end">
-            <BubbleContent className="whitespace-pre-wrap">{entry.content}</BubbleContent>
-          </Bubble>
-        </MessageContent>
-      </Message>
-    );
-  }
-
-  return (
-    <Message>
-      <MessageContent>
-        <Bubble variant="ghost">
-          <BubbleContent>
-            <Markdown className={cn("typeset-chat", streaming && "stream-caret")}>
-              {entry.content}
-            </Markdown>
-          </BubbleContent>
-        </Bubble>
-      </MessageContent>
-    </Message>
   );
 }

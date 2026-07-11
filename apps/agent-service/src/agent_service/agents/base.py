@@ -1,8 +1,10 @@
 """Shared run loop for the model-backed agents.
 
 Drives a ClaudeSDKClient session and translates its message stream into the
-RunContext API: assistant text -> tokens + a stored message, ToolUseBlock ->
-a live tool-call row + OTel child span, ToolResultBlock -> the resolved call.
+RunContext API: assistant text -> tokens + a stored message per narration
+segment (flushed whenever a tool call starts, so the persisted transcript
+interleaves text and tools chronologically), ToolUseBlock -> a live tool-call
+row + OTel child span, ToolResultBlock -> the resolved call.
 Every agent run is one parent span ('agent.<kind>') with a child span per tool
 call, so the run shows up in Tempo exactly as the PLAN's self-observability
 requires. Only the system prompt + allow-list differ between agents.
@@ -95,8 +97,17 @@ async def run_agent_session(
     )
 
     tracer = get_tracer()
-    text_parts: list[str] = []
+    text_parts: list[str] = []  # current unsaved segment; flushed at each tool call
+    all_parts: list[str] = []  # everything, for the return value
     pending: dict[str, tuple] = {}  # tool_use_id -> (ToolCall, start_monotonic, span)
+
+    async def flush_text() -> None:
+        """Persist the accumulated narration as its own assistant message so the
+        transcript interleaves text and tool calls chronologically."""
+        segment = "".join(text_parts).strip()
+        text_parts.clear()
+        if segment:
+            await ctx.add_assistant_message(segment)
 
     with tracer.start_as_current_span(f"agent.{agent_kind}") as run_span:
         run_span.set_attribute("agent.run_id", ctx.run_id)
@@ -112,7 +123,9 @@ async def run_agent_session(
                                 if block.text:
                                     ctx.emit_token(block.text)
                                     text_parts.append(block.text)
+                                    all_parts.append(block.text)
                             elif isinstance(block, ToolUseBlock):
+                                await flush_text()
                                 name = _display_name(block.name)
                                 tc = await ctx.start_tool_call(name, dict(block.input or {}))
                                 span = tracer.start_span(f"tool.{name}")
@@ -141,15 +154,14 @@ async def run_agent_session(
                             run_span.set_attribute("agent.cost_usd", message.total_cost_usd)
                         if message.num_turns is not None:
                             run_span.set_attribute("agent.num_turns", message.num_turns)
-                        if message.is_error and not text_parts and message.result:
+                        if message.is_error and not all_parts and message.result:
                             text_parts.append(message.result)
+                            all_parts.append(message.result)
         except Exception as exc:  # noqa: BLE001 — ensure dangling spans close, then re-raise
             for _tc, _start, span in pending.values():
                 span.end()
             run_span.record_exception(exc)
             raise
 
-    final = "".join(text_parts).strip()
-    if final:
-        await ctx.add_assistant_message(final)
-    return final
+    await flush_text()
+    return "".join(all_parts).strip()
