@@ -1,7 +1,8 @@
-import type { Approval, ToolCall } from "@obs/contracts";
+import type { Approval, Artifact, ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { ArrowUpIcon, BotIcon, ShieldAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
+import { ArtifactPanel } from "~/components/artifact-panel";
 import { RunFeedItem } from "~/components/run-feed-item";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
@@ -29,6 +30,7 @@ import { Textarea } from "~/components/ui/textarea";
 import { feedPartKey, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
+import { cn } from "~/lib/utils";
 import { getAgentRuns } from "~/server/functions";
 
 export const Route = createFileRoute("/agents/")({
@@ -46,6 +48,7 @@ function AgentsPage() {
   // events upsert a tool part in place, so tools appear inline mid-stream.
   const [parts, setParts] = useState<RunFeedPart[]>([]);
   const [approval, setApproval] = useState<Approval | null>(null);
+  const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const runIdRef = useRef<string | undefined>(undefined);
@@ -125,6 +128,11 @@ function AgentsPage() {
           case "tool_call":
             upsertToolCall(event.toolCall);
             break;
+          case "artifact":
+            setParts((p) => [...p, { kind: "artifact", artifact: event.artifact }]);
+            // Claude-style: a rendered page opens itself as it lands.
+            if (event.artifact.mediaType === "text/html") setOpenArtifact(event.artifact);
+            break;
           case "approval_required":
             setApproval(event.approval);
             break;
@@ -148,7 +156,14 @@ function AgentsPage() {
     busy && lastPart?.kind === "message" && lastPart.message.role === "user";
 
   return (
-    <div className="mx-auto grid h-full max-w-6xl grid-cols-1 gap-4 px-6 py-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+    <div
+      className={cn(
+        "mx-auto grid h-full grid-cols-1 gap-4 px-6 py-6",
+        openArtifact === null
+          ? "max-w-6xl lg:grid-cols-[minmax(0,1fr)_300px]"
+          : "max-w-none lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
+      )}
+    >
       <div className="flex min-h-0 flex-col">
         <div className="panel-rise mb-4 flex flex-wrap items-center gap-3">
           <h1 className="font-heading text-xl font-semibold tracking-tight">Agents</h1>
@@ -192,6 +207,7 @@ function AgentsPage() {
                             part.kind === "message" &&
                             part.message.role === "assistant"
                           }
+                          onOpenArtifact={setOpenArtifact}
                         />
                       </MessageScrollerItem>
                     ))
@@ -276,40 +292,50 @@ function AgentsPage() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-col gap-4">
-        <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
-          <CardHeader>
-            <CardTitle>Recent runs</CardTitle>
-          </CardHeader>
-          <CardContent className="min-h-0 overflow-y-auto p-0">
-            {runsHistory.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-muted-foreground">No runs yet.</p>
-            ) : (
-              <ul className="flex flex-col">
-                {runsHistory.slice(0, 12).map((r) => (
-                  <li key={r.id}>
-                    <Link
-                      to="/agents/runs/$runId"
-                      params={{ runId: r.id }}
-                      className="group block rounded-lg px-3 py-2 transition-colors hover:bg-muted"
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
-                          {r.title}
+      {openArtifact === null ? (
+        <div className="flex min-h-0 flex-col gap-4">
+          <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
+            <CardHeader>
+              <CardTitle>Recent runs</CardTitle>
+            </CardHeader>
+            <CardContent className="min-h-0 overflow-y-auto p-0">
+              {runsHistory.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">No runs yet.</p>
+              ) : (
+                <ul className="flex flex-col">
+                  {runsHistory.slice(0, 12).map((r) => (
+                    <li key={r.id}>
+                      <Link
+                        to="/agents/runs/$runId"
+                        params={{ runId: r.id }}
+                        className="group block rounded-lg px-3 py-2 transition-colors hover:bg-muted"
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
+                            {r.title}
+                          </span>
+                          <RunStatusBadge status={r.status} />
                         </span>
-                        <RunStatusBadge status={r.status} />
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        <TimeAgo iso={r.createdAt} />
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                        <span className="text-[11px] text-muted-foreground">
+                          <TimeAgo iso={r.createdAt} />
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
+          <ArtifactPanel
+            artifact={openArtifact}
+            onClose={() => setOpenArtifact(null)}
+            className="h-full"
+          />
+        </div>
+      )}
     </div>
   );
 }
