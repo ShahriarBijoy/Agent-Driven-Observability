@@ -1,6 +1,6 @@
 import type { Artifact } from "@obs/contracts";
 import { CheckIcon, CopyIcon, DownloadIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArtifactAction,
   ArtifactActions,
@@ -15,6 +15,7 @@ import { Markdown } from "~/components/markdown";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { downloadArtifact, languageFor, wrapArtifactHtml } from "~/lib/artifact-view";
+import { useMountEffect } from "~/lib/use-mount-effect";
 import { cn } from "~/lib/utils";
 
 type View = "preview" | "code";
@@ -36,6 +37,20 @@ export function ArtifactPanel({
 }) {
   const [view, setView] = useState<View>("preview");
   const [copied, setCopied] = useState(false);
+
+  // Escape closes the panel — the only keyboard dismissal on the mobile
+  // overlay, where the close button is easy to tab past. The ref carries the
+  // latest onClose into the mount-scoped listener (same pattern as the run
+  // page's statusRef).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useMountEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onCloseRef.current();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
 
   async function copy() {
     await navigator.clipboard.writeText(artifact.content);
