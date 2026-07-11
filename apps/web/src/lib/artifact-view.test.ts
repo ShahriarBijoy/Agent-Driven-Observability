@@ -1,4 +1,3 @@
-import type { Artifact } from "@obs/contracts";
 import { describe, expect, it } from "vitest";
 import { ARTIFACT_CSP, languageFor, wrapArtifactHtml } from "./artifact-view";
 
