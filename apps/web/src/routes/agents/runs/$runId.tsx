@@ -6,9 +6,11 @@ import {
   ShieldAlertIcon,
   XIcon,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import type { Artifact } from "@obs/contracts";
+import { ArtifactPanel } from "~/components/artifact-panel";
 import { RunStatusBadge } from "~/components/run-status-badge";
-import { ArtifactCard, RunFeedItem } from "~/components/run-feed-item";
+import { RunFeedItem } from "~/components/run-feed-item";
 import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -21,6 +23,7 @@ import {
 } from "~/components/ui/empty";
 import { buildRunFeed, feedPartKey } from "~/lib/run-feed";
 import { useMountEffect } from "~/lib/use-mount-effect";
+import { cn } from "~/lib/utils";
 import { decideApproval, getAgentRun } from "~/server/functions";
 
 export const Route = createFileRoute("/agents/runs/$runId")({
@@ -39,6 +42,7 @@ function RunDetailPage() {
   // the latest status into the interval so polling stops once the run settles.
   const statusRef = useRef(run?.status);
   statusRef.current = run?.status;
+  const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   useMountEffect(() => {
     const timer = setInterval(() => {
       if (statusRef.current !== undefined && LIVE_STATUSES.has(statusRef.current)) {
@@ -89,63 +93,80 @@ function RunDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-6">
-      <div className="panel-rise mb-5">
-        <Button
-          variant="ghost"
-          size="xs"
-          nativeButton={false}
-          className="-ml-2 text-muted-foreground"
-          render={<Link to="/agents" />}
-        >
-          <ArrowLeftIcon data-icon="inline-start" />
-          Agents
-        </Button>
-        <div className="mt-1.5 flex flex-wrap items-center gap-3">
-          <h1 className="font-heading text-lg font-semibold tracking-tight">{run.title}</h1>
-          <Badge variant="secondary">{run.agent}</Badge>
-          <RunStatusBadge status={run.status} />
+    <div
+      className={cn(
+        "mx-auto px-6 py-6",
+        openArtifact !== null
+          ? "grid max-w-none grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
+          : "max-w-3xl",
+      )}
+    >
+      <div className="min-w-0">
+        <div className="panel-rise mb-5">
+          <Button
+            variant="ghost"
+            size="xs"
+            nativeButton={false}
+            className="-ml-2 text-muted-foreground"
+            render={<Link to="/agents" />}
+          >
+            <ArrowLeftIcon data-icon="inline-start" />
+            Agents
+          </Button>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
+            <h1 className="font-heading text-lg font-semibold tracking-tight">{run.title}</h1>
+            <Badge variant="secondary">{run.agent}</Badge>
+            <RunStatusBadge status={run.status} />
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            <span className="font-mono">{run.id}</span> · tenant {run.tenant} · started{" "}
+            <TimeAgo iso={run.createdAt} />
+          </p>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          <span className="font-mono">{run.id}</span> · tenant {run.tenant} · started{" "}
-          <TimeAgo iso={run.createdAt} />
-        </p>
+
+        {pendingApproval !== undefined ? (
+          <div className="panel-rise mb-5 rounded-xl border border-warning/30 bg-warning/10 px-5 py-4">
+            <p className="flex items-center gap-2 text-sm font-medium text-warning">
+              <ShieldAlertIcon className="size-4" />
+              Approval gate — agent paused
+            </p>
+            <p className="mt-2 text-sm text-foreground/90">{pendingApproval.summary}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Requested <TimeAgo iso={pendingApproval.requestedAt} />
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" onClick={() => void decide("approved")}>
+                <CheckIcon data-icon="inline-start" />
+                Approve
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => void decide("denied")}>
+                <XIcon data-icon="inline-start" />
+                Deny
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="panel-rise panel-rise-1 flex flex-col gap-4">
+          {feed.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No messages recorded.</p>
+          ) : (
+            feed.map((part) => (
+              <RunFeedItem key={feedPartKey(part)} part={part} onOpenArtifact={setOpenArtifact} />
+            ))
+          )}
+        </div>
       </div>
 
-      {pendingApproval !== undefined ? (
-        <div className="panel-rise mb-5 rounded-xl border border-warning/30 bg-warning/10 px-5 py-4">
-          <p className="flex items-center gap-2 text-sm font-medium text-warning">
-            <ShieldAlertIcon className="size-4" />
-            Approval gate — agent paused
-          </p>
-          <p className="mt-2 text-sm text-foreground/90">{pendingApproval.summary}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Requested <TimeAgo iso={pendingApproval.requestedAt} />
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" onClick={() => void decide("approved")}>
-              <CheckIcon data-icon="inline-start" />
-              Approve
-            </Button>
-            <Button size="sm" variant="destructive" onClick={() => void decide("denied")}>
-              <XIcon data-icon="inline-start" />
-              Deny
-            </Button>
-          </div>
+      {openArtifact !== null ? (
+        <div className="max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3 lg:sticky lg:top-6 lg:h-[calc(100dvh-8rem)]">
+          <ArtifactPanel
+            artifact={openArtifact}
+            onClose={() => setOpenArtifact(null)}
+            className="h-full"
+          />
         </div>
       ) : null}
-
-      <div className="panel-rise panel-rise-1 flex flex-col gap-4">
-        {feed.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No messages recorded.</p>
-        ) : (
-          feed.map((part) => <RunFeedItem key={feedPartKey(part)} part={part} />)
-        )}
-
-        {run.artifacts.map((artifact) => (
-          <ArtifactCard key={artifact.id} artifact={artifact} />
-        ))}
-      </div>
     </div>
   );
 }
