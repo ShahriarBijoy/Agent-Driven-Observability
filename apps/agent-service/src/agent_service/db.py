@@ -238,7 +238,7 @@ async def get_run(run_id: str) -> AgentRun | None:
         ],
         artifacts=[
             Artifact(id=a["id"], name=a["name"], media_type=a["media_type"],
-                     content=a["content"])
+                     content=a["content"], created_at=_iso(a["created_at"]) or "")
             for a in arts
         ],
         approvals=[

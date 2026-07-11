@@ -214,22 +214,22 @@ def build_mcp_server(ctx: RunContext):
 
     @tool(
         "save_artifact",
-        "Persist an artifact tied to this run (e.g. a Markdown postmortem or JSON report). "
-        "kind is 'markdown' or 'json'. Returns the artifact id.",
+        "Persist an artifact tied to this run (e.g. a Markdown postmortem, JSON report, or a "
+        "self-contained HTML page with inline SVG charts). kind is 'markdown', 'json', or "
+        "'html'. HTML artifacts render in a sandboxed viewer that blocks ALL network access — "
+        "inline CSS/SVG/JS only, no external URLs. Returns the artifact id.",
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["markdown", "json"]},
+                "kind": {"type": "string", "enum": ["markdown", "json", "html"]},
                 "content": {"type": "string"},
-                "name": {"type": "string", "description": "file name, e.g. postmortem.md"},
+                "name": {"type": "string", "description": "file name, e.g. postmortem.md or report.html"},
             },
             "required": ["kind", "content"],
         },
     )
     async def _artifact(args: dict) -> dict:
-        kind = args["kind"]
-        media = "text/markdown" if kind == "markdown" else "application/json"
-        default_name = "artifact.md" if kind == "markdown" else "artifact.json"
+        media, default_name = ARTIFACT_KINDS.get(args["kind"], ARTIFACT_KINDS["markdown"])
         # `name` comes from the model — sanitise to a single safe basename so a
         # crafted/injected name can't write a file copy outside ARTIFACTS_DIR.
         safe_name = safe_artifact_name(args.get("name"), default_name)
@@ -251,6 +251,14 @@ def build_mcp_server(ctx: RunContext):
 
     return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _gh, _approval, _artifact])
 
+
+# save_artifact kind → (media type, default file name). Unit-tested; keep in
+# sync with the tool schema enum below.
+ARTIFACT_KINDS: dict[str, tuple[str, str]] = {
+    "markdown": ("text/markdown", "artifact.md"),
+    "json": ("application/json", "artifact.json"),
+    "html": ("text/html", "artifact.html"),
+}
 
 # ---- per-agent allow-lists + system prompts ---------------------------------
 
@@ -281,7 +289,13 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "and the lab Postgres (read-only). Always ground claims in tool results; never guess. "
         "Prefer few, well-chosen queries over many chatty ones. Be concise and specific: name "
         "the service, span, tenant, or metric. When you reach a conclusion worth keeping, save a "
-        "short Markdown summary with save_artifact."
+        "short Markdown summary with save_artifact. When a visual would explain the finding "
+        "better than prose — a latency curve, a before/after comparison, a dependency sketch — "
+        "also save ONE HTML artifact (kind='html'): a single self-contained file, inline CSS and "
+        "inline SVG only, no external URLs (the viewer blocks all network), dark background with "
+        "light text, charts drawn from the REAL numbers your queries returned. Keep it focused — "
+        "one clear figure beats a dashboard. For quick sketches inside Markdown, a ```mermaid "
+        "fenced code block renders as a diagram."
     ),
     "incident-reporter": (
         "You are the incident reporter. You receive a Grafana alert payload and write a "
@@ -290,7 +304,11 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "cause (name the slow span or error signature), and concrete next steps. Then call "
         "save_artifact with kind='markdown' to store the postmortem. Sections: Summary, Impact, "
         "Timeline, Evidence (with the queries you ran), Likely cause, Recommended actions. "
-        "Be specific and evidence-backed; this goes straight to the incident inbox."
+        "Be specific and evidence-backed; this goes straight to the incident inbox. The "
+        "postmortem may include ```mermaid fenced diagrams (e.g. an incident timeline or the "
+        "failing dependency edge). If a chart materially helps (error-rate spike, latency "
+        "before/after), additionally save ONE kind='html' artifact — self-contained, inline "
+        "CSS/SVG only, no external resources, dark-themed, drawn from real query results."
     ),
     "dashboard-generator": (
         "You are the dashboard generator. Turn a natural-language brief into a Grafana dashboard. "

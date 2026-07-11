@@ -27,6 +27,7 @@ from .models import (
     RunStatus,
     ToolCall,
     ev_approval,
+    ev_artifact,
     ev_done,
     ev_error,
     ev_run,
@@ -146,9 +147,13 @@ class RunContext:
     # ---- artifacts -----------------------------------------------------------
 
     async def add_artifact(self, name: str, media_type: MediaType, content: str) -> Artifact:
-        artifact = Artifact(id=new_id("art"), name=name, media_type=media_type, content=content)
+        artifact = Artifact(
+            id=new_id("art"), name=name, media_type=media_type, content=content,
+            created_at=now_iso(),
+        )
         self.run.artifacts.append(artifact)
         await db.add_artifact(self.run_id, artifact)
+        hub.publish(self.run_id, ev_artifact(artifact))
         return artifact
 
     # ---- lifecycle -----------------------------------------------------------
