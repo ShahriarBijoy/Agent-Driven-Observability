@@ -36,9 +36,9 @@ Decisions made with the user:
 
 ## 2. Agent-service
 
-- `db.py`: `agent_artifacts` gains `created_at timestamptz NOT NULL DEFAULT
-  now()` via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in the init SQL (the
-  default backfills existing rows); include it in insert/select/row mapping.
+- `db.py`: `agent_artifacts` already has `created_at timestamptz NOT NULL
+  DEFAULT now()` — no migration needed; `get_run` starts reading it back into
+  the model (it is dropped on read today).
 - `context.py` `add_artifact`: stamp `created_at` and `hub.publish(...,
   ev_artifact(artifact))` — the missing half of the persist+publish pattern
   every other method already follows.
