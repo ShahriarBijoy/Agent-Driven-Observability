@@ -1,19 +1,22 @@
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  TBody,
-  TD,
-  TH,
-  THead,
-  TR,
-  Table,
-} from "@obs/ui";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "~/components/ui/table";
 import { AGENT_PERMISSIONS } from "~/lib/agent-permissions";
 import { TENANTS, tenantStore } from "~/lib/tenant";
 import { getDevAuth } from "~/server/functions";
@@ -37,122 +40,127 @@ function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 px-6 py-6">
-      <h1 className="panel-rise font-display text-2xl font-medium text-ink">Settings</h1>
+      <h1 className="panel-rise font-heading text-xl font-semibold tracking-tight">Settings</h1>
 
-      <Card className="panel-rise panel-rise-1">
+      <Card size="sm" className="panel-rise panel-rise-1">
         <CardHeader>
           <CardTitle>Dev auth</CardTitle>
-          <Badge tone="warn">local only — no real auth until a later phase</Badge>
+          <CardDescription>
+            Local only. No real auth until a later phase — fixed credentials from{" "}
+            <code className="font-mono text-xs">.env</code>, resolved against the gateway's
+            hardcoded registry.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="flex items-center gap-3">
-            <span className="w-28 font-mono text-[11px] text-ink-faint uppercase">
-              default tenant
-            </span>
-            <code className="font-mono text-sm text-ink">{devTenant}</code>
+            <span className="w-32 text-xs text-muted-foreground">Default tenant</span>
+            <code className="font-mono text-sm">{devTenant}</code>
           </div>
           <div className="flex items-center gap-3">
-            <span className="w-28 font-mono text-[11px] text-ink-faint uppercase">dev token</span>
-            <code className="font-mono text-sm text-ink">
+            <span className="w-32 text-xs text-muted-foreground">Dev token</span>
+            <code className="font-mono text-sm">
               {revealed ? devToken : "•".repeat(devToken.length)}
             </code>
-            <Button size="sm" variant="ghost" onClick={() => setRevealed((r) => !r)}>
-              {revealed ? "hide" : "reveal"}
+            <Button size="xs" variant="outline" onClick={() => setRevealed((r) => !r)}>
+              {revealed ? "Hide" : "Reveal"}
             </Button>
           </div>
-          <p className="pt-1 text-xs text-ink-faint">
-            Fixed credentials from <code>.env</code> (<code>DEV_TOKEN</code>,{" "}
-            <code>DEV_TENANT</code>). The gateway's auth slice resolves them against its hardcoded
-            registry.
-          </p>
         </CardContent>
       </Card>
 
-      <Card className="panel-rise panel-rise-2">
+      <Card size="sm" className="panel-rise panel-rise-2">
         <CardHeader>
           <CardTitle>Tenants</CardTitle>
-          <span className="font-mono text-[10px] text-ink-faint uppercase">
-            switching applies to agent runs only
-          </span>
+          <CardDescription>Switching applies to agent runs only.</CardDescription>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent>
           <Table>
-            <THead>
-              <TR>
-                <TH>tenant</TH>
-                <TH>token</TH>
-                <TH>bucket capacity</TH>
-                <TH>refill / s</TH>
-                <TH />
-              </TR>
-            </THead>
-            <TBody>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Tenant</TableHead>
+                <TableHead>Token</TableHead>
+                <TableHead className="text-right">Bucket capacity</TableHead>
+                <TableHead className="text-right">Refill / s</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {TENANT_ROWS.map((t) => (
-                <TR key={t.tenant}>
-                  <TD className="font-mono text-ink">{t.tenant}</TD>
-                  <TD className="font-mono text-xs">{t.token}</TD>
-                  <TD className="font-mono tabular-nums">{t.capacity}</TD>
-                  <TD className="font-mono tabular-nums">{t.refill}</TD>
-                  <TD>
+                <TableRow key={t.tenant}>
+                  <TableCell className="font-mono">{t.tenant}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {t.token}
+                  </TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">
+                    {t.capacity}
+                  </TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{t.refill}</TableCell>
+                  <TableCell className="text-right">
                     {active === t.tenant ? (
-                      <Badge tone="signal">active</Badge>
+                      <Badge variant="secondary" className="bg-primary/10 text-primary">
+                        active
+                      </Badge>
                     ) : TENANTS.includes(t.tenant) ? (
-                      <Button size="sm" variant="ghost" onClick={() => tenantStore.set(t.tenant)}>
-                        switch
+                      <Button size="xs" variant="ghost" onClick={() => tenantStore.set(t.tenant)}>
+                        Switch
                       </Button>
                     ) : null}
-                  </TD>
-                </TR>
+                  </TableCell>
+                </TableRow>
               ))}
-            </TBody>
+            </TableBody>
           </Table>
         </CardContent>
       </Card>
 
-      <Card className="panel-rise panel-rise-3">
+      <Card size="sm" className="panel-rise panel-rise-3">
         <CardHeader>
           <CardTitle>Agent permissions</CardTitle>
-          <span className="font-mono text-[10px] text-ink-faint uppercase">
-            enforced by agent-service in phase 5
-          </span>
+          <CardDescription>Enforced by agent-service.</CardDescription>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent>
           <Table>
-            <THead>
-              <TR>
-                <TH>agent</TH>
-                <TH>purpose</TH>
-                <TH>tools</TH>
-                <TH>approval gate</TH>
-              </TR>
-            </THead>
-            <TBody>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Agent</TableHead>
+                <TableHead>Purpose</TableHead>
+                <TableHead>Tools</TableHead>
+                <TableHead>Approval gate</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {AGENT_PERMISSIONS.map((p) => (
-                <TR key={p.agent}>
-                  <TD className="font-mono text-data">{p.agent}</TD>
-                  <TD className="max-w-56 text-xs">{p.description}</TD>
-                  <TD>
+                <TableRow key={p.agent}>
+                  <TableCell className="font-mono text-info">{p.agent}</TableCell>
+                  <TableCell className="max-w-56 text-xs whitespace-normal text-muted-foreground">
+                    {p.description}
+                  </TableCell>
+                  <TableCell>
                     <div className="flex max-w-64 flex-wrap gap-1">
                       {p.tools.map((tool) => (
                         <code
                           key={tool}
-                          className="rounded-xs bg-inset px-1.5 py-0.5 font-mono text-[10px] text-ink-faint"
+                          className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
                         >
                           {tool}
                         </code>
                       ))}
                     </div>
-                  </TD>
-                  <TD>
+                  </TableCell>
+                  <TableCell>
                     {p.needsApproval ? (
-                      <Badge tone="warn">required</Badge>
+                      <Badge variant="secondary" className="bg-warning/15 text-warning">
+                        required
+                      </Badge>
                     ) : (
-                      <Badge tone="good">read-only</Badge>
+                      <Badge variant="secondary" className="bg-success/15 text-success">
+                        read-only
+                      </Badge>
                     )}
-                  </TD>
-                </TR>
+                  </TableCell>
+                </TableRow>
               ))}
-            </TBody>
+            </TableBody>
           </Table>
         </CardContent>
       </Card>

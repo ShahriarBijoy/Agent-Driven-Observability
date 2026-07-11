@@ -1,18 +1,35 @@
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  EmptyState,
-  StatusDot,
-} from "@obs/ui";
+import type { ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  FileTextIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { useRef } from "react";
 import { Markdown } from "~/components/markdown";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
+import { Badge } from "~/components/ui/badge";
+import { Bubble, BubbleContent } from "~/components/ui/bubble";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "~/components/ui/collapsible";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "~/components/ui/empty";
+import { Message, MessageContent, MessageHeader } from "~/components/ui/message";
+import { Spinner } from "~/components/ui/spinner";
 import { useMountEffect } from "~/lib/use-mount-effect";
 import { decideApproval, getAgentRun } from "~/server/functions";
 
@@ -44,18 +61,28 @@ function RunDetailPage() {
   if (run === null) {
     return (
       <div className="mx-auto max-w-3xl px-6 py-10">
-        <EmptyState
-          title="run not found"
-          detail="Echo runs live in BFF memory and evaporate on dev-server restart. Real runs persist once agent-service lands in Phase 5."
-          action={
-            <Link
-              to="/agents"
-              className="font-mono text-[11px] text-signal-dim uppercase hover:text-signal"
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FileTextIcon />
+            </EmptyMedia>
+            <EmptyTitle>Run not found</EmptyTitle>
+            <EmptyDescription>
+              Echo runs live in BFF memory and evaporate on dev-server restart. Real runs persist
+              now that agent-service is up.
+            </EmptyDescription>
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              className="mt-2"
+              render={<Link to="/agents" />}
             >
-              back to agents →
-            </Link>
-          }
-        />
+              <ArrowLeftIcon data-icon="inline-start" />
+              Back to agents
+            </Button>
+          </EmptyHeader>
+        </Empty>
       </div>
     );
   }
@@ -73,64 +100,89 @@ function RunDetailPage() {
   return (
     <div className="mx-auto max-w-6xl px-6 py-6">
       <div className="panel-rise mb-5">
-        <Link
-          to="/agents"
-          className="font-mono text-[10px] text-ink-faint uppercase hover:text-signal"
+        <Button
+          variant="ghost"
+          size="xs"
+          nativeButton={false}
+          className="-ml-2 text-muted-foreground"
+          render={<Link to="/agents" />}
         >
-          ← agents
-        </Link>
-        <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-xl font-medium text-ink">{run.title}</h1>
-          <Badge tone="data">{run.agent}</Badge>
+          <ArrowLeftIcon data-icon="inline-start" />
+          Agents
+        </Button>
+        <div className="mt-1.5 flex flex-wrap items-center gap-3">
+          <h1 className="font-heading text-lg font-semibold tracking-tight">{run.title}</h1>
+          <Badge variant="secondary">{run.agent}</Badge>
           <RunStatusBadge status={run.status} />
-          <span className="font-mono text-[10px] text-ink-faint">
-            {run.id} · tenant {run.tenant} · started <TimeAgo iso={run.createdAt} />
-          </span>
         </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          <span className="font-mono">{run.id}</span> · tenant {run.tenant} · started{" "}
+          <TimeAgo iso={run.createdAt} />
+        </p>
       </div>
 
       {pendingApproval !== undefined ? (
-        <div className="panel-rise mb-5 rounded-md border border-signal-dim/50 bg-signal/5 px-5 py-4">
-          <p className="font-mono text-[11px] tracking-[0.14em] text-signal uppercase">
-            approval gate — agent paused
+        <div className="panel-rise mb-5 rounded-xl border border-warning/30 bg-warning/10 px-5 py-4">
+          <p className="flex items-center gap-2 text-sm font-medium text-warning">
+            <ShieldAlertIcon className="size-4" />
+            Approval gate — agent paused
           </p>
-          <p className="mt-2 text-sm text-ink-dim">{pendingApproval.summary}</p>
-          <p className="mt-1 font-mono text-[10px] text-ink-faint">
-            requested <TimeAgo iso={pendingApproval.requestedAt} />
+          <p className="mt-2 text-sm text-foreground/90">{pendingApproval.summary}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Requested <TimeAgo iso={pendingApproval.requestedAt} />
           </p>
           <div className="mt-3 flex gap-2">
-            <Button variant="signal" onClick={() => void decide("approved")}>
-              approve
+            <Button size="sm" onClick={() => void decide("approved")}>
+              <CheckIcon data-icon="inline-start" />
+              Approve
             </Button>
-            <Button variant="danger" onClick={() => void decide("denied")}>
-              deny
+            <Button size="sm" variant="destructive" onClick={() => void decide("denied")}>
+              <XIcon data-icon="inline-start" />
+              Deny
             </Button>
           </div>
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           <Card className="panel-rise panel-rise-1">
             <CardHeader>
               <CardTitle>Message log</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 py-3">
+            <CardContent>
               {run.messages.length === 0 ? (
-                <p className="text-xs text-ink-faint">No messages recorded.</p>
+                <p className="text-xs text-muted-foreground">No messages recorded.</p>
               ) : (
-                run.messages.map((m) => (
-                  <div
-                    key={m.id}
-                    className="rounded-sm border border-rule-soft bg-inset px-3 py-2.5"
-                  >
-                    <p className="mb-1 flex items-baseline justify-between font-mono text-[9px] tracking-[0.16em] text-ink-faint uppercase">
-                      {m.role === "user" ? "operator" : m.role}
-                      <TimeAgo iso={m.createdAt} />
-                    </p>
-                    <p className="text-sm whitespace-pre-wrap text-ink-dim">{m.content}</p>
-                  </div>
-                ))
+                <div className="flex flex-col gap-5">
+                  {run.messages.map((m) => (
+                    <Message key={m.id} align={m.role === "user" ? "end" : "start"}>
+                      <MessageContent>
+                        <MessageHeader className="gap-2">
+                          <span className="font-medium">
+                            {m.role === "user" ? "Operator" : m.role}
+                          </span>
+                          <span className="text-muted-foreground/70">
+                            <TimeAgo iso={m.createdAt} />
+                          </span>
+                        </MessageHeader>
+                        {m.role === "user" ? (
+                          <Bubble align="end" variant="secondary">
+                            <BubbleContent className="whitespace-pre-wrap">
+                              {m.content}
+                            </BubbleContent>
+                          </Bubble>
+                        ) : (
+                          <Bubble variant="ghost">
+                            <BubbleContent>
+                              <Markdown className="typeset-chat">{m.content}</Markdown>
+                            </BubbleContent>
+                          </Bubble>
+                        )}
+                      </MessageContent>
+                    </Message>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
@@ -140,20 +192,22 @@ function RunDetailPage() {
               <CardHeader>
                 <CardTitle>Artifacts</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4 py-3">
+              <CardContent className="space-y-4">
                 {run.artifacts.map((a) => (
                   <div key={a.id}>
-                    <p className="mb-1.5 flex items-center gap-2 font-mono text-[11px] text-ink-faint">
-                      <span className="text-data">▣</span>
-                      {a.name}
-                      <Badge tone="neutral">{a.mediaType}</Badge>
+                    <p className="mb-2 flex items-center gap-2 text-xs font-medium">
+                      <FileTextIcon className="size-3.5 text-muted-foreground" />
+                      <span className="font-mono">{a.name}</span>
+                      <Badge variant="outline" className="text-muted-foreground">
+                        {a.mediaType}
+                      </Badge>
                     </p>
                     {a.mediaType === "text/markdown" ? (
-                      <div className="rounded-sm border border-rule-soft px-4 py-3">
-                        <Markdown>{a.content}</Markdown>
+                      <div className="rounded-xl border px-5 py-4">
+                        <Markdown className="typeset-docs">{a.content}</Markdown>
                       </div>
                     ) : (
-                      <pre className="overflow-x-auto rounded-sm border border-rule-soft bg-inset px-4 py-3 font-mono text-xs text-ink-dim">
+                      <pre className="overflow-x-auto rounded-xl border bg-muted/50 px-4 py-3 font-mono text-xs">
                         {a.content}
                       </pre>
                     )}
@@ -165,58 +219,43 @@ function RunDetailPage() {
         </div>
 
         <div className="space-y-4">
-          <Card className="panel-rise panel-rise-2">
+          <Card size="sm" className="panel-rise panel-rise-2">
             <CardHeader>
-              <CardTitle>Tool-call timeline</CardTitle>
+              <CardTitle>Tool calls</CardTitle>
             </CardHeader>
-            <CardContent className="py-3">
+            <CardContent>
               {run.toolCalls.length === 0 ? (
-                <p className="text-xs text-ink-faint">No tool calls.</p>
+                <p className="text-xs text-muted-foreground">No tool calls.</p>
               ) : (
-                <ol className="relative space-y-3 border-l border-rule pl-4">
+                <div className="flex flex-col">
                   {run.toolCalls.map((tc) => (
-                    <li key={tc.id} className="relative">
-                      <span className="absolute top-1 -left-[21px]">
-                        <StatusDot
-                          tone={
-                            tc.status === "ok" ? "good" : tc.status === "error" ? "bad" : "live"
-                          }
-                        />
-                      </span>
-                      <p className="font-mono text-[11px] text-data">{tc.name}</p>
-                      <pre className="mt-1 overflow-x-auto rounded-xs bg-inset px-2 py-1 font-mono text-[10px] text-ink-faint">
-                        {JSON.stringify(tc.args, null, 2)}
-                      </pre>
-                      {tc.result !== undefined ? (
-                        <p className="mt-1 text-[11px] text-ink-faint">{tc.result}</p>
-                      ) : null}
-                      <p className="mt-0.5 font-mono text-[9px] text-ink-faint/70 uppercase">
-                        <TimeAgo iso={tc.startedAt} />
-                        {tc.endedAt !== undefined
-                          ? ` · ${Math.max(0, new Date(tc.endedAt).getTime() - new Date(tc.startedAt).getTime())}ms`
-                          : " · running"}
-                      </p>
-                    </li>
+                    <ToolCallRow key={tc.id} toolCall={tc} />
                   ))}
-                </ol>
+                </div>
               )}
             </CardContent>
           </Card>
 
           {run.approvals.length > 0 ? (
-            <Card className="panel-rise panel-rise-3">
+            <Card size="sm" className="panel-rise panel-rise-3">
               <CardHeader>
                 <CardTitle>Approvals</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 py-3">
+              <CardContent className="space-y-2">
                 {run.approvals.map((a) => (
-                  <div key={a.id} className="rounded-sm border border-rule-soft bg-inset px-3 py-2">
-                    <p className="text-xs text-ink-dim">{a.summary}</p>
-                    <p className="mt-1 font-mono text-[10px] uppercase">
+                  <div key={a.id} className="rounded-lg border px-3 py-2">
+                    <p className="text-xs">{a.summary}</p>
+                    <p className="mt-1 text-xs">
                       {a.decision === undefined ? (
-                        <span className="text-signal">pending</span>
+                        <span className="font-medium text-warning">Pending</span>
                       ) : (
-                        <span className={a.decision === "approved" ? "text-good" : "text-warn"}>
+                        <span
+                          className={
+                            a.decision === "approved"
+                              ? "font-medium text-success"
+                              : "font-medium text-destructive"
+                          }
+                        >
                           {a.decision}{" "}
                           {a.decidedAt !== undefined ? <TimeAgo iso={a.decidedAt} /> : ""}
                         </span>
@@ -230,5 +269,42 @@ function RunDetailPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ToolCallRow({ toolCall: tc }: { toolCall: ToolCall }) {
+  const duration =
+    tc.endedAt !== undefined
+      ? `${Math.max(0, new Date(tc.endedAt).getTime() - new Date(tc.startedAt).getTime())}ms`
+      : "running";
+
+  return (
+    <Collapsible className="group/tool border-b border-border/60 py-1.5 last:border-0">
+      <CollapsibleTrigger className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md py-1 text-left transition-colors hover:text-foreground">
+        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-has-[[data-panel-open]]/tool:rotate-90" />
+        {tc.status === "ok" ? (
+          <CheckIcon className="size-3.5 shrink-0 text-success" />
+        ) : tc.status === "error" ? (
+          <XIcon className="size-3.5 shrink-0 text-destructive" />
+        ) : (
+          <Spinner className="size-3.5 shrink-0" />
+        )}
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">{tc.name}</span>
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{duration}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-1 mb-1.5 space-y-1.5 pl-6">
+          <pre className="max-h-48 overflow-auto rounded-lg border bg-muted/50 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {JSON.stringify(tc.args, null, 2)}
+          </pre>
+          {tc.result !== undefined ? (
+            <p className="text-xs text-muted-foreground">{tc.result}</p>
+          ) : null}
+          <p className="text-[11px] text-muted-foreground/70">
+            Started <TimeAgo iso={tc.startedAt} />
+          </p>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

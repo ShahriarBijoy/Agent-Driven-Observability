@@ -1,10 +1,25 @@
 import ReactMarkdown from "react-markdown";
+import { cn } from "~/lib/utils";
 
-/** Markdown rendering for postmortems, artifacts, and runbooks. */
-export function Markdown({ children }: { children: string }) {
+/**
+ * Markdown rendering on the shadcn typeset system — postmortems, artifacts,
+ * runbooks, and chat. Pass a preset class (`typeset-docs`, `typeset-chat`)
+ * to set the rhythm for the surface.
+ */
+export function Markdown({ children, className }: { children: string; className?: string }) {
   return (
-    <div className="md-body text-sm leading-relaxed text-ink-dim">
-      <ReactMarkdown>{children}</ReactMarkdown>
+    <div className={cn("typeset", className)}>
+      <ReactMarkdown
+        components={{
+          table: ({ node: _node, ...props }) => (
+            <div className="typeset-scroll">
+              <table {...props} />
+            </div>
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }

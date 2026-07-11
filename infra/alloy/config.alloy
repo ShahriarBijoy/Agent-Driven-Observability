@@ -19,7 +19,8 @@ otelcol.receiver.otlp "default" {
     // Phase 4: the web app's browser RUM exports OTLP straight from the
     // page, so the receiver must answer CORS preflights from the app origin.
     cors {
-      allowed_origins = ["http://localhost:3003"]
+      // 3004 covers Vite's auto-increment when 3003 is already taken.
+      allowed_origins = ["http://localhost:3003", "http://localhost:3004"]
       allowed_headers = ["*"]
     }
   }

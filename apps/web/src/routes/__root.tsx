@@ -2,6 +2,8 @@ import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-r
 import type { ReactNode } from "react";
 import { NavRail } from "~/components/nav-rail";
 import { TopBar } from "~/components/top-bar";
+import { TooltipProvider } from "~/components/ui/tooltip";
+import { THEME_INIT_SCRIPT } from "~/lib/theme";
 import appCss from "~/styles.css?url";
 import "~/lib/rum";
 
@@ -13,12 +15,7 @@ export const Route = createRootRoute({
       { title: "obs·lab — control plane" },
     ],
     links: [
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap",
-      },
+      { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
       { rel: "stylesheet", href: appCss },
     ],
   }),
@@ -28,23 +25,29 @@ export const Route = createRootRoute({
 function RootComponent() {
   return (
     <RootDocument>
-      <div className="flex h-dvh flex-col">
-        <TopBar />
-        <div className="flex min-h-0 flex-1">
-          <NavRail />
-          <main className="min-w-0 flex-1 overflow-y-auto">
-            <Outlet />
-          </main>
+      <TooltipProvider>
+        <div className="flex h-dvh flex-col">
+          <TopBar />
+          <div className="flex min-h-0 flex-1">
+            <NavRail />
+            <main className="min-w-0 flex-1 overflow-y-auto">
+              <Outlet />
+            </main>
+          </div>
         </div>
-      </div>
+      </TooltipProvider>
     </RootDocument>
   );
 }
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en">
+    // The theme init script toggles the `dark` class before hydration, so the
+    // server-rendered <html> attributes legitimately differ from the client's.
+    <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Applies the stored theme before first paint — no light/dark flash. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <HeadContent />
       </head>
       <body>
