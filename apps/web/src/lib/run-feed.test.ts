@@ -1,4 +1,4 @@
-import type { Approval, RunMessage, ToolCall } from "@obs/contracts";
+import type { Approval, Artifact, RunMessage, ToolCall } from "@obs/contracts";
 import { describe, expect, it } from "vitest";
 import { buildRunFeed, feedPartKey } from "./run-feed";
 
@@ -24,6 +24,14 @@ function approval(id: string, requestedAt: string): Approval {
   return { id, summary: `approve ${id}`, requestedAt };
 }
 
+function artifact(
+  id: string,
+  createdAt: string,
+  mediaType: Artifact["mediaType"] = "text/html",
+): Artifact {
+  return { id, name: `${id}.html`, mediaType, content: "<h1>x</h1>", createdAt };
+}
+
 describe("buildRunFeed", () => {
   it("interleaves narration segments and tool calls chronologically", () => {
     const feed = buildRunFeed({
@@ -35,6 +43,7 @@ describe("buildRunFeed", () => {
       ],
       toolCalls: [tool("t-1", at(3)), tool("t-2", at(6))],
       approvals: [],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual([
       "m-user",
@@ -51,6 +60,7 @@ describe("buildRunFeed", () => {
       messages: [msg("m-seg", "assistant", at(1, 500))],
       toolCalls: [tool("t-1", at(1, 500))],
       approvals: [],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual(["m-seg", "t-1"]);
   });
@@ -61,6 +71,7 @@ describe("buildRunFeed", () => {
       messages: [msg("m-user", "user", at(0)), msg("m-blob", "assistant", at(20))],
       toolCalls: [tool("t-1", at(2)), tool("t-2", at(4)), tool("t-3", at(6))],
       approvals: [],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual(["m-user", "t-1", "t-2", "t-3", "m-blob"]);
   });
@@ -70,6 +81,7 @@ describe("buildRunFeed", () => {
       messages: [],
       toolCalls: [tool("t-a", at(1)), tool("t-b", at(1)), tool("t-c", at(1))],
       approvals: [],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual(["t-a", "t-b", "t-c"]);
   });
@@ -79,6 +91,7 @@ describe("buildRunFeed", () => {
       messages: [msg("m-user", "user", at(0))],
       toolCalls: [tool("t-gate", at(3), "pending")],
       approvals: [approval("a-1", at(3))],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual(["m-user", "t-gate", "a-1"]);
   });
@@ -93,6 +106,7 @@ describe("buildRunFeed", () => {
       ],
       toolCalls: [tool("t-turn1", at(2)), tool("t-turn2", at(12))],
       approvals: [],
+      artifacts: [],
     });
     expect(feed.map(feedPartKey)).toEqual([
       "m-u1",
@@ -102,5 +116,25 @@ describe("buildRunFeed", () => {
       "t-turn2",
       "m-a2",
     ]);
+  });
+
+  it("interleaves artifacts chronologically", () => {
+    const feed = buildRunFeed({
+      messages: [msg("m-user", "user", at(0)), msg("m-final", "assistant", at(9))],
+      toolCalls: [tool("t-save", at(5))],
+      approvals: [],
+      artifacts: [artifact("art-1", at(7))],
+    });
+    expect(feed.map(feedPartKey)).toEqual(["m-user", "t-save", "art-1", "m-final"]);
+  });
+
+  it("puts an artifact after the tool call that produced it on equal timestamps", () => {
+    const feed = buildRunFeed({
+      messages: [],
+      toolCalls: [tool("t-save", at(5))],
+      approvals: [],
+      artifacts: [artifact("art-1", at(5))],
+    });
+    expect(feed.map(feedPartKey)).toEqual(["t-save", "art-1"]);
   });
 });
