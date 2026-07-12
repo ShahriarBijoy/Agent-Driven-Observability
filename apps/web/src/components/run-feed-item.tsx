@@ -19,11 +19,7 @@ import { Markdown } from "~/components/markdown";
 import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
 import { Bubble, BubbleContent } from "~/components/ui/bubble";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "~/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Message, MessageContent } from "~/components/ui/message";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Spinner } from "~/components/ui/spinner";
@@ -51,9 +47,7 @@ export function RunFeedItem({
         <Message align="end">
           <MessageContent>
             <Bubble align="end" variant="secondary">
-              <BubbleContent className="whitespace-pre-wrap">
-                {block.message.content}
-              </BubbleContent>
+              <BubbleContent className="whitespace-pre-wrap">{block.message.content}</BubbleContent>
             </Bubble>
           </MessageContent>
         </Message>

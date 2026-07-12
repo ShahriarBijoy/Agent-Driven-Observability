@@ -4,13 +4,7 @@ import { useState } from "react";
 import { Markdown } from "~/components/markdown";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -97,9 +91,7 @@ function RunbooksPage() {
                       )}
                     >
                       <p className="text-sm font-medium text-foreground/90">{rb.title}</p>
-                      <p className="mt-0.5 font-mono text-xs text-muted-foreground">
-                        {rb.slug}.md
-                      </p>
+                      <p className="mt-0.5 font-mono text-xs text-muted-foreground">{rb.slug}.md</p>
                     </button>
                   </li>
                 ))}

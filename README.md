@@ -50,17 +50,17 @@ The full lab is those three pieces: **containers + `obs agents` + `obs web`**. T
 
 ### `obs` command reference
 
-| Command                | What it does                                                              |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `obs all [qps] [secs]` | Everything: containers, agent-service, web, and load, in their own windows |
-| `obs up [--build]`     | Bring up the full lab (handles the compose network-ordering gotcha)        |
-| `obs down [-v]`        | Tear it down (`-v` also wipes volumes: seeded data + Grafana state)        |
-| `obs load [qps] [secs]`| Drive synthetic traffic (defaults 120 qps / 300s)                          |
-| `obs demo [qps] [secs]`| Full cycle: up --build → wait healthy → load → down                        |
-| `obs web` / `obs agents` | Run a host process in the current terminal                               |
-| `obs smoke`            | Phase-1 end-to-end smoke test                                              |
-| `obs ps` / `obs logs`  | Container status / follow logs                                             |
-| `obs urls` / `obs hosts` | Print the address table / host-process commands                          |
+| Command                  | What it does                                                               |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `obs all [qps] [secs]`   | Everything: containers, agent-service, web, and load, in their own windows |
+| `obs up [--build]`       | Bring up the full lab (handles the compose network-ordering gotcha)        |
+| `obs down [-v]`          | Tear it down (`-v` also wipes volumes: seeded data + Grafana state)        |
+| `obs load [qps] [secs]`  | Drive synthetic traffic (defaults 120 qps / 300s)                          |
+| `obs demo [qps] [secs]`  | Full cycle: up --build → wait healthy → load → down                        |
+| `obs web` / `obs agents` | Run a host process in the current terminal                                 |
+| `obs smoke`              | Phase-1 end-to-end smoke test                                              |
+| `obs ps` / `obs logs`    | Container status / follow logs                                             |
+| `obs urls` / `obs hosts` | Print the address table / host-process commands                            |
 
 ### Without the wrapper (macOS / Linux)
 
@@ -74,15 +74,15 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 
 ## Service addresses
 
-| Service       | Address               | Notes                            |
-| ------------- | --------------------- | -------------------------------- |
-| Control plane | http://localhost:3003 | dev mode, no auth                |
-| Grafana       | http://localhost:3001 | anonymous (Admin)                |
-| Marquez UI    | http://localhost:3002 | lineage graph                    |
-| Gateway API   | http://localhost:8080 | bearer tokens below              |
-| Agent service | http://localhost:8090 | host process                     |
-| dq-runner     | http://localhost:8091 | `/violations`, `POST /run`       |
-| Pyroscope     | http://localhost:4040 | profiles (opt-in profiler)       |
+| Service       | Address               | Notes                      |
+| ------------- | --------------------- | -------------------------- |
+| Control plane | http://localhost:3003 | dev mode, no auth          |
+| Grafana       | http://localhost:3001 | anonymous (Admin)          |
+| Marquez UI    | http://localhost:3002 | lineage graph              |
+| Gateway API   | http://localhost:8080 | bearer tokens below        |
+| Agent service | http://localhost:8090 | host process               |
+| dq-runner     | http://localhost:8091 | `/violations`, `POST /run` |
+| Pyroscope     | http://localhost:4040 | profiles (opt-in profiler) |
 
 Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo` (bravo), `dev-token-abuser` (abuser — tiny quota, trips 429s).
 

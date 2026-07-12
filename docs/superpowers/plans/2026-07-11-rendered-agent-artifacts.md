@@ -26,10 +26,12 @@
 ### Task 1: Contract — `text/html`, `createdAt`, `artifact` stream event
 
 **Files:**
+
 - Modify: `packages/contracts/src/agents.ts:52-58` (ArtifactSchema), `:109-117` (AgentStreamEventSchema)
 - Modify: `docs/superpowers/specs/2026-07-11-rendered-agent-artifacts-design.md` (§2 correction)
 
 **Interfaces:**
+
 - Produces: `ArtifactSchema` = `{ id, name, mediaType: "text/markdown"|"application/json"|"text/html", content, createdAt: ISO string }`; stream event variant `{ type: "artifact", artifact: Artifact }`. Every later task relies on these exact names.
 
 - [ ] **Step 1: Update ArtifactSchema**
@@ -71,7 +73,7 @@ The DB column already exists (`db.py` SCHEMA_SQL line 66: `created_at TIMESTAMPT
 
 ```markdown
 - `db.py`: `agent_artifacts` already has `created_at timestamptz NOT NULL
-  DEFAULT now()` — no migration needed; `get_run` starts reading it back into
+DEFAULT now()` — no migration needed; `get_run` starts reading it back into
   the model (it is dropped on read today).
 ```
 
@@ -92,10 +94,12 @@ git commit -m "contracts: text/html artifacts, createdAt, artifact stream event"
 ### Task 2: Python models mirror (TDD)
 
 **Files:**
+
 - Modify: `apps/agent-service/src/agent_service/models.py:37` (MediaType), `:85-89` (Artifact), `:139+` (event builders)
 - Test: `apps/agent-service/tests/test_models.py`
 
 **Interfaces:**
+
 - Consumes: contract shapes from Task 1.
 - Produces: `MediaType` includes `"text/html"`; `Artifact` has required `created_at: str`; `ev_artifact(artifact: Artifact) -> dict` returning `{"type": "artifact", "artifact": <wire dict>}`. Tasks 3+ import `ev_artifact`.
 
@@ -177,12 +181,14 @@ git commit -m "agent-service: mirror text/html + createdAt artifact contract, ev
 ### Task 3: agent-service — publish artifacts, read `created_at`, html kind, prompts (TDD)
 
 **Files:**
+
 - Modify: `apps/agent-service/src/agent_service/context.py:146-152`
 - Modify: `apps/agent-service/src/agent_service/db.py:239-243` (get_run artifact mapping)
 - Modify: `apps/agent-service/src/agent_service/tools/sdk.py:215-250` (save_artifact), `:276-294` (prompts)
 - Test: `apps/agent-service/tests/test_context.py` (create), `apps/agent-service/tests/test_sdk_tools.py` (create)
 
 **Interfaces:**
+
 - Consumes: `ev_artifact` from Task 2.
 - Produces: `ctx.add_artifact(name, media_type, content)` (signature unchanged) now stamps `created_at` and publishes; module-level `ARTIFACT_KINDS: dict[str, tuple[str, str]]` in `tools/sdk.py` mapping kind → `(media_type, default_name)`.
 
@@ -312,7 +318,7 @@ Replace the `save_artifact` `@tool(...)` decorator and the first three lines of 
 
 In `SYSTEM_PROMPTS` in the same file, replace the `"rca"` entry's final sentence `"When you reach a conclusion worth keeping, save a short Markdown summary with save_artifact."` so the entry ends with:
 
-```python
+````python
         "the service, span, tenant, or metric. When you reach a conclusion worth keeping, save a "
         "short Markdown summary with save_artifact. When a visual would explain the finding "
         "better than prose — a latency curve, a before/after comparison, a dependency sketch — "
@@ -321,17 +327,17 @@ In `SYSTEM_PROMPTS` in the same file, replace the `"rca"` entry's final sentence
         "light text, charts drawn from the REAL numbers your queries returned. Keep it focused — "
         "one clear figure beats a dashboard. For quick sketches inside Markdown, a ```mermaid "
         "fenced code block renders as a diagram."
-```
+````
 
 And extend the `"incident-reporter"` entry so it ends with:
 
-```python
+````python
         "Be specific and evidence-backed; this goes straight to the incident inbox. The "
         "postmortem may include ```mermaid fenced diagrams (e.g. an incident timeline or the "
         "failing dependency edge). If a chart materially helps (error-rate spike, latency "
         "before/after), additionally save ONE kind='html' artifact — self-contained, inline "
         "CSS/SVG only, no external resources, dark-themed, drawn from real query results."
-```
+````
 
 - [ ] **Step 7: Run the full python suite**
 
@@ -350,10 +356,12 @@ git commit -m "agent-service: publish artifact events, html artifact kind, drawi
 ### Task 4: run-feed — artifacts as interleaved feed parts (TDD)
 
 **Files:**
+
 - Modify: `apps/web/src/lib/run-feed.ts`
 - Test: `apps/web/src/lib/run-feed.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Artifact` (with `createdAt`) from Task 1.
 - Produces: `RunFeedPart` union gains `{ kind: "artifact"; artifact: Artifact }`; `buildRunFeed` takes `Pick<AgentRun, "messages" | "toolCalls" | "approvals" | "artifacts">`; `feedPartKey` handles the new kind. Tasks 7–9 switch on `part.kind === "artifact"`.
 
@@ -374,25 +382,25 @@ function artifact(
 Add `artifacts: []` to every existing `buildRunFeed({...})` call (six of them — the field becomes required). Then add two tests:
 
 ```ts
-  it("interleaves artifacts chronologically", () => {
-    const feed = buildRunFeed({
-      messages: [msg("m-user", "user", at(0)), msg("m-final", "assistant", at(9))],
-      toolCalls: [tool("t-save", at(5))],
-      approvals: [],
-      artifacts: [artifact("art-1", at(7))],
-    });
-    expect(feed.map(feedPartKey)).toEqual(["m-user", "t-save", "art-1", "m-final"]);
+it("interleaves artifacts chronologically", () => {
+  const feed = buildRunFeed({
+    messages: [msg("m-user", "user", at(0)), msg("m-final", "assistant", at(9))],
+    toolCalls: [tool("t-save", at(5))],
+    approvals: [],
+    artifacts: [artifact("art-1", at(7))],
   });
+  expect(feed.map(feedPartKey)).toEqual(["m-user", "t-save", "art-1", "m-final"]);
+});
 
-  it("puts an artifact after the tool call that produced it on equal timestamps", () => {
-    const feed = buildRunFeed({
-      messages: [],
-      toolCalls: [tool("t-save", at(5))],
-      approvals: [],
-      artifacts: [artifact("art-1", at(5))],
-    });
-    expect(feed.map(feedPartKey)).toEqual(["t-save", "art-1"]);
+it("puts an artifact after the tool call that produced it on equal timestamps", () => {
+  const feed = buildRunFeed({
+    messages: [],
+    toolCalls: [tool("t-save", at(5))],
+    approvals: [],
+    artifacts: [artifact("art-1", at(5))],
   });
+  expect(feed.map(feedPartKey)).toEqual(["t-save", "art-1"]);
+});
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -468,10 +476,12 @@ git commit -m "web: interleave artifacts as run-feed parts"
 ### Task 5: `wrapArtifactHtml` — CSP sandbox wrapper (TDD)
 
 **Files:**
+
 - Create: `apps/web/src/lib/artifact-view.ts`
 - Test: `apps/web/src/lib/artifact-view.test.ts`
 
 **Interfaces:**
+
 - Produces: `wrapArtifactHtml(content: string): string`; `languageFor(mediaType: Artifact["mediaType"]): "html" | "markdown" | "json"`; `downloadArtifact(artifact: Artifact): void`. Task 7 consumes all three; Task 8/9 consume none directly.
 
 - [ ] **Step 1: Write the failing tests**
@@ -593,13 +603,15 @@ git commit -m "web: CSP-wrapped srcdoc helper for sandboxed artifact preview"
 ### Task 6: Mermaid rendering in Markdown
 
 **Files:**
+
 - Create: `apps/web/src/components/mermaid.tsx`
 - Modify: `apps/web/src/components/markdown.tsx`
 - Modify: `apps/web/package.json` (via `bun add mermaid`)
 
 **Interfaces:**
+
 - Consumes: `themeStore` (`~/lib/theme`), `useMountEffect` (`~/lib/use-mount-effect`).
-- Produces: `<Mermaid chart={string} />`; `Markdown` renders ```` ```mermaid ```` fences through it. No other task imports `Mermaid` directly.
+- Produces: `<Mermaid chart={string} />`; `Markdown` renders ` ```mermaid ` fences through it. No other task imports `Mermaid` directly.
 
 - [ ] **Step 1: Add the dependency**
 
@@ -679,7 +691,7 @@ export function Mermaid({ chart }: { chart: string }) {
 
 Replace `apps/web/src/components/markdown.tsx` with:
 
-```tsx
+````tsx
 import ReactMarkdown from "react-markdown";
 import { Mermaid } from "~/components/mermaid";
 import { cn } from "~/lib/utils";
@@ -730,12 +742,12 @@ export function Markdown({ children, className }: { children: string; className?
     </div>
   );
 }
-```
+````
 
 - [ ] **Step 4: Typecheck and test**
 
 Run: `cd apps/web && bun run typecheck && bun run test`
-Expected: tests PASS; typecheck may still show ONLY the known Task-4 `run-feed-item.tsx` missing-artifact-case error (fixed in Task 7). If typecheck shows any *other* error, fix it here.
+Expected: tests PASS; typecheck may still show ONLY the known Task-4 `run-feed-item.tsx` missing-artifact-case error (fixed in Task 7). If typecheck shows any _other_ error, fix it here.
 
 - [ ] **Step 5: Commit**
 
@@ -749,10 +761,12 @@ git commit -m "web: render mermaid fences in markdown (lazy, theme-aware)"
 ### Task 7: ArtifactPanel + feed chip/card wiring
 
 **Files:**
+
 - Create: `apps/web/src/components/artifact-panel.tsx`
 - Modify: `apps/web/src/components/run-feed-item.tsx`
 
 **Interfaces:**
+
 - Consumes: `wrapArtifactHtml`, `languageFor`, `downloadArtifact` (Task 5); `RunFeedPart` artifact kind (Task 4); AI Elements artifact primitives.
 - Produces: `<ArtifactPanel artifact onClose className? />`; `RunFeedItem` gains optional `onOpenArtifact?: (artifact: Artifact) => void` and renders artifact parts (chip for `text/html`, card with an open action otherwise); `ArtifactCard` gains optional `onOpen`. Tasks 8–9 consume `ArtifactPanel` and `onOpenArtifact`.
 
@@ -897,7 +911,7 @@ export function RunFeedItem({
 }) {
   switch (part.kind) {
     case "message":
-      // … existing message branch unchanged …
+    // … existing message branch unchanged …
     case "tool":
       return <FeedToolCall toolCall={part.toolCall} />;
     case "approval":
@@ -943,14 +957,16 @@ function ArtifactChip({
 Extend `ArtifactCard` with the optional open action — change its signature to `{ artifact, onOpen }: { artifact: Artifact; onOpen?: (artifact: Artifact) => void }`, replace its `download()` with `downloadArtifact(artifact)`, and add before the copy action inside `<ArtifactActions>`:
 
 ```tsx
-          {onOpen !== undefined ? (
-            <ArtifactAction
-              icon={Maximize2Icon}
-              tooltip="Open in panel"
-              label="Open in side panel"
-              onClick={() => onOpen(artifact)}
-            />
-          ) : null}
+{
+  onOpen !== undefined ? (
+    <ArtifactAction
+      icon={Maximize2Icon}
+      tooltip="Open in panel"
+      label="Open in side panel"
+      onClick={() => onOpen(artifact)}
+    />
+  ) : null;
+}
 ```
 
 - [ ] **Step 3: Typecheck and test**
@@ -970,9 +986,11 @@ git commit -m "web: artifact panel with sandboxed HTML preview, feed chip/card w
 ### Task 8: Run detail page — split pane
 
 **Files:**
+
 - Modify: `apps/web/src/routes/agents/runs/$runId.tsx`
 
 **Interfaces:**
+
 - Consumes: `ArtifactPanel` (Task 7), `onOpenArtifact` prop (Task 7), artifact feed parts (Task 4).
 
 - [ ] **Step 1: Integrate the panel**
@@ -984,28 +1002,28 @@ In `apps/web/src/routes/agents/runs/$runId.tsx`:
 3. Replace the outer wrapper `<div className="mx-auto max-w-3xl px-6 py-6">` (the main return, not the not-found branch) with a two-column shell; the entire current page content becomes the first child:
 
 ```tsx
-    <div
-      className={cn(
-        "mx-auto px-6 py-6",
-        openArtifact !== null
-          ? "grid max-w-none grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
-          : "max-w-3xl",
-      )}
-    >
-      <div className="min-w-0">
-        {/* …everything currently inside the wrapper: header, approval banner, feed… */}
-      </div>
+<div
+  className={cn(
+    "mx-auto px-6 py-6",
+    openArtifact !== null
+      ? "grid max-w-none grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
+      : "max-w-3xl",
+  )}
+>
+  <div className="min-w-0">
+    {/* …everything currently inside the wrapper: header, approval banner, feed… */}
+  </div>
 
-      {openArtifact !== null ? (
-        <div className="max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3 lg:sticky lg:top-6 lg:h-[calc(100dvh-8rem)]">
-          <ArtifactPanel
-            artifact={openArtifact}
-            onClose={() => setOpenArtifact(null)}
-            className="h-full"
-          />
-        </div>
-      ) : null}
+  {openArtifact !== null ? (
+    <div className="max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3 lg:sticky lg:top-6 lg:h-[calc(100dvh-8rem)]">
+      <ArtifactPanel
+        artifact={openArtifact}
+        onClose={() => setOpenArtifact(null)}
+        className="h-full"
+      />
     </div>
+  ) : null}
+</div>
 ```
 
 (The `100dvh-8rem` accounts for the top bar + page padding; adjust visually in Task 10 if it clips.)
@@ -1014,9 +1032,9 @@ In `apps/web/src/routes/agents/runs/$runId.tsx`:
 5. Delete the trailing artifacts block (artifacts now arrive interleaved through `buildRunFeed`):
 
 ```tsx
-        {run.artifacts.map((artifact) => (
-          <ArtifactCard key={artifact.id} artifact={artifact} />
-        ))}
+{
+  run.artifacts.map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} />);
+}
 ```
 
 - [ ] **Step 2: Typecheck and test**
@@ -1036,9 +1054,11 @@ git commit -m "web: split-pane artifact viewer on the run detail page"
 ### Task 9: Live chat — artifact events, auto-open, split pane
 
 **Files:**
+
 - Modify: `apps/web/src/routes/agents/index.tsx`
 
 **Interfaces:**
+
 - Consumes: `artifact` SSE event (Task 1 schema — `readAgentStream` picks it up automatically), `ArtifactPanel` + `onOpenArtifact` (Task 7).
 
 - [ ] **Step 1: Handle the event and add state**
@@ -1077,19 +1097,19 @@ In `apps/web/src/routes/agents/index.tsx`:
 2. Second column — the panel replaces the "Recent runs" sidebar while open:
 
 ```tsx
-      {openArtifact === null ? (
-        <div className="flex min-h-0 flex-col gap-4">
-          {/* …existing Recent runs Card unchanged… */}
-        </div>
-      ) : (
-        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
-          <ArtifactPanel
-            artifact={openArtifact}
-            onClose={() => setOpenArtifact(null)}
-            className="h-full"
-          />
-        </div>
-      )}
+{
+  openArtifact === null ? (
+    <div className="flex min-h-0 flex-col gap-4">{/* …existing Recent runs Card unchanged… */}</div>
+  ) : (
+    <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
+      <ArtifactPanel
+        artifact={openArtifact}
+        onClose={() => setOpenArtifact(null)}
+        className="h-full"
+      />
+    </div>
+  );
+}
 ```
 
 - [ ] **Step 3: Typecheck and test**
@@ -1116,7 +1136,7 @@ Run (three terminals, or confirm already running): `obs up`, then `obs agents` (
 
 - [ ] **Step 2: Live HTML artifact**
 
-On http://localhost:3003/agents ask: *"Query the p95 latency of the gateway over the last 30 minutes with Mimir, then save an HTML artifact with an SVG chart of it titled latency-report.html."*
+On http://localhost:3003/agents ask: _"Query the p95 latency of the gateway over the last 30 minutes with Mimir, then save an HTML artifact with an SVG chart of it titled latency-report.html."_
 Expected: tool calls stream inline → an `artifact` chip appears → the split pane auto-opens with the rendered chart; chat keeps streaming beside it; Close restores the single column; the chip reopens it. Preview/Code tabs both work.
 
 - [ ] **Step 3: Sandbox check**
@@ -1131,7 +1151,7 @@ Expected: the artifact chip sits chronologically after the `save_artifact` tool 
 
 - [ ] **Step 5: Mermaid**
 
-Ask: *"Explain the request path from gateway to model-proxy with a mermaid diagram."*
+Ask: _"Explain the request path from gateway to model-proxy with a mermaid diagram."_
 Expected: the fence renders as a diagram in chat (source shows briefly while streaming, then the diagram); toggling the theme (top bar) re-renders it in the matching mermaid theme.
 
 - [ ] **Step 6: Regression sweep**

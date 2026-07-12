@@ -37,10 +37,10 @@ Decisions made with the user:
 ## 2. Agent-service
 
 - `db.py`: `agent_artifacts` already has `created_at timestamptz NOT NULL
-  DEFAULT now()` — no migration needed; `get_run` starts reading it back into
+DEFAULT now()` — no migration needed; `get_run` starts reading it back into
   the model (it is dropped on read today).
 - `context.py` `add_artifact`: stamp `created_at` and `hub.publish(...,
-  ev_artifact(artifact))` — the missing half of the persist+publish pattern
+ev_artifact(artifact))` — the missing half of the persist+publish pattern
   every other method already follows.
 - `tools/sdk.py` `save_artifact`: `kind` enum gains `"html"` → `text/html`,
   default name `artifact.html`. Name sanitising (`safe_artifact_name`) and the
@@ -50,7 +50,7 @@ Decisions made with the user:
   self-contained file, inline CSS and SVG only, no external URLs (the viewer
   blocks all network), dark-themed to match the UI, charts drawn from real
   tool-result numbers, kept focused (not a token dump). Quick diagrams may use
-  ```` ```mermaid ```` fences in any markdown output instead.
+  ` ```mermaid ` fences in any markdown output instead.
 
 ## 3. Web — split-pane artifact viewer
 
@@ -65,8 +65,8 @@ Elements artifact primitives:
   `allow-same-origin` (unique opaque origin: no cookies, no storage, no parent
   DOM). The srcdoc is wrapped with an injected
   `<meta http-equiv="Content-Security-Policy" content="default-src 'none';
-  style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;
-  font-src data:">` so artifact pages cannot make network requests. This is the
+style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;
+font-src data:">` so artifact pages cannot make network requests. This is the
   containment for prompt-injected telemetry (a hostile log line steering the
   agent's HTML): scripts may run, but they can't reach anything. Residual
   channels: the frame can still navigate itself (location/meta-refresh) to
@@ -98,7 +98,7 @@ auto-opens on it.
 
 ## 5. Mermaid in Markdown
 
-`markdown.tsx` renders ```` ```mermaid ```` fences through the `mermaid`
+`markdown.tsx` renders ` ```mermaid ` fences through the `mermaid`
 library: a `code` component override detects the language, lazy-loads mermaid
 via dynamic import on first use (keeps it out of the main bundle), initializes
 with the theme from the existing light/dark store, and re-renders on theme

@@ -134,7 +134,9 @@ function AgentsPage() {
             // Hub replay on a follow-up turn re-delivers old artifact events:
             // upsert by id (like upsertToolCall) instead of appending.
             setParts((p) => {
-              const idx = p.findIndex((x) => x.kind === "artifact" && x.artifact.id === artifact.id);
+              const idx = p.findIndex(
+                (x) => x.kind === "artifact" && x.artifact.id === artifact.id,
+              );
               if (idx === -1) return [...p, { kind: "artifact", artifact }];
               const next = [...p];
               next[idx] = { kind: "artifact", artifact };
@@ -255,10 +257,7 @@ function AgentsPage() {
                             nativeButton={false}
                             className="mt-2.5"
                             render={
-                              <Link
-                                to="/agents/runs/$runId"
-                                params={{ runId: runIdRef.current }}
-                              />
+                              <Link to="/agents/runs/$runId" params={{ runId: runIdRef.current }} />
                             }
                           >
                             Decide on the run page

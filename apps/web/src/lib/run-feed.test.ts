@@ -45,14 +45,7 @@ describe("buildRunFeed", () => {
       approvals: [],
       artifacts: [],
     });
-    expect(feed.map(feedPartKey)).toEqual([
-      "m-user",
-      "m-seg1",
-      "t-1",
-      "m-seg2",
-      "t-2",
-      "m-final",
-    ]);
+    expect(feed.map(feedPartKey)).toEqual(["m-user", "m-seg1", "t-1", "m-seg2", "t-2", "m-final"]);
   });
 
   it("puts a message before a tool call with the identical timestamp", () => {
@@ -108,14 +101,7 @@ describe("buildRunFeed", () => {
       approvals: [],
       artifacts: [],
     });
-    expect(feed.map(feedPartKey)).toEqual([
-      "m-u1",
-      "t-turn1",
-      "m-a1",
-      "m-u2",
-      "t-turn2",
-      "m-a2",
-    ]);
+    expect(feed.map(feedPartKey)).toEqual(["m-u1", "t-turn1", "m-a1", "m-u2", "t-turn2", "m-a2"]);
   });
 
   it("interleaves artifacts chronologically", () => {

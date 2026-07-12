@@ -2,13 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import {
   Table,
   TableBody,
@@ -91,9 +85,7 @@ function SettingsPage() {
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {t.token}
                   </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {t.capacity}
-                  </TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{t.capacity}</TableCell>
                   <TableCell className="text-right font-mono tabular-nums">{t.refill}</TableCell>
                   <TableCell className="text-right">
                     {active === t.tenant ? (

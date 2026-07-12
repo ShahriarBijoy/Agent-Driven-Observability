@@ -43,9 +43,7 @@ function TelemetryPage() {
             {d.label}
           </button>
         ))}
-        <span className="ml-auto text-xs text-muted-foreground">
-          Grafana · kiosk · now-{range}
-        </span>
+        <span className="ml-auto text-xs text-muted-foreground">Grafana · kiosk · now-{range}</span>
       </div>
       <iframe
         key={src}

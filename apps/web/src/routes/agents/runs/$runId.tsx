@@ -1,11 +1,5 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import {
-  ArrowLeftIcon,
-  CheckIcon,
-  FileTextIcon,
-  ShieldAlertIcon,
-  XIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, CheckIcon, FileTextIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import type { Artifact } from "@obs/contracts";
 import { ArtifactPanel } from "~/components/artifact-panel";
