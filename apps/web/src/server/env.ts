@@ -11,7 +11,7 @@ export const serverEnv = {
    * uvicorn on IPv4, and on Windows `localhost` can resolve to IPv6 (::1) first,
    * which would refuse the BFF's server-side fetch.
    */
-  agentServiceUrl: process.env["AGENT_SERVICE_URL"] ?? "http://127.0.0.1:8090",
+  agentServiceUrl: process.env["AGENT_SERVICE_URL"] ?? "http://127.0.0.1:8093",
   /** Fixed dev credentials (ADR-002): the `acme` tenant's bearer token. */
   devToken: process.env["DEV_TOKEN"] ?? "dev-local-token",
   devTenant: process.env["DEV_TENANT"] ?? "acme",

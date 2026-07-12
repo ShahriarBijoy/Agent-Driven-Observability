@@ -13,6 +13,6 @@ contactPoints:
       - uid: agent-webhook
         type: webhook
         settings:
-          url: http://host.docker.internal:8090/webhook/grafana-alert
+          url: http://host.docker.internal:8093/webhook/grafana-alert
           httpMethod: POST
         disableResolveMessage: false

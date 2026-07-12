@@ -16,7 +16,7 @@
     obs load  [qps] [secs]   Drive synthetic traffic (defaults: 120 qps for 300s).
     obs demo  [qps] [secs]   Full cycle: up --build -> wait healthy -> load -> down.
     obs web                  Start the web control plane (:3003) in THIS terminal (Ctrl-C to stop).
-    obs agents               Start the agent-service (:8090) in THIS terminal (Ctrl-C to stop).
+    obs agents               Start the agent-service (:8093) in THIS terminal (Ctrl-C to stop).
     obs smoke                Phase-1 end-to-end smoke test (needs Git Bash on PATH).
     obs ps                   Show container status.
     obs logs  [service...]   Follow logs (optionally for specific services).
@@ -108,8 +108,8 @@ try {
             Invoke-Up -Extra @()
             if (-not (Wait-Gateway)) { Write-Warning "gateway never came up - aborting host processes + load"; break }
 
-            Write-Step "[2/4] agent-service :8090 (own window)"
-            if (Test-Up 'http://127.0.0.1:8090/health') {
+            Write-Step "[2/4] agent-service :8093 (own window)"
+            if (Test-Up 'http://127.0.0.1:8093/health') {
                 Write-Host "      already running - skipping"
             } else {
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', 'uv sync; uv run python -m agent_service'
@@ -169,16 +169,16 @@ Grafana        http://localhost:3001   (anonymous Admin)
 Marquez UI     http://localhost:3002
 Gateway API    http://localhost:8080
 dq-runner      http://localhost:8091
-Agent service  http://localhost:8090   (host process, see `obs hosts`)
+Agent service  http://localhost:8093   (host process, see `obs hosts`)
 "@
         }
 
         'hosts' {
             Write-Host @"
-The web UI (:3003) and agent-service (:8090) run on the HOST, not in compose.
+The web UI (:3003) and agent-service (:8093) run on the HOST, not in compose.
 Full lab = 'obs up' (containers) + these two, each in its own terminal:
 
-  obs agents     agent-service :8090  (Claude Agent SDK uses your Claude Code login)
+  obs agents     agent-service :8093  (Claude Agent SDK uses your Claude Code login)
   obs web        web control plane :3003
 
 Raw equivalents:
@@ -195,7 +195,7 @@ Raw equivalents:
 
         { $_ -in 'agents', 'agent', 'agent-service' } {
             Set-Location (Join-Path $Repo 'apps\agent-service')
-            Write-Step "agent-service -> http://localhost:8090  (Ctrl-C to stop)"
+            Write-Step "agent-service -> http://localhost:8093  (Ctrl-C to stop)"
             uv sync
             uv run python -m agent_service
         }

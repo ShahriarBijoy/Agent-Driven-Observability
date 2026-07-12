@@ -60,7 +60,7 @@ def load_config() -> Config:
     model = os.environ.get("AGENT_MODEL", "").strip() or None
     subject_repo = os.environ.get("SUBJECT_REPO_DIR", "").strip() or None
     return Config(
-        port=int(_env("AGENT_SERVICE_PORT", "8090")),
+        port=int(_env("AGENT_SERVICE_PORT", "8093")),
         database_url=_env(
             "DATABASE_URL", "postgres://lab:lab@localhost:5432/observability_lab"
         ),
