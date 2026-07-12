@@ -21,7 +21,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "~/components/ui/empty";
-import { buildRunFeed, feedPartKey } from "~/lib/run-feed";
+import { buildRunFeed, feedBlockKey, groupRunFeed } from "~/lib/run-feed";
 import { useMountEffect } from "~/lib/use-mount-effect";
 import { cn } from "~/lib/utils";
 import { decideApproval, getAgentRun } from "~/server/functions";
@@ -82,7 +82,7 @@ function RunDetailPage() {
   }
 
   const pendingApproval = run.approvals.find((a) => a.decision === undefined);
-  const feed = buildRunFeed(run);
+  const feed = groupRunFeed(buildRunFeed(run));
 
   async function decide(decision: "approved" | "denied") {
     if (pendingApproval === undefined) return;
@@ -95,13 +95,13 @@ function RunDetailPage() {
   return (
     <div
       className={cn(
-        "mx-auto px-6 py-6",
+        "mx-auto grid h-full grid-cols-1 px-6 py-6",
         openArtifact !== null
-          ? "grid max-w-none grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
-          : "max-w-3xl",
+          ? "max-w-none gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
+          : "w-full max-w-3xl",
       )}
     >
-      <div className="min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-col">
         <div className="panel-rise mb-5">
           <Button
             variant="ghost"
@@ -147,19 +147,29 @@ function RunDetailPage() {
           </div>
         ) : null}
 
-        <div className="panel-rise panel-rise-1 flex flex-col gap-4">
-          {feed.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No messages recorded.</p>
-          ) : (
-            feed.map((part) => (
-              <RunFeedItem key={feedPartKey(part)} part={part} onOpenArtifact={setOpenArtifact} />
-            ))
-          )}
+        {/* The transcript lives in a fixed-height card and scrolls internally,
+            like the live chat window — the page itself never grows. */}
+        <div className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <div className="scroll-fade-b scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
+            <div className="flex flex-col gap-4">
+              {feed.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No messages recorded.</p>
+              ) : (
+                feed.map((block) => (
+                  <RunFeedItem
+                    key={feedBlockKey(block)}
+                    block={block}
+                    onOpenArtifact={setOpenArtifact}
+                  />
+                ))
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
       {openArtifact !== null ? (
-        <div className="max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3 lg:sticky lg:top-6 lg:h-[calc(100dvh-8rem)]">
+        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
           <ArtifactPanel
             key={openArtifact.id}
             artifact={openArtifact}

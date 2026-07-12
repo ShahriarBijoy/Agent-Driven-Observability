@@ -1,16 +1,19 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Mermaid } from "~/components/mermaid";
 import { cn } from "~/lib/utils";
 
 /**
  * Markdown rendering on the shadcn typeset system — postmortems, artifacts,
  * runbooks, and chat. Pass a preset class (`typeset-docs`, `typeset-chat`)
- * to set the rhythm for the surface. ```mermaid fences render as diagrams.
+ * to set the rhythm for the surface. ```mermaid fences render as diagrams;
+ * GFM tables (agent reports lean on them) render via the table component.
  */
 export function Markdown({ children, className }: { children: string; className?: string }) {
   return (
     <div className={cn("typeset", className)}>
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           table: ({ node: _node, ...props }) => (
             <div className="typeset-scroll">

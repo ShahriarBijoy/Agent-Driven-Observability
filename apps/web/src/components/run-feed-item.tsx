@@ -1,22 +1,13 @@
 import type { Approval, Artifact, ToolCall } from "@obs/contracts";
 import {
-  CheckIcon,
-  CopyIcon,
-  DownloadIcon,
+  ChevronDownIcon,
   FileCodeIcon,
+  FileTextIcon,
   Maximize2Icon,
   ShieldAlertIcon,
+  WrenchIcon,
+  XCircleIcon,
 } from "lucide-react";
-import { useState } from "react";
-import {
-  ArtifactAction,
-  ArtifactActions,
-  ArtifactContent,
-  ArtifactHeader,
-  ArtifactTitle,
-  Artifact as ArtifactPanel,
-} from "~/components/ai-elements/artifact";
-import { CodeBlock } from "~/components/ai-elements/code-block";
 import {
   Tool,
   ToolContent,
@@ -28,52 +19,55 @@ import { Markdown } from "~/components/markdown";
 import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
 import { Bubble, BubbleContent } from "~/components/ui/bubble";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "~/components/ui/collapsible";
 import { Message, MessageContent } from "~/components/ui/message";
-import { downloadArtifact } from "~/lib/artifact-view";
-import type { RunFeedPart } from "~/lib/run-feed";
+import { ScrollArea } from "~/components/ui/scroll-area";
+import { Spinner } from "~/components/ui/spinner";
+import type { RunFeedBlock } from "~/lib/run-feed";
 import { cn } from "~/lib/utils";
 
 /**
- * Renders one part of the interleaved agent transcript. Shared by the run
+ * Renders one block of the interleaved agent transcript. Shared by the run
  * detail page (persisted feed) and the live chat page (streaming feed) so a
- * run looks the same while it happens and after it's stored.
+ * run looks the same while it happens and after it's stored. Consecutive tool
+ * calls arrive pre-grouped (groupRunFeed) and render as one collapsed row.
  */
 export function RunFeedItem({
-  part,
+  block,
   streaming = false,
   onOpenArtifact,
 }: {
-  part: RunFeedPart;
+  block: RunFeedBlock;
   streaming?: boolean;
   onOpenArtifact?: (artifact: Artifact) => void;
 }) {
-  switch (part.kind) {
+  switch (block.kind) {
     case "message":
-      return part.message.role === "user" ? (
+      return block.message.role === "user" ? (
         <Message align="end">
           <MessageContent>
             <Bubble align="end" variant="secondary">
               <BubbleContent className="whitespace-pre-wrap">
-                {part.message.content}
+                {block.message.content}
               </BubbleContent>
             </Bubble>
           </MessageContent>
         </Message>
       ) : (
         <Markdown className={cn("typeset-chat", streaming && "stream-caret")}>
-          {part.message.content}
+          {block.message.content}
         </Markdown>
       );
-    case "tool":
-      return <FeedToolCall toolCall={part.toolCall} />;
+    case "tools":
+      return <FeedToolGroup toolCalls={block.toolCalls} />;
     case "approval":
-      return <FeedApproval approval={part.approval} />;
+      return <FeedApproval approval={block.approval} />;
     case "artifact":
-      return part.artifact.mediaType === "text/html" ? (
-        <ArtifactChip artifact={part.artifact} onOpen={onOpenArtifact} />
-      ) : (
-        <ArtifactCard artifact={part.artifact} onOpen={onOpenArtifact} />
-      );
+      return <ArtifactChip artifact={block.artifact} onOpen={onOpenArtifact} />;
   }
 }
 
@@ -84,6 +78,54 @@ const TOOL_STATE = {
   error: "output-error",
 } as const;
 
+/**
+ * One collapsed row per run of consecutive tool calls: "N tool calls" with a
+ * status glance; expanding reveals the individual calls inside a capped
+ * scroll area, each still openable for its parameters and result. Styled to
+ * recede — process scaffolding, not a deliverable (contrast ArtifactChip).
+ */
+function FeedToolGroup({ toolCalls }: { toolCalls: ToolCall[] }) {
+  const running = toolCalls.filter((tc) => tc.status === "pending").length;
+  const errors = toolCalls.filter((tc) => tc.status === "error").length;
+  const names = [...new Set(toolCalls.map((tc) => tc.name))].join(", ");
+
+  return (
+    <Collapsible className="group/tools not-prose w-full overflow-hidden rounded-lg bg-muted/40">
+      <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-4 px-3 py-2 transition-colors hover:bg-muted/60">
+        <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+          {running > 0 ? (
+            <Spinner className="size-3.5 shrink-0" />
+          ) : (
+            <WrenchIcon className="size-3.5 shrink-0" />
+          )}
+          <span className="shrink-0 text-xs font-medium">
+            {toolCalls.length} tool call{toolCalls.length === 1 ? "" : "s"}
+          </span>
+          <span className="truncate font-mono text-[11px]">{names}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {errors > 0 ? (
+            <Badge className="gap-1 rounded-full text-[11px]" variant="secondary">
+              <XCircleIcon className="size-3.5 text-red-600" />
+              {errors} failed
+            </Badge>
+          ) : null}
+          <ChevronDownIcon className="size-3.5 text-muted-foreground transition-transform group-has-[[data-panel-open]]/tools:rotate-180" />
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="outline-none data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-top-2">
+        <ScrollArea viewportClassName="max-h-80">
+          <div className="flex flex-col gap-3 p-3 pt-1">
+            {toolCalls.map((tc) => (
+              <FeedToolCall key={tc.id} toolCall={tc} />
+            ))}
+          </div>
+        </ScrollArea>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function FeedToolCall({ toolCall: tc }: { toolCall: ToolCall }) {
   const duration =
     tc.endedAt === undefined
@@ -91,7 +133,7 @@ function FeedToolCall({ toolCall: tc }: { toolCall: ToolCall }) {
       : `${Math.max(0, Date.parse(tc.endedAt) - Date.parse(tc.startedAt))}ms`;
 
   return (
-    <Tool defaultOpen={tc.status === "error"}>
+    <Tool className="mb-0" defaultOpen={tc.status === "error"}>
       <ToolHeader
         type={`tool-${tc.name}`}
         title={tc.name}
@@ -140,7 +182,19 @@ function FeedApproval({ approval }: { approval: Approval }) {
   );
 }
 
-/** Compact Claude-style chip for rendered (HTML) artifacts — click to open. */
+// Chip subtitle + icon per artifact type. The panel does the actual rendering.
+const ARTIFACT_CHIP: Record<Artifact["mediaType"], { label: string; icon: typeof FileCodeIcon }> = {
+  "text/html": { label: "Rendered page", icon: FileCodeIcon },
+  "text/markdown": { label: "Markdown report", icon: FileTextIcon },
+  "application/json": { label: "JSON data", icon: FileCodeIcon },
+};
+
+/**
+ * Claude-style chip for artifacts — click to open in the side panel. The full
+ * content never renders inline, so a saved report doesn't repeat the
+ * assistant's closing message. Styled to stand out from tool-call rows: this
+ * is the run's deliverable, so it gets the primary accent and an icon tile.
+ */
 function ArtifactChip({
   artifact,
   onOpen,
@@ -148,82 +202,21 @@ function ArtifactChip({
   artifact: Artifact;
   onOpen?: (artifact: Artifact) => void;
 }) {
+  const { label, icon: Icon } = ARTIFACT_CHIP[artifact.mediaType];
   return (
     <button
       type="button"
       onClick={() => onOpen?.(artifact)}
-      className="group flex w-full items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-ring/40 hover:bg-muted/50"
+      className="group flex w-full items-center gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/10"
     >
-      <FileCodeIcon className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-sm font-medium">{artifact.name}</span>
-        <span className="text-xs text-muted-foreground">Rendered page · click to open</span>
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+        <Icon className="size-4" />
       </span>
-      <Maximize2Icon className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-sm font-semibold">{artifact.name}</span>
+        <span className="text-xs text-muted-foreground">{label} · click to open</span>
+      </span>
+      <Maximize2Icon className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
     </button>
-  );
-}
-
-export function ArtifactCard({
-  artifact,
-  onOpen,
-}: {
-  artifact: Artifact;
-  onOpen?: (artifact: Artifact) => void;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    await navigator.clipboard.writeText(artifact.content);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  }
-
-  return (
-    <ArtifactPanel>
-      <ArtifactHeader>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <ArtifactTitle className="truncate font-mono">{artifact.name}</ArtifactTitle>
-          <Badge variant="outline" className="text-muted-foreground">
-            {artifact.mediaType}
-          </Badge>
-        </div>
-        <ArtifactActions>
-          {onOpen !== undefined ? (
-            <ArtifactAction
-              icon={Maximize2Icon}
-              tooltip="Open in panel"
-              label="Open in side panel"
-              onClick={() => onOpen(artifact)}
-            />
-          ) : null}
-          <ArtifactAction
-            icon={copied ? CheckIcon : CopyIcon}
-            tooltip={copied ? "Copied" : "Copy contents"}
-            label="Copy artifact contents"
-            onClick={() => void copy()}
-          />
-          <ArtifactAction
-            icon={DownloadIcon}
-            tooltip="Download"
-            label="Download artifact"
-            onClick={() => downloadArtifact(artifact)}
-          />
-        </ArtifactActions>
-      </ArtifactHeader>
-      {artifact.mediaType === "text/markdown" ? (
-        <ArtifactContent className="px-5 py-4">
-          <Markdown className="typeset-docs">{artifact.content}</Markdown>
-        </ArtifactContent>
-      ) : (
-        <ArtifactContent className="p-0">
-          <CodeBlock
-            code={artifact.content}
-            language="json"
-            className="rounded-none border-0"
-          />
-        </ArtifactContent>
-      )}
-    </ArtifactPanel>
   );
 }

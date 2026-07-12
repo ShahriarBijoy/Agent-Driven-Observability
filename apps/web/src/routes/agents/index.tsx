@@ -27,7 +27,7 @@ import {
 } from "~/components/ui/message-scroller";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { feedPartKey, type RunFeedPart } from "~/lib/run-feed";
+import { feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
 import { cn } from "~/lib/utils";
@@ -164,6 +164,7 @@ function AgentsPage() {
     }
   }
 
+  const blocks = groupRunFeed(parts);
   const lastPart = parts.at(-1);
   const isEmpty = parts.length === 0;
   // Nothing streamed back yet for the latest question — show the thinking marker.
@@ -208,19 +209,19 @@ function AgentsPage() {
                       </EmptyHeader>
                     </Empty>
                   ) : (
-                    parts.map((part, i) => (
+                    blocks.map((block, i) => (
                       <MessageScrollerItem
-                        key={feedPartKey(part)}
-                        messageId={feedPartKey(part)}
-                        scrollAnchor={part.kind === "message" && part.message.role === "user"}
+                        key={feedBlockKey(block)}
+                        messageId={feedBlockKey(block)}
+                        scrollAnchor={block.kind === "message" && block.message.role === "user"}
                       >
                         <RunFeedItem
-                          part={part}
+                          block={block}
                           streaming={
                             busy &&
-                            i === parts.length - 1 &&
-                            part.kind === "message" &&
-                            part.message.role === "assistant"
+                            i === blocks.length - 1 &&
+                            block.kind === "message" &&
+                            block.message.role === "assistant"
                           }
                           onOpenArtifact={setOpenArtifact}
                         />

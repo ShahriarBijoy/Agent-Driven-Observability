@@ -66,3 +66,52 @@ export function feedPartKey(part: RunFeedPart): string {
       return part.artifact.id;
   }
 }
+
+/**
+ * What the pages actually render: a feed where consecutive tool calls are
+ * folded into one "tools" block (shown collapsed as "N tool calls") and
+ * artifacts are hoisted to the end of their turn — the deliverable reads
+ * after the conclusion, not buried mid-process. Messages and approvals pass
+ * through in order.
+ */
+export type RunFeedBlock =
+  | Exclude<RunFeedPart, { kind: "tool" }>
+  | { kind: "tools"; toolCalls: ToolCall[] };
+
+/** Group tool calls and hoist artifacts per turn. Pure; safe to run per render. */
+export function groupRunFeed(parts: RunFeedPart[]): RunFeedBlock[] {
+  const blocks: RunFeedBlock[] = [];
+  // Artifacts created during the current turn; emitted when the turn ends
+  // (next user message) or the feed runs out.
+  let turnArtifacts: RunFeedBlock[] = [];
+
+  function endTurn() {
+    blocks.push(...turnArtifacts);
+    turnArtifacts = [];
+  }
+
+  for (const part of parts) {
+    if (part.kind === "artifact") {
+      turnArtifacts.push(part);
+      continue;
+    }
+    if (part.kind === "message" && part.message.role === "user") endTurn();
+    if (part.kind !== "tool") {
+      blocks.push(part);
+      continue;
+    }
+    const last = blocks.at(-1);
+    if (last?.kind === "tools") {
+      last.toolCalls.push(part.toolCall); // local array created below — not shared state
+    } else {
+      blocks.push({ kind: "tools", toolCalls: [part.toolCall] });
+    }
+  }
+  endTurn();
+  return blocks;
+}
+
+/** Stable React key: a tools block is keyed by its first call, which never changes. */
+export function feedBlockKey(block: RunFeedBlock): string {
+  return block.kind === "tools" ? block.toolCalls[0]!.id : feedPartKey(block);
+}
