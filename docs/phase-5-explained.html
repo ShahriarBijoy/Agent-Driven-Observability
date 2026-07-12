@@ -567,7 +567,7 @@
         <span class="dim"># You, in the browser</span>
         <span class="violet">Control plane (web UI :3003)</span>
         │ "Why is the gateway slow?" ▼
-        <span class="violet">agent-service (:8090)</span> ◀── the new Phase-5 backend │ ├─▶
+        <span class="violet">agent-service (:8093)</span> ◀── the new Phase-5 backend │ ├─▶
         <span class="amber">Claude</span> (the brain) decides: "I should check the metrics" │ │ │ ▼
         picks a tool ├─▶ <span class="teal">mimir_query</span> ──▶ reads charts/numbers (Mimir) ├─▶
         <span class="teal">loki_query</span> ──▶ searches the logs (Loki) ├─▶
@@ -1074,7 +1074,7 @@ bash scripts/dev-up.sh --build
 <span class="c-com"># 2) Start the agent-service (it uses your local Claude sign-in):</span>
 cd apps/agent-service
 uv sync
-uv run python -m agent_service        <span class="c-com"># listens on :8090</span>
+uv run python -m agent_service        <span class="c-com"># listens on :8093</span>
 
 <span class="c-com"># 3) Start the control plane (the website):</span>
 bun --cwd apps/web run dev            <span class="c-com"># open http://localhost:3003</span></code></pre>
@@ -1086,7 +1086,7 @@ bun --cwd apps/web run dev            <span class="c-com"># open http://localhos
         </li>
         <li>
           <strong>/incidents</strong> — read postmortems. Make one by firing a pretend alert:
-          <pre><code>curl -X POST localhost:8090/webhook/grafana-alert \
+          <pre><code>curl -X POST localhost:8093/webhook/grafana-alert \
   -H 'content-type: application/json' \
   -d '{"status":"firing","alerts":[{"status":"firing",
        "labels":{"alertname":"Gateway 5xx rate > 2%","severity":"page"},
@@ -1094,13 +1094,13 @@ bun --cwd apps/web run dev            <span class="c-com"># open http://localhos
         </li>
         <li>
           <strong>Make a dashboard:</strong>
-          <pre><code>curl -X POST localhost:8090/generate-dashboard \
+          <pre><code>curl -X POST localhost:8093/generate-dashboard \
   -H 'content-type: application/json' \
   -d '{"brief":"gateway health: request rate, slow-end latency, error share"}'</code></pre>
         </li>
         <li>
           <strong>Run a runbook</strong> (then Approve/Deny on the run's page):
-          <pre><code>curl -X POST localhost:8090/runbooks/snapshot-agent-audit.md/execute</code></pre>
+          <pre><code>curl -X POST localhost:8093/runbooks/snapshot-agent-audit.md/execute</code></pre>
         </li>
       </ul>
       <div class="safe">

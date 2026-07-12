@@ -15,13 +15,13 @@ set -euo pipefail
 # Prereqs you must have running yourself (the agent-service needs your local
 # Claude Code session for auth, so this script cannot start it):
 #   - Docker (this script brings up the compose stack if it is not already up)
-#   - the agent-service on :8090   (e.g. `obs agents`)
+#   - the agent-service on :8093   (e.g. `obs agents`)
 #
 # Usage: ./scripts/demo-incident.sh
 cd "$(dirname "$0")/.."
 
 GATEWAY="http://localhost:8080"
-AGENT="http://localhost:8090"
+AGENT="http://localhost:8093"
 TENANT="acme"
 COMPOSE=(-f infra/compose.yml -f infra/compose.observability.yml)
 INCIDENT_TIMEOUT_SECONDS=${INCIDENT_TIMEOUT_SECONDS:-540}
@@ -133,7 +133,7 @@ while :; do
     NEW_ID="$(psql_lab 'select id from incidents order by created_at desc limit 1')"
     break
   fi
-  [ "$(date +%s)" -ge "$deadline" ] && die "no new incident within ${INCIDENT_TIMEOUT_SECONDS}s (is Grafana able to reach host.docker.internal:8090?)"
+  [ "$(date +%s)" -ge "$deadline" ] && die "no new incident within ${INCIDENT_TIMEOUT_SECONDS}s (is Grafana able to reach host.docker.internal:8093?)"
   sleep 10
 done
 echo "OK  new incident: ${NEW_ID}"

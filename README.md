@@ -8,7 +8,7 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 - **Application observability** — manual OpenTelemetry → Grafana Alloy → Loki / Tempo / Mimir, with provisioned RED + RAG dashboards, exemplars, service map, and tail-based sampling
 - **Data observability** — every request is an OpenLineage run in Marquez; a Python dq-runner checks freshness / volume / drift / schema / cache every 30s
 - **Control plane** — a TanStack Start web app (`:3003`): golden signals, embedded Grafana/Marquez, incident inbox, runbooks, and a streaming agent chat with live tool calls and artifacts
-- **Claude agents** — a host-side FastAPI service (`:8090`, Claude Agent SDK) with five agents: RCA assistant, incident reporter, dashboard generator, runbook executor (per-step approvals), and auto-fixer (PR behind an approval gate). Every run is itself a Tempo trace.
+- **Claude agents** — a host-side FastAPI service (`:8093`, Claude Agent SDK) with five agents: RCA assistant, incident reporter, dashboard generator, runbook executor (per-step approvals), and auto-fixer (PR behind an approval gate). Every run is itself a Tempo trace.
 - **Chaos & SLOs** — a clock-driven chaos scheduler, SLO specs compiled to Mimir recording rules, multi-window burn-rate alerts, browser RUM, opt-in eBPF profiling, and a one-command incident demo
 
 ## Prerequisites
@@ -41,7 +41,7 @@ obs all              # containers + agent-service + web + load traffic (own wind
 
 ```powershell
 obs up               # 1. the 15 containers (subject + observability + lineage)
-obs agents           # 2. agent-service :8090  (own terminal, Ctrl-C to stop)
+obs agents           # 2. agent-service :8093  (own terminal, Ctrl-C to stop)
 obs web              # 3. web control plane :3003  (own terminal, Ctrl-C to stop)
 obs load 120 300     # 4. synthetic traffic so dashboards populate
 ```
@@ -66,7 +66,7 @@ The full lab is those three pieces: **containers + `obs agents` + `obs web`**. T
 
 ```bash
 bash scripts/dev-up.sh --build                                  # containers (all three planes)
-(cd apps/agent-service && uv sync && uv run python -m agent_service)  # :8090
+(cd apps/agent-service && uv sync && uv run python -m agent_service)  # :8093
 bun --cwd apps/web run dev                                      # :3003
 GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
   bun --cwd apps/load-generator run start                       # traffic
@@ -80,7 +80,7 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 | Grafana       | http://localhost:3001 | anonymous (Admin)          |
 | Marquez UI    | http://localhost:3002 | lineage graph              |
 | Gateway API   | http://localhost:8080 | bearer tokens below        |
-| Agent service | http://localhost:8090 | host process               |
+| Agent service | http://localhost:8093 | host process               |
 | dq-runner     | http://localhost:8091 | `/violations`, `POST /run` |
 | Pyroscope     | http://localhost:4040 | profiles (opt-in profiler) |
 
@@ -98,12 +98,12 @@ Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo`
 - **Chat with the RCA assistant** at http://localhost:3003/agents — it runs real Loki/Tempo/Mimir/Postgres queries (shown live as collapsed tool-call rows) and saves Markdown/HTML artifacts that open in a split-pane viewer.
 - **Trigger an incident postmortem** (Grafana also posts here automatically when an alert fires):
   ```bash
-  curl -X POST localhost:8090/webhook/grafana-alert -H 'content-type: application/json' \
+  curl -X POST localhost:8093/webhook/grafana-alert -H 'content-type: application/json' \
     -d '{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"Gateway 5xx rate > 2%","severity":"page"},"annotations":{"summary":"gateway 5xx above 2%"}}]}'
   ```
 - **Generate a Grafana dashboard** from a natural-language brief:
   ```bash
-  curl -X POST localhost:8090/generate-dashboard -H 'content-type: application/json' \
+  curl -X POST localhost:8093/generate-dashboard -H 'content-type: application/json' \
     -d '{"brief":"gateway health: request rate, p95 latency, and 5xx share over time"}'
   ```
 - **Run a runbook with approvals**: http://localhost:3003/runbooks → "run with executor", then approve/deny each step on the run page.
@@ -114,7 +114,7 @@ Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo`
 - **Scheduled chaos** (full 26-min timeline that drives the SLO burn-rate alerts): `bun run chaos:run`
 - **Follow the telemetry**: in Grafana, click a latency exemplar on the RED dashboard to jump to its Tempo trace, then "Logs for this span" to land on the matching `trace_id` in Loki. Every agent run is also a trace (`service.name=agent-service`).
 
-> **Windows note:** the agent-service binds IPv4; the web app defaults to `http://127.0.0.1:8090` because `localhost` may resolve to IPv6 first and refuse the connection.
+> **Windows note:** the agent-service binds IPv4; the web app defaults to `http://127.0.0.1:8093` because `localhost` may resolve to IPv6 first and refuse the connection.
 
 ## Development
 
@@ -136,7 +136,7 @@ apps/
   model-proxy/      # mock LLM with a fault model + /admin/chaos control plane
   load-generator/   # weighted chaotic traffic + the chaos scheduler
   web/              # TanStack Start control plane (:3003)
-  agent-service/    # Python + Claude Agent SDK — the five agents (:8090)
+  agent-service/    # Python + Claude Agent SDK — the five agents (:8093)
   dq-runner/        # Python — scheduled data-quality checks (:8091)
 packages/
   contracts/        # shared types + Zod schemas (incl. the agent wire contract)

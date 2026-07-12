@@ -20,7 +20,7 @@ assistant a scripted follow-up and streams its answer.
 **Prerequisites** (the demo checks these and brings the stack up if needed):
 
 - Docker running.
-- The **agent-service on :8090** — start it yourself (e.g. `obs agents`); it needs
+- The **agent-service on :8093** — start it yourself (e.g. `obs agents`); it needs
   your local Claude Code session for auth, so the script cannot start it.
 
 ```bash
