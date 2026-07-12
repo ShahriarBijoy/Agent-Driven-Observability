@@ -68,7 +68,11 @@ Elements artifact primitives:
   style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;
   font-src data:">` so artifact pages cannot make network requests. This is the
   containment for prompt-injected telemetry (a hostile log line steering the
-  agent's HTML): scripts may run, but they can't reach anything.
+  agent's HTML): scripts may run, but they can't reach anything. Residual
+  channels: the frame can still navigate itself (location/meta-refresh) to
+  exfiltrate its own content, and parent.postMessage works — bounded by the
+  opaque origin (no cookies/storage/DOM), and the app must never trust window
+  "message" events from artifact frames.
 
 Layout on both `/agents` and `/agents/runs/$runId`: a `selectedArtifact` state;
 when set, the page becomes a two-column flex/grid (feed ~45% / panel ~55%) and
