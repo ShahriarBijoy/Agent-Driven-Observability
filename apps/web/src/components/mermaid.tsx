@@ -4,6 +4,8 @@ import { useMountEffect } from "~/lib/use-mount-effect";
 
 let renderSeq = 0;
 
+const RENDER_DEBOUNCE_MS = 200;
+
 /**
  * Inner renderer: one async mermaid render per mount. The outer component
  * remounts it (key) on theme or source change, so no effect dependencies are
@@ -17,6 +19,12 @@ function MermaidSvg({ chart, dark }: { chart: string; dark: boolean }) {
   useMountEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Debounce: the outer key remounts this component on every source
+      // change, so while a fence streams in, instances live only a few ms
+      // and unmount (cancelled) before the wait ends. Only a source that
+      // stays stable this long pays for a full mermaid parse + layout.
+      await new Promise((resolve) => setTimeout(resolve, RENDER_DEBOUNCE_MS));
+      if (cancelled) return;
       try {
         const mermaid = (await import("mermaid")).default;
         mermaid.initialize({
