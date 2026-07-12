@@ -216,8 +216,8 @@ def build_mcp_server(ctx: RunContext):
         "save_artifact",
         "Persist an artifact tied to this run (e.g. a Markdown postmortem, JSON report, or a "
         "self-contained HTML page with inline SVG charts). kind is 'markdown', 'json', or "
-        "'html'. HTML artifacts render in a sandboxed viewer that blocks ALL network access — "
-        "inline CSS/SVG/JS only, no external URLs. Returns the artifact id.",
+        "'html'. HTML artifacts render in a sandboxed viewer with no network access for fetches "
+        "or subresources — inline CSS/SVG/JS only, no external URLs. Returns the artifact id.",
         {
             "type": "object",
             "properties": {

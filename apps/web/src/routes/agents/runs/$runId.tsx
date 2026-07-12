@@ -161,6 +161,7 @@ function RunDetailPage() {
       {openArtifact !== null ? (
         <div className="max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3 lg:sticky lg:top-6 lg:h-[calc(100dvh-8rem)]">
           <ArtifactPanel
+            key={openArtifact.id}
             artifact={openArtifact}
             onClose={() => setOpenArtifact(null)}
             className="h-full"

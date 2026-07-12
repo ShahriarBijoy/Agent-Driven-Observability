@@ -3,8 +3,13 @@ import type { Artifact } from "@obs/contracts";
 /**
  * Viewer-side helpers for agent artifacts. HTML artifacts are model-authored
  * from possibly attacker-influenced telemetry (logs), so the preview iframe is
- * sandboxed (allow-scripts, NEVER allow-same-origin) and this CSP blocks every
- * network direction — inline CSS/JS/SVG and data: images only.
+ * sandboxed (allow-scripts, NEVER allow-same-origin) and this CSP blocks
+ * fetch/XHR/WebSocket and all subresource loads — inline CSS/JS/SVG and data:
+ * images only. Residual channels CSP cannot close: a frame may navigate ITSELF
+ * (location.href / meta refresh) to an attacker URL carrying data from the
+ * artifact's own content, and parent.postMessage still works — so never add
+ * untrusted window "message" listeners in the app. The opaque origin bounds
+ * the blast radius: no cookies, no storage, no parent DOM.
  */
 export const ARTIFACT_CSP = [
   "default-src 'none'",

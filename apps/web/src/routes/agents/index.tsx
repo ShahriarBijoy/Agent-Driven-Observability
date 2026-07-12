@@ -53,6 +53,7 @@ function AgentsPage() {
   const [busy, setBusy] = useState(false);
   const runIdRef = useRef<string | undefined>(undefined);
   const nextId = useRef(0);
+  const seenArtifactIds = useRef<Set<string>>(new Set());
 
   function pushMessage(role: "user" | "assistant", content: string) {
     setParts((p) => [
@@ -128,11 +129,25 @@ function AgentsPage() {
           case "tool_call":
             upsertToolCall(event.toolCall);
             break;
-          case "artifact":
-            setParts((p) => [...p, { kind: "artifact", artifact: event.artifact }]);
-            // Claude-style: a rendered page opens itself as it lands.
-            if (event.artifact.mediaType === "text/html") setOpenArtifact(event.artifact);
+          case "artifact": {
+            const artifact = event.artifact;
+            // Hub replay on a follow-up turn re-delivers old artifact events:
+            // upsert by id (like upsertToolCall) instead of appending.
+            setParts((p) => {
+              const idx = p.findIndex((x) => x.kind === "artifact" && x.artifact.id === artifact.id);
+              if (idx === -1) return [...p, { kind: "artifact", artifact }];
+              const next = [...p];
+              next[idx] = { kind: "artifact", artifact };
+              return next;
+            });
+            // Claude-style auto-open — but only for artifacts this session has
+            // not seen, so a replay can't resurrect a panel the user closed.
+            if (artifact.mediaType === "text/html" && !seenArtifactIds.current.has(artifact.id)) {
+              setOpenArtifact(artifact);
+            }
+            seenArtifactIds.current.add(artifact.id);
             break;
+          }
           case "approval_required":
             setApproval(event.approval);
             break;
@@ -330,6 +345,7 @@ function AgentsPage() {
       ) : (
         <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
           <ArtifactPanel
+            key={openArtifact.id}
             artifact={openArtifact}
             onClose={() => setOpenArtifact(null)}
             className="h-full"
