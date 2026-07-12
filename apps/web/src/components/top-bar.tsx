@@ -1,4 +1,13 @@
-import { Badge, Select, StatusDot } from "@obs/ui";
+import { ThemeToggle } from "~/components/theme-toggle";
+import { Badge } from "~/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { Separator } from "~/components/ui/separator";
 import { TENANTS, tenantStore, type TenantId } from "~/lib/tenant";
 import { TIME_RANGES, timeRangeStore, type TimeRange } from "~/lib/time-range";
 
@@ -7,50 +16,68 @@ export function TopBar() {
   const range = timeRangeStore.use();
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-elev/60 px-4">
-      <div className="flex items-baseline gap-2">
-        <span className="font-display text-lg leading-none font-semibold tracking-tight text-ink">
-          obs<span className="text-signal">·</span>lab
+    <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
+      <div className="flex items-center gap-2.5">
+        <span className="flex size-7 items-center justify-center rounded-lg bg-primary/15">
+          <svg viewBox="0 0 32 32" className="size-4" aria-hidden>
+            <path
+              d="M4 19.5h5l3-9 5.5 13 3-8H28"
+              stroke="var(--primary)"
+              strokeWidth="3"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </span>
-        <span className="font-mono text-[10px] tracking-[0.18em] text-ink-faint uppercase">
-          control plane
-        </span>
+        <span className="font-heading text-[15px] font-semibold tracking-tight">obs·lab</span>
+        <span className="hidden text-sm text-muted-foreground sm:inline">Control plane</span>
       </div>
 
-      <div className="ml-auto flex items-center gap-3">
-        <label className="flex items-center gap-1.5 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
-          window
-          <Select
-            value={range}
-            onChange={(e) => timeRangeStore.set(e.currentTarget.value as TimeRange)}
-          >
-            {TIME_RANGES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
+      <div className="ml-auto flex items-center gap-2">
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          Window
+          <Select value={range} onValueChange={(v) => timeRangeStore.set(v as TimeRange)}>
+            <SelectTrigger size="sm" aria-label="Time window">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TIME_RANGES.map((r) => (
+                <SelectItem key={r} value={r}>
+                  {r}
+                </SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         </label>
 
-        <label className="flex items-center gap-1.5 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
-          tenant
-          <Select
-            value={tenant}
-            onChange={(e) => tenantStore.set(e.currentTarget.value as TenantId)}
-          >
-            {TENANTS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          Tenant
+          <Select value={tenant} onValueChange={(v) => tenantStore.set(v as TenantId)}>
+            <SelectTrigger size="sm" aria-label="Tenant">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TENANTS.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {t}
+                </SelectItem>
+              ))}
+            </SelectContent>
           </Select>
         </label>
 
-        <Badge tone="signal">
-          <StatusDot tone="live" />
-          local
+        <Separator orientation="vertical" className="h-5!" />
+
+        <Badge variant="outline" className="gap-1.5 text-muted-foreground">
+          <span className="relative flex size-1.5" aria-hidden>
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
+            <span className="relative inline-flex size-1.5 rounded-full bg-success" />
+          </span>
+          Local dev
         </Badge>
-        <Badge tone="neutral">dev mode</Badge>
+
+        <ThemeToggle />
       </div>
     </header>
   );

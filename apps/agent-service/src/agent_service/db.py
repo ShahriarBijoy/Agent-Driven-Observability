@@ -189,10 +189,11 @@ async def decide_approval(run_id: str, approval_id: str, decision: str) -> bool:
 
 
 async def add_artifact(run_id: str, artifact: Artifact) -> None:
+    created = datetime.fromisoformat(artifact.created_at.replace("Z", "+00:00"))
     await _require_pool().execute(
-        """INSERT INTO agent_artifacts (id, run_id, name, media_type, content)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING""",
-        artifact.id, run_id, artifact.name, artifact.media_type, artifact.content,
+        """INSERT INTO agent_artifacts (id, run_id, name, media_type, content, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING""",
+        artifact.id, run_id, artifact.name, artifact.media_type, artifact.content, created,
     )
     await touch(run_id)
 
@@ -238,7 +239,7 @@ async def get_run(run_id: str) -> AgentRun | None:
         ],
         artifacts=[
             Artifact(id=a["id"], name=a["name"], media_type=a["media_type"],
-                     content=a["content"])
+                     content=a["content"], created_at=_iso(a["created_at"]) or "")
             for a in arts
         ],
         approvals=[

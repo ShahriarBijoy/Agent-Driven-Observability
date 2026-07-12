@@ -52,8 +52,9 @@ export type RunMessage = z.infer<typeof RunMessageSchema>;
 export const ArtifactSchema = z.object({
   id: z.string(),
   name: z.string(),
-  mediaType: z.enum(["text/markdown", "application/json"]),
+  mediaType: z.enum(["text/markdown", "application/json", "text/html"]),
   content: z.string(),
+  createdAt: z.iso.datetime(),
 });
 export type Artifact = z.infer<typeof ArtifactSchema>;
 
@@ -110,6 +111,7 @@ export const AgentStreamEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run"), runId: z.string() }),
   z.object({ type: z.literal("token"), text: z.string() }),
   z.object({ type: z.literal("tool_call"), toolCall: ToolCallSchema }),
+  z.object({ type: z.literal("artifact"), artifact: ArtifactSchema }),
   z.object({ type: z.literal("approval_required"), approval: ApprovalSchema }),
   z.object({ type: z.literal("done"), runId: z.string(), status: RunStatusSchema }),
   z.object({ type: z.literal("error"), message: z.string() }),

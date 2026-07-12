@@ -1,22 +1,36 @@
-import type { Approval, ToolCall } from "@obs/contracts";
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  EmptyState,
-  StatusDot,
-  Textarea,
-  cn,
-} from "@obs/ui";
+import type { Approval, Artifact, ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { ArrowUpIcon, BotIcon, ShieldAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
+import { ArtifactPanel } from "~/components/artifact-panel";
+import { RunFeedItem } from "~/components/run-feed-item";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "~/components/ui/empty";
+import { Marker, MarkerContent, MarkerIcon } from "~/components/ui/marker";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "~/components/ui/message-scroller";
+import { Spinner } from "~/components/ui/spinner";
+import { Textarea } from "~/components/ui/textarea";
+import { feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
+import { cn } from "~/lib/utils";
 import { getAgentRuns } from "~/server/functions";
 
 export const Route = createFileRoute("/agents/")({
@@ -24,25 +38,71 @@ export const Route = createFileRoute("/agents/")({
   component: AgentsPage,
 });
 
-interface TranscriptEntry {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
-}
-
 function AgentsPage() {
   const runsHistory = Route.useLoaderData();
   const router = useRouter();
   const tenant = tenantStore.use();
 
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [streamText, setStreamText] = useState<string | null>(null);
-  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  // The live transcript is the same part list the run detail page builds from
+  // a persisted run — tokens extend the trailing assistant message, tool_call
+  // events upsert a tool part in place, so tools appear inline mid-stream.
+  const [parts, setParts] = useState<RunFeedPart[]>([]);
   const [approval, setApproval] = useState<Approval | null>(null);
+  const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const runIdRef = useRef<string | undefined>(undefined);
   const nextId = useRef(0);
+  const seenArtifactIds = useRef<Set<string>>(new Set());
+
+  function pushMessage(role: "user" | "assistant", content: string) {
+    setParts((p) => [
+      ...p,
+      {
+        kind: "message",
+        message: {
+          id: `live-${nextId.current++}`,
+          role,
+          content,
+          createdAt: new Date().toISOString(),
+        },
+      },
+    ]);
+  }
+
+  function appendToken(text: string) {
+    setParts((p) => {
+      const last = p.at(-1);
+      if (last?.kind === "message" && last.message.role === "assistant") {
+        return [
+          ...p.slice(0, -1),
+          { kind: "message", message: { ...last.message, content: last.message.content + text } },
+        ];
+      }
+      return [
+        ...p,
+        {
+          kind: "message",
+          message: {
+            id: `live-${nextId.current++}`,
+            role: "assistant",
+            content: text,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      ];
+    });
+  }
+
+  function upsertToolCall(toolCall: ToolCall) {
+    setParts((p) => {
+      const idx = p.findIndex((x) => x.kind === "tool" && x.toolCall.id === toolCall.id);
+      if (idx === -1) return [...p, { kind: "tool", toolCall }];
+      const next = [...p];
+      next[idx] = { kind: "tool", toolCall };
+      return next;
+    });
+  }
 
   async function send() {
     const message = draft.trim();
@@ -50,10 +110,8 @@ function AgentsPage() {
     setDraft("");
     setBusy(true);
     setApproval(null);
-    setTranscript((t) => [...t, { id: nextId.current++, role: "user", content: message }]);
-    setStreamText("");
+    pushMessage("user", message);
 
-    let assembled = "";
     try {
       const res = await fetch("/api/agents/chat", {
         method: "POST",
@@ -66,195 +124,234 @@ function AgentsPage() {
             runIdRef.current = event.runId;
             break;
           case "token":
-            assembled += event.text;
-            setStreamText(assembled);
+            appendToken(event.text);
             break;
           case "tool_call":
-            setToolCalls((calls) => {
-              const rest = calls.filter((c) => c.id !== event.toolCall.id);
-              return [...rest, event.toolCall].sort((a, b) =>
-                a.startedAt.localeCompare(b.startedAt),
-              );
-            });
+            upsertToolCall(event.toolCall);
             break;
+          case "artifact": {
+            const artifact = event.artifact;
+            // Hub replay on a follow-up turn re-delivers old artifact events:
+            // upsert by id (like upsertToolCall) instead of appending.
+            setParts((p) => {
+              const idx = p.findIndex(
+                (x) => x.kind === "artifact" && x.artifact.id === artifact.id,
+              );
+              if (idx === -1) return [...p, { kind: "artifact", artifact }];
+              const next = [...p];
+              next[idx] = { kind: "artifact", artifact };
+              return next;
+            });
+            // Claude-style auto-open — but only for artifacts this session has
+            // not seen, so a replay can't resurrect a panel the user closed.
+            if (artifact.mediaType === "text/html" && !seenArtifactIds.current.has(artifact.id)) {
+              setOpenArtifact(artifact);
+            }
+            seenArtifactIds.current.add(artifact.id);
+            break;
+          }
           case "approval_required":
             setApproval(event.approval);
             break;
           case "error":
-            assembled += `\n[stream error: ${event.message}]`;
-            setStreamText(assembled);
+            appendToken(`\n[stream error: ${event.message}]`);
             break;
           case "done":
             break;
         }
       }
     } finally {
-      if (assembled !== "") {
-        setTranscript((t) => [
-          ...t,
-          { id: nextId.current++, role: "assistant", content: assembled },
-        ]);
-      }
-      setStreamText(null);
       setBusy(false);
       router.invalidate();
     }
   }
 
+  const blocks = groupRunFeed(parts);
+  const lastPart = parts.at(-1);
+  const isEmpty = parts.length === 0;
+  // Nothing streamed back yet for the latest question — show the thinking marker.
+  const awaitingFirstEvent =
+    busy && lastPart?.kind === "message" && lastPart.message.role === "user";
+
   return (
-    <div className="mx-auto grid h-full max-w-6xl grid-cols-1 gap-4 px-6 py-6 lg:grid-cols-[1fr_280px]">
+    <div
+      className={cn(
+        "mx-auto grid h-full grid-cols-1 gap-4 px-6 py-6",
+        openArtifact === null
+          ? "max-w-6xl lg:grid-cols-[minmax(0,1fr)_300px]"
+          : "max-w-none lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
+      )}
+    >
       <div className="flex min-h-0 flex-col">
-        <div className="panel-rise mb-4 flex items-baseline gap-3">
-          <h1 className="font-display text-2xl font-medium text-ink">Agents</h1>
-          <Badge tone="data">rca assistant</Badge>
-          <span className="text-xs text-ink-faint">
-            read-only · Loki · Tempo · Mimir · Postgres
+        <div className="panel-rise mb-4 flex flex-wrap items-center gap-3">
+          <h1 className="font-heading text-xl font-semibold tracking-tight">Agents</h1>
+          <Badge variant="secondary">RCA assistant</Badge>
+          <span className="text-xs text-muted-foreground">
+            Read-only · Loki · Tempo · Mimir · Postgres
           </span>
         </div>
 
-        <Card className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col">
-          <CardContent className="flex-1 space-y-4 overflow-y-auto py-4">
-            {transcript.length === 0 && streamText === null ? (
-              <EmptyState
-                title="rca assistant"
-                detail="Ask why something is happening. The RCA assistant runs real Loki, Tempo, Mimir, and Postgres queries — shown live in the tool timeline — and answers from what it finds."
-              />
-            ) : (
-              transcript.map((entry) => <ChatBubble key={entry.id} entry={entry} />)
-            )}
-            {streamText !== null ? (
-              <ChatBubble streaming entry={{ id: -1, role: "assistant", content: streamText }} />
-            ) : null}
-            {approval !== null ? (
-              <div className="rounded-sm border border-signal-dim/40 bg-signal/5 px-4 py-3">
-                <p className="font-mono text-[10px] tracking-[0.12em] text-signal uppercase">
-                  approval required
-                </p>
-                <p className="mt-1 text-sm text-ink-dim">{approval.summary}</p>
-                {runIdRef.current !== undefined ? (
-                  <Link
-                    to="/agents/runs/$runId"
-                    params={{ runId: runIdRef.current }}
-                    className="mt-2 inline-block font-mono text-[11px] text-signal-dim uppercase hover:text-signal"
-                  >
-                    decide on the run page →
-                  </Link>
-                ) : null}
-              </div>
-            ) : null}
-          </CardContent>
+        <div className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <MessageScrollerProvider autoScroll>
+            <MessageScroller className="flex-1">
+              <MessageScrollerViewport>
+                <MessageScrollerContent className="gap-3 px-4 py-5">
+                  {isEmpty ? (
+                    <Empty className="my-auto border-0">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <BotIcon />
+                        </EmptyMedia>
+                        <EmptyTitle>Ask the RCA assistant</EmptyTitle>
+                        <EmptyDescription>
+                          Ask why something is happening. The assistant runs real Loki, Tempo,
+                          Mimir, and Postgres queries, shows them inline as it works, and answers
+                          from what it finds.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  ) : (
+                    blocks.map((block, i) => (
+                      <MessageScrollerItem
+                        key={feedBlockKey(block)}
+                        messageId={feedBlockKey(block)}
+                        scrollAnchor={block.kind === "message" && block.message.role === "user"}
+                      >
+                        <RunFeedItem
+                          block={block}
+                          streaming={
+                            busy &&
+                            i === blocks.length - 1 &&
+                            block.kind === "message" &&
+                            block.message.role === "assistant"
+                          }
+                          onOpenArtifact={setOpenArtifact}
+                        />
+                      </MessageScrollerItem>
+                    ))
+                  )}
 
-          <form
-            className="flex gap-2 border-t border-rule-soft p-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send();
-            }}
-          >
-            <Textarea
-              value={draft}
-              onChange={(e) => setDraft(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-              placeholder={`Message the RCA assistant as ${tenant}…`}
-              className="min-h-10 flex-1"
-              rows={2}
-            />
-            <Button variant="signal" type="submit" disabled={busy || draft.trim() === ""}>
-              {busy ? "streaming…" : "send"}
-            </Button>
-          </form>
-        </Card>
-      </div>
-
-      <div className="flex min-h-0 flex-col gap-4">
-        <Card className="panel-rise panel-rise-2">
-          <CardHeader>
-            <CardTitle>Tool calls</CardTitle>
-            {busy ? <StatusDot tone="live" /> : null}
-          </CardHeader>
-          <CardContent className="space-y-2 py-3">
-            {toolCalls.length === 0 ? (
-              <p className="text-xs text-ink-faint">
-                Tool activity for this conversation appears here.
-              </p>
-            ) : (
-              toolCalls.map((tc) => (
-                <div
-                  key={tc.id}
-                  className="rounded-sm border border-rule-soft bg-inset px-2.5 py-2"
-                >
-                  <p className="flex items-center gap-2 font-mono text-[11px] text-data">
-                    <StatusDot
-                      tone={tc.status === "ok" ? "good" : tc.status === "error" ? "bad" : "live"}
-                    />
-                    {tc.name}
-                  </p>
-                  {tc.result !== undefined ? (
-                    <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">{tc.result}</p>
+                  {awaitingFirstEvent ? (
+                    <MessageScrollerItem messageId="msg-thinking">
+                      <Marker role="status">
+                        <MarkerIcon>
+                          <Spinner />
+                        </MarkerIcon>
+                        <MarkerContent>Investigating…</MarkerContent>
+                      </Marker>
+                    </MessageScrollerItem>
                   ) : null}
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
 
-        <Card className="panel-rise panel-rise-3 min-h-0 flex-1 overflow-y-auto">
-          <CardHeader>
-            <CardTitle>Recent runs</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {runsHistory.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-ink-faint">No runs yet.</p>
-            ) : (
-              <ul>
-                {runsHistory.slice(0, 12).map((r) => (
-                  <li key={r.id} className="border-b border-rule-soft last:border-0">
-                    <Link
-                      to="/agents/runs/$runId"
-                      params={{ runId: r.id }}
-                      className="group block px-4 py-2"
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs text-ink-dim group-hover:text-ink">
-                          {r.title}
+                  {approval !== null ? (
+                    <MessageScrollerItem messageId="msg-approval">
+                      <div className="rounded-xl border border-warning/30 bg-warning/10 px-4 py-3">
+                        <p className="flex items-center gap-2 text-sm font-medium text-warning">
+                          <ShieldAlertIcon className="size-4" />
+                          Approval required
+                        </p>
+                        <p className="mt-1 text-sm text-muted-foreground">{approval.summary}</p>
+                        {runIdRef.current !== undefined ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            nativeButton={false}
+                            className="mt-2.5"
+                            render={
+                              <Link to="/agents/runs/$runId" params={{ runId: runIdRef.current }} />
+                            }
+                          >
+                            Decide on the run page
+                          </Button>
+                        ) : null}
+                      </div>
+                    </MessageScrollerItem>
+                  ) : null}
+                </MessageScrollerContent>
+              </MessageScrollerViewport>
+              <MessageScrollerButton />
+            </MessageScroller>
+
+            <form
+              className="border-t p-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void send();
+              }}
+            >
+              <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+                <Textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder={`Message the RCA assistant as ${tenant}…`}
+                  className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
+                  rows={2}
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="rounded-lg"
+                  disabled={busy || draft.trim() === ""}
+                  aria-label="Send message"
+                >
+                  {busy ? <Spinner /> : <ArrowUpIcon />}
+                </Button>
+              </div>
+            </form>
+          </MessageScrollerProvider>
+        </div>
+      </div>
+
+      {openArtifact === null ? (
+        <div className="flex min-h-0 flex-col gap-4">
+          <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
+            <CardHeader>
+              <CardTitle>Recent runs</CardTitle>
+            </CardHeader>
+            <CardContent className="min-h-0 overflow-y-auto p-0">
+              {runsHistory.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">No runs yet.</p>
+              ) : (
+                <ul className="flex flex-col">
+                  {runsHistory.slice(0, 12).map((r) => (
+                    <li key={r.id}>
+                      <Link
+                        to="/agents/runs/$runId"
+                        params={{ runId: r.id }}
+                        className="group block rounded-lg px-3 py-2 transition-colors hover:bg-muted"
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
+                            {r.title}
+                          </span>
+                          <RunStatusBadge status={r.status} />
                         </span>
-                        <RunStatusBadge status={r.status} />
-                      </span>
-                      <span className="font-mono text-[10px] text-ink-faint">
-                        <TimeAgo iso={r.createdAt} />
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function ChatBubble({ entry, streaming = false }: { entry: TranscriptEntry; streaming?: boolean }) {
-  const isUser = entry.role === "user";
-  return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[85%] rounded-md px-3.5 py-2.5 text-sm leading-relaxed",
-          isUser ? "border border-rule bg-elev text-ink" : "bg-inset text-ink-dim",
-        )}
-      >
-        <p className="mb-1 font-mono text-[9px] tracking-[0.16em] text-ink-faint uppercase">
-          {isUser ? "operator" : "rca assistant"}
-        </p>
-        <p className={cn("whitespace-pre-wrap", streaming && "stream-caret")}>{entry.content}</p>
-      </div>
+                        <span className="text-[11px] text-muted-foreground">
+                          <TimeAgo iso={r.createdAt} />
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
+          <ArtifactPanel
+            key={openArtifact.id}
+            artifact={openArtifact}
+            onClose={() => setOpenArtifact(null)}
+            className="h-full"
+          />
+        </div>
+      )}
     </div>
   );
 }

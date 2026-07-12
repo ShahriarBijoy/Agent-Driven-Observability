@@ -1,19 +1,23 @@
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  EmptyState,
-  StatusDot,
-} from "@obs/ui";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useRef } from "react";
-import { Markdown } from "~/components/markdown";
+import { ArrowLeftIcon, CheckIcon, FileTextIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import { useRef, useState } from "react";
+import type { Artifact } from "@obs/contracts";
+import { ArtifactPanel } from "~/components/artifact-panel";
 import { RunStatusBadge } from "~/components/run-status-badge";
+import { RunFeedItem } from "~/components/run-feed-item";
 import { TimeAgo } from "~/components/time-ago";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "~/components/ui/empty";
+import { buildRunFeed, feedBlockKey, groupRunFeed } from "~/lib/run-feed";
 import { useMountEffect } from "~/lib/use-mount-effect";
+import { cn } from "~/lib/utils";
 import { decideApproval, getAgentRun } from "~/server/functions";
 
 export const Route = createFileRoute("/agents/runs/$runId")({
@@ -32,6 +36,7 @@ function RunDetailPage() {
   // the latest status into the interval so polling stops once the run settles.
   const statusRef = useRef(run?.status);
   statusRef.current = run?.status;
+  const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   useMountEffect(() => {
     const timer = setInterval(() => {
       if (statusRef.current !== undefined && LIVE_STATUSES.has(statusRef.current)) {
@@ -44,23 +49,34 @@ function RunDetailPage() {
   if (run === null) {
     return (
       <div className="mx-auto max-w-3xl px-6 py-10">
-        <EmptyState
-          title="run not found"
-          detail="Echo runs live in BFF memory and evaporate on dev-server restart. Real runs persist once agent-service lands in Phase 5."
-          action={
-            <Link
-              to="/agents"
-              className="font-mono text-[11px] text-signal-dim uppercase hover:text-signal"
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FileTextIcon />
+            </EmptyMedia>
+            <EmptyTitle>Run not found</EmptyTitle>
+            <EmptyDescription>
+              Echo runs live in BFF memory and evaporate on dev-server restart. Real runs persist
+              now that agent-service is up.
+            </EmptyDescription>
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              className="mt-2"
+              render={<Link to="/agents" />}
             >
-              back to agents →
-            </Link>
-          }
-        />
+              <ArrowLeftIcon data-icon="inline-start" />
+              Back to agents
+            </Button>
+          </EmptyHeader>
+        </Empty>
       </div>
     );
   }
 
   const pendingApproval = run.approvals.find((a) => a.decision === undefined);
+  const feed = groupRunFeed(buildRunFeed(run));
 
   async function decide(decision: "approved" | "denied") {
     if (pendingApproval === undefined) return;
@@ -71,164 +87,91 @@ function RunDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <div className="panel-rise mb-5">
-        <Link
-          to="/agents"
-          className="font-mono text-[10px] text-ink-faint uppercase hover:text-signal"
-        >
-          ← agents
-        </Link>
-        <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-xl font-medium text-ink">{run.title}</h1>
-          <Badge tone="data">{run.agent}</Badge>
-          <RunStatusBadge status={run.status} />
-          <span className="font-mono text-[10px] text-ink-faint">
-            {run.id} · tenant {run.tenant} · started <TimeAgo iso={run.createdAt} />
-          </span>
-        </div>
-      </div>
-
-      {pendingApproval !== undefined ? (
-        <div className="panel-rise mb-5 rounded-md border border-signal-dim/50 bg-signal/5 px-5 py-4">
-          <p className="font-mono text-[11px] tracking-[0.14em] text-signal uppercase">
-            approval gate — agent paused
-          </p>
-          <p className="mt-2 text-sm text-ink-dim">{pendingApproval.summary}</p>
-          <p className="mt-1 font-mono text-[10px] text-ink-faint">
-            requested <TimeAgo iso={pendingApproval.requestedAt} />
-          </p>
-          <div className="mt-3 flex gap-2">
-            <Button variant="signal" onClick={() => void decide("approved")}>
-              approve
-            </Button>
-            <Button variant="danger" onClick={() => void decide("denied")}>
-              deny
-            </Button>
+    <div
+      className={cn(
+        "mx-auto grid h-full grid-cols-1 px-6 py-6",
+        openArtifact !== null
+          ? "max-w-none gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
+          : "w-full max-w-3xl",
+      )}
+    >
+      <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="panel-rise mb-5">
+          <Button
+            variant="ghost"
+            size="xs"
+            nativeButton={false}
+            className="-ml-2 text-muted-foreground"
+            render={<Link to="/agents" />}
+          >
+            <ArrowLeftIcon data-icon="inline-start" />
+            Agents
+          </Button>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
+            <h1 className="font-heading text-lg font-semibold tracking-tight">{run.title}</h1>
+            <Badge variant="secondary">{run.agent}</Badge>
+            <RunStatusBadge status={run.status} />
           </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            <span className="font-mono">{run.id}</span> · tenant {run.tenant} · started{" "}
+            <TimeAgo iso={run.createdAt} />
+          </p>
         </div>
-      ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <div className="space-y-4">
-          <Card className="panel-rise panel-rise-1">
-            <CardHeader>
-              <CardTitle>Message log</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 py-3">
-              {run.messages.length === 0 ? (
-                <p className="text-xs text-ink-faint">No messages recorded.</p>
+        {pendingApproval !== undefined ? (
+          <div className="panel-rise mb-5 rounded-xl border border-warning/30 bg-warning/10 px-5 py-4">
+            <p className="flex items-center gap-2 text-sm font-medium text-warning">
+              <ShieldAlertIcon className="size-4" />
+              Approval gate — agent paused
+            </p>
+            <p className="mt-2 text-sm text-foreground/90">{pendingApproval.summary}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Requested <TimeAgo iso={pendingApproval.requestedAt} />
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" onClick={() => void decide("approved")}>
+                <CheckIcon data-icon="inline-start" />
+                Approve
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => void decide("denied")}>
+                <XIcon data-icon="inline-start" />
+                Deny
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {/* The transcript lives in a fixed-height card and scrolls internally,
+            like the live chat window — the page itself never grows. */}
+        <div className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <div className="scroll-fade-b scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
+            <div className="flex flex-col gap-4">
+              {feed.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No messages recorded.</p>
               ) : (
-                run.messages.map((m) => (
-                  <div
-                    key={m.id}
-                    className="rounded-sm border border-rule-soft bg-inset px-3 py-2.5"
-                  >
-                    <p className="mb-1 flex items-baseline justify-between font-mono text-[9px] tracking-[0.16em] text-ink-faint uppercase">
-                      {m.role === "user" ? "operator" : m.role}
-                      <TimeAgo iso={m.createdAt} />
-                    </p>
-                    <p className="text-sm whitespace-pre-wrap text-ink-dim">{m.content}</p>
-                  </div>
+                feed.map((block) => (
+                  <RunFeedItem
+                    key={feedBlockKey(block)}
+                    block={block}
+                    onOpenArtifact={setOpenArtifact}
+                  />
                 ))
               )}
-            </CardContent>
-          </Card>
-
-          {run.artifacts.length > 0 ? (
-            <Card className="panel-rise panel-rise-2">
-              <CardHeader>
-                <CardTitle>Artifacts</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4 py-3">
-                {run.artifacts.map((a) => (
-                  <div key={a.id}>
-                    <p className="mb-1.5 flex items-center gap-2 font-mono text-[11px] text-ink-faint">
-                      <span className="text-data">▣</span>
-                      {a.name}
-                      <Badge tone="neutral">{a.mediaType}</Badge>
-                    </p>
-                    {a.mediaType === "text/markdown" ? (
-                      <div className="rounded-sm border border-rule-soft px-4 py-3">
-                        <Markdown>{a.content}</Markdown>
-                      </div>
-                    ) : (
-                      <pre className="overflow-x-auto rounded-sm border border-rule-soft bg-inset px-4 py-3 font-mono text-xs text-ink-dim">
-                        {a.content}
-                      </pre>
-                    )}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          ) : null}
-        </div>
-
-        <div className="space-y-4">
-          <Card className="panel-rise panel-rise-2">
-            <CardHeader>
-              <CardTitle>Tool-call timeline</CardTitle>
-            </CardHeader>
-            <CardContent className="py-3">
-              {run.toolCalls.length === 0 ? (
-                <p className="text-xs text-ink-faint">No tool calls.</p>
-              ) : (
-                <ol className="relative space-y-3 border-l border-rule pl-4">
-                  {run.toolCalls.map((tc) => (
-                    <li key={tc.id} className="relative">
-                      <span className="absolute top-1 -left-[21px]">
-                        <StatusDot
-                          tone={
-                            tc.status === "ok" ? "good" : tc.status === "error" ? "bad" : "live"
-                          }
-                        />
-                      </span>
-                      <p className="font-mono text-[11px] text-data">{tc.name}</p>
-                      <pre className="mt-1 overflow-x-auto rounded-xs bg-inset px-2 py-1 font-mono text-[10px] text-ink-faint">
-                        {JSON.stringify(tc.args, null, 2)}
-                      </pre>
-                      {tc.result !== undefined ? (
-                        <p className="mt-1 text-[11px] text-ink-faint">{tc.result}</p>
-                      ) : null}
-                      <p className="mt-0.5 font-mono text-[9px] text-ink-faint/70 uppercase">
-                        <TimeAgo iso={tc.startedAt} />
-                        {tc.endedAt !== undefined
-                          ? ` · ${Math.max(0, new Date(tc.endedAt).getTime() - new Date(tc.startedAt).getTime())}ms`
-                          : " · running"}
-                      </p>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </CardContent>
-          </Card>
-
-          {run.approvals.length > 0 ? (
-            <Card className="panel-rise panel-rise-3">
-              <CardHeader>
-                <CardTitle>Approvals</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 py-3">
-                {run.approvals.map((a) => (
-                  <div key={a.id} className="rounded-sm border border-rule-soft bg-inset px-3 py-2">
-                    <p className="text-xs text-ink-dim">{a.summary}</p>
-                    <p className="mt-1 font-mono text-[10px] uppercase">
-                      {a.decision === undefined ? (
-                        <span className="text-signal">pending</span>
-                      ) : (
-                        <span className={a.decision === "approved" ? "text-good" : "text-warn"}>
-                          {a.decision}{" "}
-                          {a.decidedAt !== undefined ? <TimeAgo iso={a.decidedAt} /> : ""}
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          ) : null}
+            </div>
+          </div>
         </div>
       </div>
+
+      {openArtifact !== null ? (
+        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
+          <ArtifactPanel
+            key={openArtifact.id}
+            artifact={openArtifact}
+            onClose={() => setOpenArtifact(null)}
+            className="h-full"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
