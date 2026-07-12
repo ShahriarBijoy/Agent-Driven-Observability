@@ -22,6 +22,9 @@ function MermaidSvg({ chart, dark }: { chart: string; dark: boolean }) {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
+          // Without this, failed renders (e.g. a fence mid-stream) leak the
+          // bomb "Syntax error in text" SVG into document.body.
+          suppressErrorRendering: true,
           theme: dark ? "dark" : "neutral",
           fontFamily: "inherit",
         });
