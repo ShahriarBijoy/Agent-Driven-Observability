@@ -15,5 +15,5 @@ from .base import run_agent_session
 async def run_rca(ctx: RunContext, message: str) -> None:
     await ctx.begin(trigger="chat")
     await ctx.add_user_message(message)
-    await run_agent_session(ctx, "rca", message, max_turns=16)
+    await run_agent_session(ctx, "rca", message, max_turns=24)
     await ctx.end("completed")

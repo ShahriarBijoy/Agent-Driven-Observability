@@ -11,6 +11,8 @@ gh_open_pr + request_approval.
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import subprocess
 
 from ..config import config
@@ -27,7 +29,9 @@ def _git(args: list[str], cwd: str, stdin: str | None = None) -> subprocess.Comp
 def prepare_workspace(run_id: str) -> tuple[str | None, str]:
     """Create a contained clone of the lab repo whose 'origin' is a local bare
     repo (the dry-run remote). Returns (repo_dir, 'ok') or (None, reason)."""
-    base = os.path.join(config.artifacts_dir, "autofix", run_id)
+    # Absolute always: relative paths here get resolved against three different
+    # cwds below (process cwd, base, repo) and silently diverge.
+    base = os.path.abspath(os.path.join(config.artifacts_dir, "autofix", run_id))
     bare = os.path.join(base, "origin.git")
     repo = os.path.join(base, "repo")
     try:
@@ -52,6 +56,27 @@ def prepare_workspace(run_id: str) -> tuple[str | None, str]:
         return None, f"workspace prep failed: {exc}"
 
 
+def cleanup_workspace(repo: str) -> None:
+    """Delete the working clone once the run is over, keeping origin.git.
+
+    The clone balloons to hundreds of MB the moment the agent runs installs or
+    tests inside it; the bare origin (which holds any pushed fix branch) stays
+    ~1 MB, so dropping only the clone reclaims the disk without losing the
+    result. Best-effort: cleanup must never mask the run outcome.
+    """
+    if not os.path.isdir(repo):
+        return
+    # git marks object files read-only, which rmtree can't delete on Windows —
+    # strip the bit first.
+    for root, _dirs, files in os.walk(repo):
+        for name in files:
+            try:
+                os.chmod(os.path.join(root, name), stat.S_IWRITE)
+            except OSError:
+                pass
+    shutil.rmtree(repo, ignore_errors=True)
+
+
 async def run_autofixer(ctx: RunContext, error_pattern: str, hint: str = "") -> None:
     await ctx.begin(trigger="auto-fix")
     repo, reason = prepare_workspace(ctx.run_id)
@@ -69,5 +94,11 @@ async def run_autofixer(ctx: RunContext, error_pattern: str, hint: str = "") -> 
         "and WAIT. Only after 'approved', call gh_open_pr (you edited files directly, so the patch "
         "argument is optional). If denied, stop without opening a PR."
     )
-    await run_agent_session(ctx, "auto-fixer", prompt, cwd=repo, max_turns=40)
+    try:
+        # The widest budget of any agent: it has to locate the bug, edit, run
+        # the affected tests, and still reach the approval gate + PR (observed:
+        # 40 turns ran out mid-test-run on a real incident).
+        await run_agent_session(ctx, "auto-fixer", prompt, cwd=repo, max_turns=80)
+    finally:
+        cleanup_workspace(repo)
     await ctx.end("completed")

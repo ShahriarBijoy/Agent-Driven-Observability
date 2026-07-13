@@ -20,6 +20,17 @@ def _env(name: str, default: str) -> str:
     return value if value else default
 
 
+def _anchored(path: str) -> str:
+    """Resolve a possibly-relative filesystem path against the repo root.
+
+    .env values like `runbooks` or `.artifacts` mean repo-relative, never
+    cwd-relative — the service starts in apps/agent-service, and mixing
+    cwd-relative paths across subprocess cwds breaks (WinError 267 in the
+    auto-fixer's workspace prep, runbook_read looking in the wrong tree).
+    """
+    return path if os.path.isabs(path) else os.path.join(LAB_ROOT, path)
+
+
 # Repo root, four levels up from this file (src/agent_service/config.py ->
 # apps/agent-service -> apps -> root). The service starts in apps/agent-service,
 # so runbook/artifact paths must anchor here, not the process cwd.
@@ -50,6 +61,9 @@ class Config:
     runbooks_dir: str
     subject_repo_dir: str | None
     artifacts_dir: str
+    # Grafana file-provisioned dashboards; agent edits to those uids are
+    # mirrored here so the file provider doesn't revert them (~30s scan).
+    grafana_dashboards_dir: str
 
     # Fixed dev credentials (mirrors the BFF: ADR-002, the `acme` tenant).
     dev_tenant: str
@@ -73,9 +87,12 @@ def load_config() -> Config:
         marquez_url=_env("MARQUEZ_URL", "http://localhost:5000"),
         model=model,
         lab_root=LAB_ROOT,
-        runbooks_dir=_env("RUNBOOKS_DIR", os.path.join(LAB_ROOT, "runbooks")),
-        subject_repo_dir=subject_repo,
-        artifacts_dir=_env("ARTIFACTS_DIR", os.path.join(LAB_ROOT, ".artifacts")),
+        runbooks_dir=_anchored(_env("RUNBOOKS_DIR", "runbooks")),
+        subject_repo_dir=_anchored(subject_repo) if subject_repo is not None else None,
+        artifacts_dir=_anchored(_env("ARTIFACTS_DIR", ".artifacts")),
+        grafana_dashboards_dir=_anchored(
+            _env("GRAFANA_DASHBOARDS_DIR", "infra/grafana/provisioning/dashboards")
+        ),
         dev_tenant=_env("DEV_TENANT", "acme"),
     )
 

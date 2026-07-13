@@ -9,8 +9,8 @@ less, but structured": these return compact, decision-ready shapes.
 
 from __future__ import annotations
 
-import asyncio
 import json
+import os
 import subprocess
 from datetime import datetime
 from typing import Any
@@ -83,14 +83,18 @@ async def tempo_query(traceql: str, range: str = "1h", limit: int = 20) -> dict:
     if not traceql or not traceql.strip():
         return {"error": "traceql is required"}
     q = traceql.strip()
-    # A bare 32-hex string is a trace id: fetch the full trace instead of search.
-    if len(q) == 32 and all(c in "0123456789abcdefABCDEF" for c in q):
+    # A bare hex string is a trace id: fetch the full trace instead of search.
+    # OTel ids are 32 hex chars, but models often hand back ids with leading
+    # zeros stripped, so accept 16-32 chars and left-pad (Tempo 400s on a bare
+    # hex string given to /api/search).
+    if 16 <= len(q) <= 32 and all(c in "0123456789abcdefABCDEF" for c in q):
+        trace_id = q.lower().rjust(32, "0")
         try:
-            resp = await _http().get(f"{config.tempo_url}/api/traces/{q}")
+            resp = await _http().get(f"{config.tempo_url}/api/traces/{trace_id}")
             resp.raise_for_status()
-            return {"trace_id": q, "trace": resp.json()}
+            return {"trace_id": trace_id, "trace": resp.json()}
         except Exception as exc:  # noqa: BLE001
-            return {"error": f"tempo trace fetch failed: {exc}", "trace_id": q}
+            return {"error": f"tempo trace fetch failed: {exc}", "trace_id": trace_id}
     start, end = parse_range(range)
     try:
         resp = await _http().get(
@@ -155,10 +159,29 @@ async def marquez_lineage(dataset: str, depth: int = 2) -> dict:
             f"{config.marquez_url}/api/v1/lineage",
             params={"nodeId": node_id, "depth": str(depth)},
         )
+        if resp.status_code == 404:
+            # Unknown dataset — hand back what actually exists so the model
+            # can retry with a real name instead of guessing again.
+            return {
+                "error": f"dataset '{name}' not found in namespace '{namespace}'",
+                "available_datasets": await _marquez_dataset_names(namespace),
+            }
         resp.raise_for_status()
         return {"dataset": name, "namespace": namespace, "lineage": resp.json()}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"marquez lineage failed: {exc}", "dataset": name}
+
+
+async def _marquez_dataset_names(namespace: str, limit: int = 50) -> list[str]:
+    try:
+        resp = await _http().get(
+            f"{config.marquez_url}/api/v1/namespaces/{namespace}/datasets",
+            params={"limit": str(limit)},
+        )
+        resp.raise_for_status()
+        return [d.get("name", "") for d in resp.json().get("datasets", [])]
+    except Exception:  # noqa: BLE001 — best-effort hint only
+        return []
 
 
 # ---- Postgres (read-only) ---------------------------------------------------
@@ -180,7 +203,96 @@ def _is_scalar(v: Any) -> bool:
     return v is None or isinstance(v, (str, int, float, bool))
 
 
-# ---- Grafana (create dashboard) ---------------------------------------------
+# ---- Grafana (read + create dashboards) --------------------------------------
+
+
+async def grafana_get_dashboard(query: str) -> dict:
+    """List dashboards ("list"/empty), or fetch one full dashboard JSON model
+    by uid — falling back to a title search when the uid misses. Fetching is
+    the first step of extending an existing dashboard: append panels to the
+    returned model and re-save it via grafana_create_dashboard (same uid
+    overwrites in place; the lab's provisioning sets allowUiUpdates)."""
+    q = (query or "").strip()
+    try:
+        if q.lower() in ("", "list"):
+            resp = await _http().get(
+                f"{config.grafana_url}/api/search", params={"type": "dash-db"}
+            )
+            if resp.status_code >= 400:
+                return {"error": f"grafana search failed: HTTP {resp.status_code}"}
+            return {
+                "dashboards": [
+                    {"uid": d.get("uid"), "title": d.get("title")} for d in resp.json()
+                ]
+            }
+
+        async def fetch(uid: str) -> dict | None:
+            resp = await _http().get(f"{config.grafana_url}/api/dashboards/uid/{uid}")
+            if resp.status_code != 200:
+                return None
+            model = resp.json().get("dashboard") or {}
+            return {
+                "uid": model.get("uid"),
+                "title": model.get("title"),
+                "version": model.get("version"),
+                "dashboard": model,
+            }
+
+        direct = await fetch(q)
+        if direct is not None:
+            return direct
+        resp = await _http().get(
+            f"{config.grafana_url}/api/search", params={"query": q, "type": "dash-db"}
+        )
+        if resp.status_code >= 400:
+            return {"error": f"grafana search failed: HTTP {resp.status_code}"}
+        hits = resp.json()
+        if len(hits) == 1:
+            found = await fetch(hits[0].get("uid", ""))
+            if found is not None:
+                return found
+        return {
+            "matches": [{"uid": d.get("uid"), "title": d.get("title")} for d in hits],
+            "hint": "no exact dashboard match; fetch again with one of these uids",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"grafana read failed: {exc}"}
+
+
+def sync_provisioned_dashboard(model: dict, prov_dir: str) -> str | None:
+    """If `model`'s uid belongs to a file-provisioned dashboard, write the new
+    model back into its provisioning JSON and return the file name.
+
+    Grafana's file provider re-applies the file on every scan (observed: an
+    API save to gateway-red was reverted within ~30s despite allowUiUpdates),
+    so for provisioned dashboards the FILE is the only durable place — writing
+    it makes the provider propagate the change instead of fighting it, and the
+    edit shows up as a git diff the operator can commit or revert.
+    """
+    uid = model.get("uid")
+    if not uid or not os.path.isdir(prov_dir):
+        return None
+    try:
+        for name in sorted(os.listdir(prov_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(prov_dir, name)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    existing = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(existing, dict) or existing.get("uid") != uid:
+                continue
+            # The provider loads the raw model; id/version are DB-side noise.
+            clean = {k: v for k, v in model.items() if k not in ("id", "version")}
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(clean, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            return name
+    except OSError:
+        return None
+    return None
 
 
 async def grafana_create_dashboard(dashboard: Any) -> dict:
@@ -209,12 +321,20 @@ async def grafana_create_dashboard(dashboard: Any) -> dict:
             return {"error": f"grafana rejected dashboard: HTTP {resp.status_code} {resp.text[:300]}"}
         body = resp.json()
         url = body.get("url")
-        return {
+        result = {
             "status": "created",
             "uid": body.get("uid"),
             "url": f"{config.grafana_url}{url}" if url else None,
             "version": body.get("version"),
         }
+        # Durable path for provisioned dashboards: mirror the change into the
+        # provisioning file, else the file provider reverts it within ~30s.
+        model_saved = envelope.get("dashboard")
+        if isinstance(model_saved, dict):
+            synced = sync_provisioned_dashboard(model_saved, config.grafana_dashboards_dir)
+            if synced is not None:
+                result["provisionedFile"] = synced
+        return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"grafana create failed: {exc}"}
 
@@ -223,6 +343,16 @@ async def grafana_create_dashboard(dashboard: Any) -> dict:
 
 
 async def runbook_read(path: str) -> dict:
+    # Listing mode — let the model discover what exists instead of guessing
+    # names (observed: 6 wasted runbook_read calls in one RCA run).
+    if path.strip().lower() in ("", "list", ".", "/"):
+        try:
+            names = sorted(
+                f for f in os.listdir(config.runbooks_dir) if f.lower().endswith(".md")
+            )
+            return {"runbooks": names}
+        except OSError as exc:
+            return {"error": f"cannot list runbooks: {exc}"}
     target, reason = safe_runbook_path(path, config.runbooks_dir)
     if target is None:
         return {"error": f"rejected: {reason}", "path": path}

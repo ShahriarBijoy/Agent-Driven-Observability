@@ -116,9 +116,15 @@ async def _marquez(args: dict) -> dict:
 
 @tool(
     "pg_select",
-    "Run a read-only SELECT against the lab database. Allowed tables: inferences, "
-    "dq_violations, usage_events, chunks, agent_*. Use $1, $2 placeholders with params. "
-    "Writes and non-allow-listed tables are refused.",
+    "Run a read-only SELECT against the lab database. Use $1, $2 placeholders with params. "
+    "Writes, information_schema, and non-allow-listed tables are refused. Allowed tables "
+    "(with key columns) — "
+    "inferences(run_id, tenant, model, prompt_chars, prompt_tokens, completion_tokens, "
+    "retrieved_count, retrieval_score_mean, retrieval_score_max, cache_hit, status, created_at); "
+    "usage_events(tenant, prompt_tokens, completion_tokens, model, created_at); "
+    "dq_violations(check_name, signal, severity, dataset, ts, payload); "
+    "chunks(doc_id, body, created_at); agent_runs and the other agent_* audit tables. "
+    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables.",
     {
         "type": "object",
         "properties": {
@@ -131,6 +137,24 @@ async def _marquez(args: dict) -> dict:
 )
 async def _pg(args: dict) -> dict:
     return _text(await backends.pg_select(args["sql"], args.get("params") or []))
+
+
+@tool(
+    "grafana_get_dashboard",
+    'List existing Grafana dashboards (pass "list") or fetch one dashboard\'s full JSON '
+    "model by uid or title. Use this BEFORE extending an existing dashboard: append new "
+    "panels to the returned model, keep its uid/title and existing panels, then save it "
+    "with grafana_create_dashboard (same uid overwrites in place).",
+    {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": 'dashboard uid or title, or "list"'},
+        },
+        "required": ["query"],
+    },
+)
+async def _grafana_get(args: dict) -> dict:
+    return _text(await backends.grafana_get_dashboard(args["query"]))
 
 
 @tool(
@@ -152,14 +176,15 @@ async def _grafana(args: dict) -> dict:
 @tool(
     "runbook_read",
     "Read a Markdown runbook from the runbooks/ directory by relative path "
-    '(e.g. "gateway-high-error-rate.md").',
+    '(e.g. "gateway-high-error-rate.md"). Pass "list" (or an empty path) to '
+    "enumerate the available runbooks instead of guessing names.",
     {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
 )
 async def _runbook(args: dict) -> dict:
     return _text(await backends.runbook_read(args["path"]))
 
 
-_STATELESS = [_loki, _tempo, _mimir, _marquez, _pg, _grafana, _runbook]
+_STATELESS = [_loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook]
 
 
 # ---- per-run server (binds ctx into approval + artifact) ---------------------
@@ -264,13 +289,15 @@ ARTIFACT_KINDS: dict[str, tuple[str, str]] = {
 
 READ_TOOLS = [
     mcp("loki_query"), mcp("tempo_query"), mcp("mimir_query"),
-    mcp("marquez_lineage"), mcp("pg_select"),
+    mcp("marquez_lineage"), mcp("pg_select"), mcp("runbook_read"),
 ]
 
 TOOLSETS: dict[str, list[str]] = {
     "rca": [*READ_TOOLS, mcp("save_artifact")],
     "incident-reporter": [*READ_TOOLS, mcp("save_artifact")],
-    "dashboard-generator": [mcp("mimir_query"), mcp("grafana_create_dashboard")],
+    "dashboard-generator": [
+        mcp("mimir_query"), mcp("grafana_get_dashboard"), mcp("grafana_create_dashboard"),
+    ],
     "runbook-executor": [
         "Bash", mcp("pg_select"), mcp("runbook_read"),
         mcp("request_approval"), mcp("save_artifact"),
@@ -281,13 +308,52 @@ TOOLSETS: dict[str, list[str]] = {
     ],
 }
 
+# Every tool the settings UI can grant to an agent, with an operator-facing
+# one-liner. MCP entries mirror the @tool definitions above; built-ins are
+# Claude Code tools the SDK provides. settings.py validates grants against
+# this list, so a tool missing here cannot be granted from the UI.
+TOOL_CATALOG: list[dict[str, str]] = [
+    {"name": mcp("loki_query"), "kind": "mcp",
+     "description": "Search Loki logs with LogQL"},
+    {"name": mcp("tempo_query"), "kind": "mcp",
+     "description": "Search Tempo traces (TraceQL) or fetch a trace by id"},
+    {"name": mcp("mimir_query"), "kind": "mcp",
+     "description": "Run PromQL queries against Mimir"},
+    {"name": mcp("marquez_lineage"), "kind": "mcp",
+     "description": "Read the OpenLineage graph from Marquez"},
+    {"name": mcp("pg_select"), "kind": "mcp",
+     "description": "Read-only SELECT against the lab Postgres"},
+    {"name": mcp("runbook_read"), "kind": "mcp",
+     "description": "Read a Markdown runbook from runbooks/"},
+    {"name": mcp("grafana_get_dashboard"), "kind": "mcp",
+     "description": "List Grafana dashboards or fetch one's JSON model"},
+    {"name": mcp("grafana_create_dashboard"), "kind": "mcp",
+     "description": "Create or overwrite a Grafana dashboard"},
+    {"name": mcp("save_artifact"), "kind": "mcp",
+     "description": "Persist a Markdown/JSON/HTML artifact on the run"},
+    {"name": mcp("request_approval"), "kind": "mcp",
+     "description": "Pause the run for an operator approve/deny decision"},
+    {"name": mcp("gh_open_pr"), "kind": "mcp",
+     "description": "Open a pull request from the contained workspace clone"},
+    {"name": "Bash", "kind": "builtin",
+     "description": "Run shell commands on the agent-service host"},
+    {"name": "Read", "kind": "builtin",
+     "description": "Read files under the agent's working directory"},
+    {"name": "Glob", "kind": "builtin",
+     "description": "Find files by glob pattern"},
+    {"name": "Edit", "kind": "builtin",
+     "description": "Edit files under the agent's working directory"},
+]
+
 SYSTEM_PROMPTS: dict[str, str] = {
     "rca": (
         "You are the RCA (root-cause analysis) assistant for an AI observability lab. "
         "Answer 'why is X happening' questions by running REAL queries against the telemetry "
         "plane — Loki (logs), Tempo (traces), Mimir (PromQL metrics), Marquez (data lineage), "
         "and the lab Postgres (read-only). Always ground claims in tool results; never guess. "
-        "Prefer few, well-chosen queries over many chatty ones. Be concise and specific: name "
+        "Prefer few, well-chosen queries over many chatty ones. Narrate as you go: before each "
+        "round of tool calls, write one short sentence saying what you're checking and why — the "
+        "operator watches live, and a silent run looks stuck. Be concise and specific: name "
         "the service, span, tenant, or metric. When you reach a conclusion worth keeping, save a "
         "short Markdown summary with save_artifact. When a visual would explain the finding "
         "better than prose — a latency curve, a before/after comparison, a dependency sketch — "
@@ -301,7 +367,8 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "You are the incident reporter. You receive a Grafana alert payload and write a "
         "structured postmortem. Investigate with the read-only tools (Loki/Tempo/Mimir/Marquez/"
         "Postgres): establish what fired, the blast radius (which tenant/endpoint), the likely "
-        "cause (name the slow span or error signature), and concrete next steps. Then call "
+        "cause (name the slow span or error signature), and concrete next steps. Narrate as you "
+        "go: one short sentence before each round of queries saying what you're checking. Then call "
         "save_artifact with kind='markdown' to store the postmortem. Sections: Summary, Impact, "
         "Timeline, Evidence (with the queries you ran), Likely cause, Recommended actions. "
         "Be specific and evidence-backed; this goes straight to the incident inbox. The "
@@ -315,7 +382,12 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "First use mimir_query to confirm the intended metrics actually exist (instant queries), "
         "then build a clean dashboard JSON model (title, a few timeseries/stat panels with PromQL "
         "targets against the 'mimir' datasource uid) and call grafana_create_dashboard with it. "
-        "One pass: validate, build, create. Report the resulting dashboard URL."
+        "One pass: validate, build, create. Report the resulting dashboard URL. "
+        "When the brief asks to ADD panels to an EXISTING dashboard, do not build from scratch: "
+        "fetch it with grafana_get_dashboard (by title or uid; pass 'list' to see what exists), "
+        "append the new panels to its panels array — keep every existing panel, the uid, and the "
+        "title — and save the whole model with grafana_create_dashboard; the same uid overwrites "
+        "in place."
     ),
     "runbook-executor": (
         "You are the runbook executor. Read the named runbook with runbook_read, then execute its "
