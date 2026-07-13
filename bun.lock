@@ -114,6 +114,7 @@
         "@opentelemetry/sdk-metrics": "^2.2.0",
         "@opentelemetry/sdk-trace-web": "^2.2.0",
         "@opentelemetry/semantic-conventions": "^1.37.0",
+        "@outpacelabs/avatars": "^0.2.2",
         "@shadcn/react": "^0.2.1",
         "@tanstack/react-router": "^1.0.0",
         "@tanstack/react-start": "^1.0.0",
@@ -502,6 +503,8 @@
     "@opentelemetry/sdk-trace-web": ["@opentelemetry/sdk-trace-web@2.7.1", "", { "dependencies": { "@opentelemetry/core": "2.7.1", "@opentelemetry/sdk-trace-base": "2.7.1" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-K806OouCSOjMd8Nr7+ZCq3QT22tdAzzS/7h8vprfiKjkgFQ99/dvwU8d12WJANA6D5Qtme65hyBAqAu9CkQuxQ=="],
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.41.1", "", {}, "sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA=="],
+
+    "@outpacelabs/avatars": ["@outpacelabs/avatars@0.2.2", "", { "peerDependencies": { "react": ">=18" } }, "sha512-x9CzaYgEo93xyds17npkERgMqQkeIGNN+/z+uQb4cM41/FMey1G3S/rUzTAouZEnPLBqIRditurOrEArfKeYmg=="],
 
     "@oxfmt/binding-android-arm-eabi": ["@oxfmt/binding-android-arm-eabi@0.52.0", "", { "os": "android", "cpu": "arm" }, "sha512-17EMSJnQ9g+upVHrAUYDMfH5lvRKQ9Nvg8WtEoH72oDr1VpWz+7/o3tD97U1EToen2YAQ/68JmtDYkQUi20dfQ=="],
 

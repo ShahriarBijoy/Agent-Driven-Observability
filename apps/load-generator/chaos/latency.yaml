@@ -1,0 +1,23 @@
+# Fail test: latency degradation (no errors — the "slow is the new down" drill).
+#
+# The model-proxy gets slow but stays under the gateway's 8s upstream timeout,
+# so every request SUCCEEDS — only the latency SLIs move. Sized long (10 min)
+# because the "gateway p95 > 2s" alert needs its 5m rate window full AND a 5m
+# `for:` hold before it fires (~10 min in).
+#
+# What should page:      Gateway p95 latency > 2s (and the latency SLO burn).
+# What the agent should
+# pinpoint:              model-proxy span duration ballooned (traces), zero
+#                        error-rate change — a latency-only dependency issue.
+description: "latency drill — model-proxy slow but under timeout, p95 SLO burns"
+cooldownSeconds: 180
+
+phases:
+  - name: latency-degradation
+    target: model-proxy
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 600 # 10 minutes — enough for the p95 alert's 5m window + 5m hold
+    params:
+      latencyBaseMs: 2500
+      latencyGammaScaleMs: 600
+      latencyMaxMs: 6000 # < gateway UPSTREAM_TIMEOUT_MS (8000): slow, never a timeout

@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS agent_artifacts (
 );
 CREATE INDEX IF NOT EXISTS agent_artifacts_run_idx ON agent_artifacts (run_id, seq);
 
+CREATE TABLE IF NOT EXISTS agent_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, severity TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open', tenant TEXT NOT NULL,
@@ -196,6 +202,24 @@ async def add_artifact(run_id: str, artifact: Artifact) -> None:
         artifact.id, run_id, artifact.name, artifact.media_type, artifact.content, created,
     )
     await touch(run_id)
+
+
+async def get_settings() -> dict | None:
+    row = await _require_pool().fetchrow(
+        "SELECT value FROM agent_settings WHERE key = 'global'"
+    )
+    if row is None:
+        return None
+    value = row["value"]
+    return json.loads(value) if isinstance(value, str) else value
+
+
+async def save_settings(value: dict) -> None:
+    await _require_pool().execute(
+        """INSERT INTO agent_settings (key, value) VALUES ('global', $1::jsonb)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+        json.dumps(value),
+    )
 
 
 async def get_run(run_id: str) -> AgentRun | None:

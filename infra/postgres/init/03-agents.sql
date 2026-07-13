@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS agent_artifacts (
 
 CREATE INDEX IF NOT EXISTS agent_artifacts_run_idx ON agent_artifacts (run_id, seq);
 
+-- Runtime agent settings the web settings page edits (model, per-agent tool
+-- grants). One JSONB row under key 'global'; agent-service reads it per run.
+CREATE TABLE IF NOT EXISTS agent_settings (
+  key        TEXT PRIMARY KEY,
+  value      JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- The incident inbox the web control plane reads. The incident-reporter agent
 -- writes one row per investigated alert (postmortem_md holds the Markdown), and
 -- links it back to the agent run that produced it.

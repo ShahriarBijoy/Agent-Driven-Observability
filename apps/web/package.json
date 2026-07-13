@@ -26,6 +26,7 @@
     "@opentelemetry/sdk-metrics": "^2.2.0",
     "@opentelemetry/sdk-trace-web": "^2.2.0",
     "@opentelemetry/semantic-conventions": "^1.37.0",
+    "@outpacelabs/avatars": "^0.2.2",
     "@shadcn/react": "^0.2.1",
     "@tanstack/react-router": "^1.0.0",
     "@tanstack/react-start": "^1.0.0",

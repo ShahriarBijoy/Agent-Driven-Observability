@@ -13,6 +13,7 @@ requires. Only the system prompt + allow-list differ between agents.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from claude_agent_sdk import (
@@ -26,7 +27,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from ..config import config
+from .. import settings as settings_store
 from ..context import RunContext
 from ..telemetry import get_tracer
 from ..tools import sdk as toolsdk
@@ -38,13 +39,40 @@ _MCP_PREFIX = f"mcp__{toolsdk.SERVER}__"
 # just means the next turn starts fresh.
 _sessions: dict[str, str] = {}
 
-# Mutating agents run unattended (no human at a CLI prompt), so they can't fall
-# back to interactive permission prompts. Their real guardrail is the explicit
-# request_approval tool + a contained cwd, not the SDK permission dialog.
-PERMISSION_MODES: dict[str, str] = {
-    "auto-fixer": "bypassPermissions",
-    "runbook-executor": "bypassPermissions",
-}
+
+class AgentSessionError(RuntimeError):
+    """The Claude session stopped before completing (turn limit, API error).
+
+    Raised after the stop notice has been persisted to the transcript; app.py
+    maps it to an honest 'failed' run status instead of 'completed'.
+    """
+
+
+# Claude Code built-ins removed from the model's context when the agent wasn't
+# granted them. Without this the model discovers Read/Grep/Bash and burns its
+# turn budget spelunking the host filesystem instead of querying telemetry
+# (observed: 15 of 46 calls wasted in one RCA run). Only applied to agents on
+# 'default' permission mode — the bypassPermissions agents (runbook-executor,
+# auto-fixer) legitimately lean on built-ins inside their contained cwd.
+_DENYABLE_BUILTINS = [
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
+    "WebFetch", "WebSearch", "Task", "TodoWrite",
+]
+
+
+def stop_reason(
+    subtype: str | None, is_error: bool, detail: str | None, max_turns: int | None
+) -> str | None:
+    """Why the SDK session must not be reported as completed, or None if it
+    finished normally. Pure so it's unit-testable."""
+    if subtype in (None, "success") and not is_error:
+        return None
+    if subtype == "error_max_turns":
+        limit = f"{max_turns}-turn limit" if max_turns else "turn limit"
+        return f"the agent hit its {limit} before finishing"
+    if detail:
+        return _truncate(detail, 300)
+    return f"the session ended abnormally ({subtype})"
 
 
 def _display_name(name: str) -> str:
@@ -80,26 +108,56 @@ async def run_agent_session(
 ) -> str:
     """Run one agent turn-set to completion; returns the final assistant text."""
     server = toolsdk.build_mcp_server(ctx)
-    allowed = list(toolsdk.TOOLSETS.get(agent_kind, []))
+    stg = await settings_store.load()
+    allowed = settings_store.resolve_allowed(agent_kind, stg)
     if extra_allowed:
         allowed += extra_allowed
 
+    # State the tool boundary explicitly, and hand the model the context it
+    # otherwise wastes turns hunting for (current time for "around 18:45"
+    # questions — observed Bash calls just to convert epochs).
+    tool_names = ", ".join(_display_name(name) for name in allowed)
+    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now().astimezone()
+    boundary = (
+        f" Tools available to you: {tool_names}. These are the ONLY tools you may "
+        "call; anything else is denied in this headless environment and wastes a "
+        f"turn. The current time is {now_utc:%Y-%m-%d %H:%M} UTC "
+        f"({now_local:%H:%M} {now_local.tzname()} local — operators usually mean "
+        "local time). Telemetry timestamps are UTC epoch seconds; convert them "
+        "yourself, never via a shell."
+    )
+
+    permission_mode = settings_store.PERMISSION_MODES.get(agent_kind, "default")
+    disallowed = (
+        [] if permission_mode == "bypassPermissions"
+        else [t for t in _DENYABLE_BUILTINS if t not in allowed]
+    )
+
     options = ClaudeAgentOptions(
-        system_prompt=toolsdk.SYSTEM_PROMPTS.get(agent_kind, ""),
+        system_prompt=toolsdk.SYSTEM_PROMPTS.get(agent_kind, "") + boundary,
         mcp_servers={toolsdk.SERVER: server},
         allowed_tools=allowed,
-        permission_mode=PERMISSION_MODES.get(agent_kind, "default"),
+        disallowed_tools=disallowed,
+        permission_mode=permission_mode,
         setting_sources=[],  # isolation: don't load the host's CLAUDE.md / settings
-        model=config.model,
+        model=settings_store.resolve_model(stg),
         cwd=cwd,
         max_turns=max_turns,
         resume=_sessions.get(ctx.run_id),  # continue a multi-turn chat
+        # Ship every tool schema up front. The CLI defaults to deferring MCP
+        # schemas behind ToolSearch, which forced 2-4 ToolSearch round-trips at
+        # the start of every run and surfaced ungranted built-ins to the model.
+        env={"ENABLE_TOOL_SEARCH": "false"},
     )
 
     tracer = get_tracer()
     text_parts: list[str] = []  # current unsaved segment; flushed at each tool call
     all_parts: list[str] = []  # everything, for the return value
     pending: dict[str, tuple] = {}  # tool_use_id -> (ToolCall, start_monotonic, span)
+    result_subtype: str | None = None
+    result_is_error = False
+    result_detail: str | None = None
 
     async def flush_text() -> None:
         """Persist the accumulated narration as its own assistant message so the
@@ -148,20 +206,47 @@ async def run_agent_session(
                                     tc, status, _truncate(_result_text(block.content)), duration
                                 )
                     elif isinstance(message, ResultMessage):
+                        result_subtype = message.subtype
+                        result_is_error = bool(message.is_error)
+                        if message.result and result_is_error:
+                            result_detail = message.result
                         if message.session_id:
                             _sessions[ctx.run_id] = message.session_id
                         if message.total_cost_usd is not None:
                             run_span.set_attribute("agent.cost_usd", message.total_cost_usd)
                         if message.num_turns is not None:
                             run_span.set_attribute("agent.num_turns", message.num_turns)
-                        if message.is_error and not all_parts and message.result:
-                            text_parts.append(message.result)
-                            all_parts.append(message.result)
         except Exception as exc:  # noqa: BLE001 — ensure dangling spans close, then re-raise
             for _tc, _start, span in pending.values():
                 span.end()
             run_span.record_exception(exc)
             raise
 
-    await flush_text()
-    return "".join(all_parts).strip()
+        # Tool calls the session abandoned (e.g. the turn limit landed right
+        # after a tool_use) — resolve them so the UI doesn't spin forever.
+        for tc, started, span in pending.values():
+            span.set_attribute("tool.status", "error")
+            span.end()
+            await ctx.finish_tool_call(
+                tc, "error", "not executed — the session ended first",
+                int((time.monotonic() - started) * 1000),
+            )
+        pending.clear()
+
+        await flush_text()
+        final = "".join(all_parts).strip()
+
+        reason = stop_reason(result_subtype, result_is_error, result_detail, max_turns)
+        if reason is None:
+            return final
+        # Surface the early stop in the transcript itself — a silent run that
+        # then reads "completed" is exactly the confusion this prevents.
+        run_span.set_attribute("agent.stop_reason", result_subtype or "unknown")
+        notice = (
+            f"⚠️ Investigation stopped early: {reason}. "
+            + ("What's above may be incomplete." if final else "No answer was produced.")
+            + " Send a follow-up message to continue from where it left off."
+        )
+        ctx.emit_token(notice)
+        await ctx.add_assistant_message(notice)
+        raise AgentSessionError(reason)

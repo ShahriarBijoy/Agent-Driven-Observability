@@ -1,0 +1,21 @@
+# Fail test: partial brownout (the subtle cousin of outage.yaml).
+#
+# The retriever fails ~10% of retrieves — most requests still succeed, so
+# dashboards look "mostly fine" while the error budget quietly burns. Runs
+# longer than the hard outage precisely because the signal is weaker.
+#
+# What should page:      Gateway 5xx rate > 2% (hovers ~8–10%, well past the
+#                        threshold but far from an obvious cliff).
+# What the agent should
+# pinpoint:              intermittent retriever 503s (only SOME traces fail on
+#                        the retriever span) — a partial, not total, failure.
+description: "brownout drill — retriever fails ~10% of calls, slow error-budget burn"
+cooldownSeconds: 180
+
+phases:
+  - name: retriever-brownout
+    target: retriever
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 360 # 6 minutes — subtle signal, give it time
+    params:
+      errorRate: 0.1

@@ -1,10 +1,13 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { InboxIcon } from "lucide-react";
+import type { Incident } from "@obs/contracts";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { InboxIcon, WrenchIcon } from "lucide-react";
+import { useState } from "react";
 import { z } from "zod";
 import { Markdown } from "~/components/markdown";
 import { TimeAgo } from "~/components/time-ago";
 import { Badge } from "~/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Button } from "~/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -12,8 +15,10 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "~/components/ui/empty";
+import { Spinner } from "~/components/ui/spinner";
+import { Textarea } from "~/components/ui/textarea";
 import { cn } from "~/lib/utils";
-import { getIncidentInbox } from "~/server/functions";
+import { autoFixIncident, getIncidentInbox } from "~/server/functions";
 
 export const Route = createFileRoute("/incidents")({
   validateSearch: z.object({ id: z.string().optional() }),
@@ -112,21 +117,103 @@ function IncidentsPage() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <Card className="panel-rise panel-rise-2">
-            <CardHeader className="border-b">
-              <CardTitle>Postmortem</CardTitle>
-              <span className="font-mono text-xs text-muted-foreground">{selected.id}</span>
-            </CardHeader>
-            <CardContent className="pt-1">
-              {selected.postmortemMd !== undefined ? (
-                <Markdown className="typeset-docs">{selected.postmortemMd}</Markdown>
-              ) : (
-                <Markdown className="typeset-docs">{selected.summary}</Markdown>
-              )}
-            </CardContent>
-          </Card>
+          <PostmortemCard key={selected.id} incident={selected} />
         )}
       </div>
     </div>
+  );
+}
+
+/** The selected incident's postmortem plus the hand-off to the auto-fixer.
+ * Keyed by incident id upstream so panel state resets on selection change. */
+function PostmortemCard({ incident }: { incident: Incident }) {
+  const navigate = useNavigate();
+  const isSample = incident.id.startsWith("sample-");
+  const [open, setOpen] = useState(false);
+  const [instructions, setInstructions] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function startAutoFix() {
+    setStarting(true);
+    setError(null);
+    try {
+      const guidance = instructions.trim();
+      const { runId } = await autoFixIncident({
+        data: {
+          incidentId: incident.id,
+          ...(guidance !== "" ? { instructions: guidance } : {}),
+        },
+      });
+      if (runId === null) {
+        setError("Could not start the run — is the agent-service up? Start it with `obs agents`.");
+        return;
+      }
+      void navigate({ to: "/agents/runs/$runId", params: { runId } });
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  return (
+    <Card className="panel-rise panel-rise-2">
+      <CardHeader className="border-b">
+        <CardTitle>Postmortem</CardTitle>
+        <span className="font-mono text-xs text-muted-foreground">{incident.id}</span>
+        <CardAction>
+          {isSample ? (
+            <span className="text-xs text-muted-foreground">
+              sample incident — run a fail drill to file a real one
+            </span>
+          ) : (
+            <Button
+              size="sm"
+              variant={open ? "secondary" : "default"}
+              onClick={() => setOpen((v) => !v)}
+            >
+              <WrenchIcon data-icon="inline-start" />
+              Auto-fix
+            </Button>
+          )}
+        </CardAction>
+      </CardHeader>
+      {open ? (
+        <div className="border-b px-6 pb-5">
+          <p className="text-sm text-muted-foreground">
+            Hands this incident to the auto-fixer: it investigates in a contained clone of the repo
+            (never your working tree), proposes the smallest fix, and pauses for your approval
+            before opening a PR. The postmortem rides along automatically.
+          </p>
+          <Textarea
+            className="mt-3"
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            placeholder="Optional guidance — where to look, what to change, constraints…"
+            maxLength={4000}
+          />
+          {error !== null ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+          <div className="mt-3 flex items-center gap-3">
+            <Button size="sm" disabled={starting} onClick={() => void startAutoFix()}>
+              {starting ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <WrenchIcon data-icon="inline-start" />
+              )}
+              {starting ? "Starting run" : "Start auto-fix run"}
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              You approve or deny the change on the run page.
+            </span>
+          </div>
+        </div>
+      ) : null}
+      <CardContent className="pt-1">
+        {incident.postmortemMd !== undefined ? (
+          <Markdown className="typeset-docs">{incident.postmortemMd}</Markdown>
+        ) : (
+          <Markdown className="typeset-docs">{incident.summary}</Markdown>
+        )}
+      </CardContent>
+    </Card>
   );
 }

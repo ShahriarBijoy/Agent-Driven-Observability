@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_PROMPT_CHARS } from "@obs/domain";
 import { ChatRequestSchema } from "@obs/contracts";
-import { SCENARIOS, buildRequest, pickScenario } from "./scenarios";
+import { SCENARIOS, buildRequest, parseScenarioWeights, pickScenario } from "./scenarios";
 
 const GATEWAY = "http://gateway:8080";
 
@@ -24,6 +24,46 @@ describe("pickScenario", () => {
     const names = new Set(SCENARIOS.map((s) => s.name));
     for (let i = 0; i < 50; i++) {
       expect(names.has(pickScenario(() => i / 50).name)).toBe(true);
+    }
+  });
+});
+
+describe("parseScenarioWeights", () => {
+  it("reweights the listed scenarios and drops the rest", () => {
+    const mix = parseScenarioWeights("long:80,happy:20");
+    expect(mix.map((s) => s.name).sort()).toEqual(["happy", "long"]);
+    expect(mix.find((s) => s.name === "long")?.weight).toBe(80);
+    expect(mix.find((s) => s.name === "happy")?.weight).toBe(20);
+  });
+
+  it("keeps the base scenario's token for each entry", () => {
+    const mix = parseScenarioWeights("abusive:70,happy:30");
+    const abusive = mix.find((s) => s.name === "abusive");
+    expect(abusive?.token).toBe(findScenario("abusive").token);
+  });
+
+  it("tolerates whitespace around entries", () => {
+    const mix = parseScenarioWeights(" repeat:1 , broken:2 ");
+    expect(mix.map((s) => s.name).sort()).toEqual(["broken", "repeat"]);
+  });
+
+  it("rejects unknown scenario names", () => {
+    expect(() => parseScenarioWeights("nope:50,happy:50")).toThrow(/unknown scenario/i);
+  });
+
+  it("rejects non-positive or non-numeric weights", () => {
+    expect(() => parseScenarioWeights("happy:0")).toThrow(/weight/i);
+    expect(() => parseScenarioWeights("happy:abc")).toThrow(/weight/i);
+  });
+
+  it("rejects an empty spec", () => {
+    expect(() => parseScenarioWeights("")).toThrow(/empty/i);
+  });
+
+  it("feeds pickScenario so only listed scenarios are selected", () => {
+    const mix = parseScenarioWeights("long:100");
+    for (let i = 0; i < 10; i++) {
+      expect(pickScenario(() => i / 10, mix).name).toBe("long");
     }
   });
 });

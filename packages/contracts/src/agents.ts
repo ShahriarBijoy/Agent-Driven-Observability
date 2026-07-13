@@ -124,3 +124,51 @@ export const ApprovalDecisionRequestSchema = z.object({
   decision: z.enum(["approved", "denied"]),
 });
 export type ApprovalDecisionRequest = z.infer<typeof ApprovalDecisionRequestSchema>;
+
+/**
+ * Runtime agent settings (GET/PUT agent-service /settings). The web settings
+ * page selects the Claude model and grants extra tools per agent; agent-service
+ * merges grants with each agent's built-in allow-list at run start.
+ */
+
+export const AgentModelOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  detail: z.string(),
+});
+export type AgentModelOption = z.infer<typeof AgentModelOptionSchema>;
+
+export const AgentToolInfoSchema = z.object({
+  name: z.string(),
+  kind: z.enum(["mcp", "builtin"]),
+  description: z.string(),
+});
+export type AgentToolInfo = z.infer<typeof AgentToolInfoSchema>;
+
+export const AgentToolPolicySchema = z.object({
+  kind: AgentKindSchema,
+  description: z.string(),
+  /** bypassPermissions = unattended agent; its guardrail is request_approval. */
+  permissionMode: z.enum(["default", "bypassPermissions"]),
+  defaultTools: z.array(z.string()),
+  grantedTools: z.array(z.string()),
+});
+export type AgentToolPolicy = z.infer<typeof AgentToolPolicySchema>;
+
+export const AgentSettingsSchema = z.object({
+  /** Stored model override; null falls back to env, then the CLI default. */
+  model: z.string().nullable(),
+  modelSource: z.enum(["settings", "env", "cli"]),
+  envModel: z.string().nullable(),
+  availableModels: z.array(AgentModelOptionSchema),
+  tools: z.array(AgentToolInfoSchema),
+  agents: z.array(AgentToolPolicySchema),
+});
+export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
+
+/** PUT /settings body; toolGrants replaces the whole grants map. */
+export const AgentSettingsUpdateSchema = z.object({
+  model: z.string().nullable().optional(),
+  toolGrants: z.record(z.string(), z.array(z.string())).optional(),
+});
+export type AgentSettingsUpdate = z.infer<typeof AgentSettingsUpdateSchema>;

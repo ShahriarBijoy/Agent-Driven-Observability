@@ -6,6 +6,8 @@ The seam the Phase-4 web BFF was built against. Wire format is @obs/contracts:
 - GET  /runs/:id                 AgentRun
 - GET  /runs/:id/stream          follow a run's SSE events live (with replay)
 - POST /runs/:id/approve         resolve an approval gate -> AgentRun
+- GET  /settings                 runtime agent settings + catalogs
+- PUT  /settings                 update model / per-agent tool grants
 Plus triggered entrypoints added in later milestones (dashboard, webhook, etc.).
 """
 
@@ -21,7 +23,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db
+from . import settings as settings_store
 from .agents.autofix import run_autofixer
+from .agents.base import AgentSessionError
 from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
 from .agents.incident import run_incident_reporter, summarize_alert
@@ -35,10 +39,13 @@ from .models import AgentChatRequest, ApprovalDecisionBody
 from .telemetry import init_telemetry, instrument_app
 
 # Agents reachable through the interactive /chat endpoint. Extended per milestone.
+# dashboard-generator fits the chat shape (ctx, brief) directly: each message is
+# a fresh one-shot brief — the web UI does not send a runId back for it.
 ChatAgent = Callable[[RunContext, str], Awaitable[None]]
 CHAT_AGENTS: dict[str, ChatAgent] = {
     "echo": run_echo,
     "rca": run_rca,
+    "dashboard-generator": run_dashboard_generator,
 }
 
 
@@ -52,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="agent-service", version="0.0.0", lifespan=lifespan)
+instrument_app(app)  # FastAPI-level OTel spans (no-op when no OTLP endpoint)
 
 
 @app.get("/health")
@@ -82,6 +90,10 @@ async def _guard_run(ctx: RunContext, coro: Coroutine) -> None:
     must not leave a stream hanging forever."""
     try:
         await coro
+    except AgentSessionError as exc:
+        # base.py already narrated the stop in the transcript; just make the
+        # stored status honest — this run did NOT complete.
+        await ctx.end("failed", summary=str(exc))
     except Exception as exc:  # noqa: BLE001
         await ctx.fail(f"agent crashed: {exc}")
 
@@ -184,6 +196,32 @@ async def auto_fix(request: Request) -> JSONResponse:
     await db.create_run(ctx.run, "auto-fix")
     asyncio.create_task(_guard_run(ctx, run_autofixer(ctx, body.error_pattern, body.hint)))
     return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+
+
+@app.get("/settings")
+async def get_settings() -> JSONResponse:
+    stg = await settings_store.load()
+    return JSONResponse(settings_store.describe(stg))
+
+
+@app.put("/settings")
+async def put_settings(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = None
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": "body must be a JSON object"}},
+            status_code=400,
+        )
+    try:
+        stg = await settings_store.apply_update(payload)
+    except settings_store.SettingsError as exc:
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    return JSONResponse(settings_store.describe(stg))
 
 
 @app.get("/runs")

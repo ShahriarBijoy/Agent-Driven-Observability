@@ -205,6 +205,21 @@
   }
 }
 
+/* AI Elements Shimmer (ai-elements/shimmer.tsx): the highlight band sweeps
+   right-to-left across the two-layer background gradient. */
+@keyframes shimmer-sweep {
+  from {
+    background-position:
+      100% center,
+      0 0;
+  }
+  to {
+    background-position:
+      0% center,
+      0 0;
+  }
+}
+
 /* Streaming caret for the agent chat. */
 @keyframes caret-blink {
   0%,

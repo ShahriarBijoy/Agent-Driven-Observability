@@ -10,7 +10,19 @@ bun run start
 ```
 
 Configurable via env (see `.env.example`): `GATEWAY_URL`, `TARGET_QPS`,
-`DURATION_SECONDS`, `REQUEST_TIMEOUT_MS`, `CONCURRENCY`.
+`DURATION_SECONDS`, `REQUEST_TIMEOUT_MS`, `CONCURRENCY`, `SCENARIO_WEIGHTS`.
+
+`SCENARIO_WEIGHTS` (e.g. `"long:80,happy:20"`) replaces the default mix with a
+skewed one — listed scenarios get the given weights, unlisted ones are dropped.
+`obs load drift` / `obs load abuse` use this to drive data-drift and 429-storm
+tests (see `scripts/obs.ps1` and `docs/commands.html`).
+
+## Fail-test schedules (`bun run chaos`, or `obs fail <name>`)
+
+One YAML per failure mode in `chaos/`: `latency`, `errors`, `timeout`, `outage`,
+`brownout`, `flaky`, `throttle`, plus the original `full` cycle and the
+compressed `demo` burst. Each header documents what should page and what the
+RCA agent is expected to pinpoint.
 
 ## Scenarios (weighted ~55/20/10/10/5)
 

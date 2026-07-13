@@ -1,0 +1,21 @@
+# Fail test: hard error burst (the classic 5xx incident).
+#
+# The model-proxy 500s on 60% of completions; the gateway surfaces them as 502
+# upstream_error. Same shape as chaos/demo.yaml but standalone, so the demo
+# script's carefully sized burst can evolve independently.
+#
+# What should page:      Gateway 5xx rate > 2% (fires ~2–3 min into the burst)
+#                        → webhooks the incident reporter.
+# What the agent should
+# pinpoint:              gateway 502s trace back to model-proxy 500s; embedder
+#                        and retriever are healthy.
+description: "error burst — model-proxy 500s → gateway 502s"
+cooldownSeconds: 180
+
+phases:
+  - name: error-burst
+    target: model-proxy
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 240 # 4 minutes — reliably trips "5xx > 2% for 2m"
+    params:
+      p500: 0.6

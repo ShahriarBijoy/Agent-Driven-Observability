@@ -1,0 +1,24 @@
+# Fail test: upstream capacity exhaustion (429s — the one that does NOT page).
+#
+# The model-proxy sheds 50% of completions with 429; the gateway propagates
+# them verbatim as 429 model_overloaded. That's a 4xx, so the 5xx alert and the
+# availability SLO stay green — a deliberate negative control: users are being
+# throttled, but nothing pages. Ask the RCA agent "why are users seeing
+# 'model overloaded' errors?" and see if it finds the story without an alert
+# pointing at it.
+#
+# What should page:      Nothing (that's the point).
+# What the agent should
+# pinpoint:              gateway 429 rate spiked with code=model_overloaded —
+#                        upstream capacity shedding, distinct from the
+#                        per-tenant rate_limited 429s the abuser tenant gets.
+description: "throttle drill — model-proxy sheds 50% with 429s; degrades users, pages nobody"
+cooldownSeconds: 120
+
+phases:
+  - name: model-overloaded
+    target: model-proxy
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 300 # 5 minutes
+    params:
+      p429: 0.5
