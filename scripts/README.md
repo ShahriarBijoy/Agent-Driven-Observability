@@ -4,11 +4,12 @@ Utility scripts for the AI Observability Lab.
 
 ## Available
 
-| Script             | Purpose                                                                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dev-up.sh`        | Brings up the full lab (subject + observability + lineage planes) using Docker Compose. Run from the repo root: `./scripts/dev-up.sh`. Accepts extra `docker compose up` arguments.               |
-| `smoke.sh`         | End-to-end smoke test of the Phase 1 subject system: builds + starts the stack, waits for gateway health, runs the seed job, then POSTs a chat request and asserts a non-empty `retrieved` array. |
-| `demo-incident.sh` | The Phase 6 "synthetic incident" demo (`bun run demo:incident`). See below.                                                                                                                       |
+| Script             | Purpose                                                                                                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev-up.sh`        | Brings up the full lab (subject + observability + lineage planes) using Docker Compose. Run from the repo root: `./scripts/dev-up.sh`. Accepts extra `docker compose up` arguments.                                                                             |
+| `smoke.sh`         | End-to-end smoke test of the Phase 1 subject system: builds + starts the stack, waits for gateway health, runs the seed job, then POSTs a chat request and asserts a non-empty `retrieved` array.                                                               |
+| `demo-incident.sh` | The Phase 6 "synthetic incident" demo (`bun run demo:incident`). See below.                                                                                                                                                                                     |
+| `obs.ps1`          | The `obs` one-liner CLI: lab up/down, load tests (`obs load spike\|ramp\|soak\|drift\|abuse`), failure injection (`obs fail latency\|errors\|timeout\|outage\|brownout\|flaky\|throttle\|full`), and `obs chaos [clear]`. Full reference: `docs/commands.html`. |
 
 ## The synthetic incident demo
 

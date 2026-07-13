@@ -66,7 +66,7 @@ export async function runLoad(deps: RunnerDeps): Promise<Summary> {
 
   function dispatch(): void {
     inFlight++;
-    const scenario = pickScenario(rng);
+    const scenario = pickScenario(rng, config.scenarios);
     const req = buildRequest(scenario, config.gatewayUrl, rng);
     const p = sendRequest(req, fetchFn, config.requestTimeoutMs, now)
       .then((result) => {

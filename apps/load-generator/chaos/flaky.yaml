@@ -1,0 +1,27 @@
+# Fail test: flapping / intermittent failure (hard mode for RCA).
+#
+# Cranks the model-proxy's "bad minute" clustering: from a healthy-ish base
+# (p500 1.5%, just under the 2% alert threshold), each request has a tiny
+# chance of tipping the service into a 45s degraded window where fault rates
+# are multiplied 40x (→ ~60% 500s). At the ~40 qps baseline that's a burst
+# roughly every 1.5–2 minutes: errors spike, recover, spike again.
+#
+# What should page:      Gateway 5xx rate > 2% — likely FLAPPING (fires,
+#                        resolves, re-fires) across the 10-minute phase.
+# What the agent should
+# pinpoint:              recurring short bursts of model-proxy 500s (clustered
+#                        in time, healthy in between) — flakiness/instability,
+#                        not a steady failure. Timeline correlation is the test.
+description: "flaky drill — model-proxy 'bad minutes': short 500-bursts, healthy in between"
+cooldownSeconds: 180
+
+phases:
+  - name: bad-minutes
+    target: model-proxy
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 600 # 10 minutes → several degrade/recover cycles
+    params:
+      p500: 0.015 # base: just under the 2% page threshold
+      pBadMinute: 0.0004 # per-request entry chance → a burst every ~1.5–2 min at 40 qps
+      badMinuteMs: 45000 # each degraded window lasts 45s
+      badMinuteMultiplier: 40 # 0.015 * 40 = 60% 500s inside a window

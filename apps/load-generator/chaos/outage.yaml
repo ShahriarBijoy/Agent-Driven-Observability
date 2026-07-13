@@ -1,0 +1,21 @@
+# Fail test: full dependency outage.
+#
+# The retriever 503s on EVERY /v1/retrieve, so effectively all chat requests
+# fail — the gateway surfaces 502 upstream_error. The starkest signature of the
+# set: availability falls off a cliff, and the failing span is the retriever,
+# not the model-proxy.
+#
+# What should page:      Gateway 5xx rate > 2% (near-100% during the outage).
+# What the agent should
+# pinpoint:              retriever is hard-down (503 on every call); embedder
+#                        and model-proxy are untouched.
+description: "outage drill — retriever hard-down, every request 502s"
+cooldownSeconds: 180
+
+phases:
+  - name: retriever-outage
+    target: retriever
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 240 # 4 minutes
+    params:
+      outage: true

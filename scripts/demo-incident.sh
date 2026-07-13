@@ -117,7 +117,7 @@ CHAOS_SCHEDULE="chaos/demo.yaml" \
 GATEWAY_URL="${GATEWAY}" \
 MODEL_PROXY_URL="http://localhost:8083" \
 RETRIEVER_URL="http://localhost:8082" \
-  bun --cwd apps/load-generator run chaos &
+  bun --cwd=apps/load-generator run chaos &
 CHAOS_PID=$!
 echo "OK  chaos scheduler started (pid ${CHAOS_PID})"
 

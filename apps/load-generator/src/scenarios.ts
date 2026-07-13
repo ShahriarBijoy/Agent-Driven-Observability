@@ -28,6 +28,34 @@ export const SCENARIOS: readonly Scenario[] = [
   { name: "broken", weight: 5, token: TOKEN_ACME },
 ] as const;
 
+/**
+ * Parse a `SCENARIO_WEIGHTS` spec like `"long:80,happy:20"` into a scenario
+ * mix: listed scenarios get the given weight (token inherited from the base
+ * mix), unlisted ones are dropped. Lets the CLI drive skewed traffic — e.g. a
+ * long-prompt-heavy mix for data-drift tests or an abuser-heavy 429 storm.
+ */
+export function parseScenarioWeights(spec: string): Scenario[] {
+  const entries = spec
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (entries.length === 0) throw new Error("SCENARIO_WEIGHTS is empty");
+
+  return entries.map((entry) => {
+    const [name, rawWeight] = entry.split(":").map((s) => s.trim());
+    const base = SCENARIOS.find((s) => s.name === name);
+    if (!base) {
+      const known = SCENARIOS.map((s) => s.name).join(", ");
+      throw new Error(`unknown scenario "${name}" in SCENARIO_WEIGHTS (known: ${known})`);
+    }
+    const weight = Number(rawWeight);
+    if (!Number.isFinite(weight) || weight <= 0) {
+      throw new Error(`scenario "${name}" needs a positive weight, got "${rawWeight}"`);
+    }
+    return { name: base.name, weight, token: base.token };
+  });
+}
+
 /** Small fixed prompt set for the cache-friendly `repeat` scenario. */
 export const REPEAT_PROMPTS: readonly string[] = [
   "What is observability?",

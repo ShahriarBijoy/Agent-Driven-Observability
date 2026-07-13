@@ -1,0 +1,24 @@
+# Fail test: upstream stalls → gateway timeouts (504s, not 502s).
+#
+# 15% of model-proxy completions hang for STALL_MS (30s base config), blowing
+# through the gateway's 8s upstream timeout → 504 upstream_timeout. Distinct
+# from errors.yaml: the 5xx here are timeouts, and every failing trace shows a
+# model-proxy span pinned at exactly ~8s.
+#
+# NOTE: stalled requests hold load-generator connections for 8s each — run this
+# with a generous concurrency (obs fail sets CHAOS_CONCURRENCY=128).
+#
+# What should page:      Gateway 5xx rate > 2% (504s count as 5xx).
+# What the agent should
+# pinpoint:              504s (not 502s), model-proxy spans cut off at the 8s
+#                        upstream timeout — a hang/stall, not an error response.
+description: "timeout drill — model-proxy stalls past the gateway's 8s upstream timeout"
+cooldownSeconds: 180
+
+phases:
+  - name: model-stalls
+    target: model-proxy
+    startSeconds: 60 # 1 min healthy baseline first
+    durationSeconds: 300 # 5 minutes
+    params:
+      pStall: 0.15

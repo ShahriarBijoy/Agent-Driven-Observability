@@ -14,6 +14,10 @@ async function main(): Promise<void> {
       `against ${config.gatewayUrl} (concurrency=${config.concurrency}, ` +
       `timeout=${config.requestTimeoutMs}ms)`,
   );
+  if (config.scenarios) {
+    const mix = config.scenarios.map((s) => `${s.name}:${s.weight}`).join(", ");
+    console.log(`[load-generator] custom scenario mix: ${mix}`);
+  }
 
   const summary = await runLoad({ config });
 
