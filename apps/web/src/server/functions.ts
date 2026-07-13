@@ -1,4 +1,4 @@
-import { ApprovalDecisionRequestSchema } from "@obs/contracts";
+import { AgentSettingsUpdateSchema, ApprovalDecisionRequestSchema } from "@obs/contracts";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import * as agentClient from "./agent-client";
@@ -57,7 +57,56 @@ export const getRunbooks = createServerFn({ method: "GET" }).handler(async () =>
   return listRunbooks();
 });
 
-/** Dev-auth surface for /settings — local lab only, the token is not a secret. */
-export const getDevAuth = createServerFn({ method: "GET" }).handler(async () => {
-  return { devTenant: serverEnv.devTenant, devToken: serverEnv.devToken };
+/** Launch the runbook executor on a runbook file (POST /runbooks/:name/execute).
+ * runId is null when agent-service (:8093) is down or rejected the request. */
+export const runRunbookExecutor = createServerFn({ method: "POST" })
+  .inputValidator(z.object({ name: z.string().min(1), tenant: z.string().min(1) }))
+  .handler(async ({ data }) => {
+    return { runId: await agentClient.executeRunbook(data.name, data.tenant) };
+  });
+
+/**
+ * Hand an incident to the auto-fixer (POST /auto-fix). The postmortem excerpt
+ * is attached server-side so the client only sends the incident id plus any
+ * operator guidance; runId is null when the incident is unknown (e.g. the
+ * sample) or agent-service is down.
+ */
+export const autoFixIncident = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({ incidentId: z.string().min(1), instructions: z.string().max(4000).optional() }),
+  )
+  .handler(async ({ data }) => {
+    const incident = await incidentById(data.incidentId);
+    if (incident === null) return { runId: null };
+    const errorPattern =
+      `Incident ${incident.id} (${incident.severity}, tenant ${incident.tenant}): ` +
+      `${incident.title}\n${incident.summary}`;
+    const parts: string[] = [];
+    const guidance = data.instructions?.trim();
+    if (guidance !== undefined && guidance !== "") parts.push(`Operator guidance: ${guidance}`);
+    if (incident.postmortemMd !== undefined) {
+      parts.push(`Postmortem (excerpt):\n${incident.postmortemMd.slice(0, 3500)}`);
+    }
+    const runId = await agentClient.startAutoFix({
+      tenant: incident.tenant,
+      errorPattern,
+      hint: parts.join("\n\n"),
+    });
+    return { runId };
+  });
+
+/**
+ * Everything /settings needs: dev auth (local lab only, the token is not a
+ * secret) plus the live agent runtime settings. agentSettings is null when
+ * agent-service (:8093) is down — the page renders a start hint instead.
+ */
+export const getSettingsPage = createServerFn({ method: "GET" }).handler(async () => {
+  const agentSettings = await agentClient.getAgentSettings();
+  return { devTenant: serverEnv.devTenant, devToken: serverEnv.devToken, agentSettings };
 });
+
+export const saveAgentSettings = createServerFn({ method: "POST" })
+  .inputValidator(AgentSettingsUpdateSchema)
+  .handler(async ({ data }) => {
+    return agentClient.updateAgentSettings(data);
+  });

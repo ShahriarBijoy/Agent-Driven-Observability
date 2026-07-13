@@ -14,9 +14,8 @@ import {
 } from "~/components/ui/empty";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
-import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
-import { getRunbooks } from "~/server/functions";
+import { getRunbooks, runRunbookExecutor } from "~/server/functions";
 
 export const Route = createFileRoute("/runbooks")({
   loader: () => getRunbooks(),
@@ -29,30 +28,24 @@ function RunbooksPage() {
   const tenant = tenantStore.use();
   const [selectedSlug, setSelectedSlug] = useState<string | null>(runbooks[0]?.slug ?? null);
   const [launching, setLaunching] = useState<string | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
 
   const selected = runbooks.find((r) => r.slug === selectedSlug) ?? null;
 
   async function runWithExecutor(slug: string) {
     setLaunching(slug);
+    setLaunchError(null);
     try {
-      // The executor pauses at an approval gate before touching anything;
-      // the echo agent honors the same protocol until Phase 5.
-      const res = await fetch("/api/agents/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          agent: "runbook-executor",
-          tenant,
-          message: `Execute runbook "${slug}" — request approval before applying changes.`,
-        }),
-      });
-      let runId: string | null = null;
-      for await (const event of readAgentStream(res)) {
-        if (event.type === "run") runId = event.runId;
+      // Triggered run, not a chat: the executor pauses at an approval gate
+      // before any mutating step; you approve/deny on the run page.
+      const { runId } = await runRunbookExecutor({ data: { name: `${slug}.md`, tenant } });
+      if (runId === null) {
+        setLaunchError(
+          "agent-service (:8093) didn't accept the run — is it up? Start it with `obs agents`.",
+        );
+        return;
       }
-      if (runId !== null) {
-        void navigate({ to: "/agents/runs/$runId", params: { runId } });
-      }
+      void navigate({ to: "/agents/runs/$runId", params: { runId } });
     } finally {
       setLaunching(null);
     }
@@ -134,6 +127,11 @@ function RunbooksPage() {
               </CardAction>
             </CardHeader>
             <CardContent className="pt-1">
+              {launchError !== null ? (
+                <p className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {launchError}
+                </p>
+              ) : null}
               <Markdown className="typeset-docs">{selected.content}</Markdown>
             </CardContent>
           </Card>
