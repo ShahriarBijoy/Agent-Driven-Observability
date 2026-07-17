@@ -37,3 +37,6 @@ Thumbs.db
 
 # claude code tooling / session artifacts
 .claude/
+
+# local-only docs (kept on disk, not in the repo)
+/docs/
