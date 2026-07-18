@@ -26,6 +26,7 @@ resources:
   - model-proxy/service.yaml
   - load-generator/deployment.yaml
   - seed/job.yaml
+  - ingress/ingressroute.yaml
 
 configMapGenerator:
   # Copies of infra/postgres/init/ (kustomize cannot reference files outside

@@ -1,0 +1,44 @@
+# Ingress that keeps every existing contract (PLAN-2 P7):
+#   :8080/           -> gateway, exactly as under compose (k3d LB -> Traefik)
+#   :8080/chaos/*    -> the /admin/chaos control planes that used to be direct
+#                       host ports :8082/:8083 (pods have no host ports now)
+#
+# The /chaos routes REPLACE the whole path with /admin/chaos, so a client
+# configured with base URL <host>:8080/chaos/retriever that appends
+# /admin/chaos (as the load-generator's admin driver does) still lands on the
+# right endpoint. Traefik v3 rule priority = rule length, so the /chaos
+# prefixes win over the catch-all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: chaos-rewrite
+spec:
+  replacePath:
+    path: /admin/chaos
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: subject
+spec:
+  entryPoints: [web]
+  routes:
+    - match: PathPrefix(`/chaos/retriever`)
+      kind: Rule
+      services:
+        - name: retriever
+          port: 8082
+      middlewares:
+        - name: chaos-rewrite
+    - match: PathPrefix(`/chaos/model-proxy`)
+      kind: Rule
+      services:
+        - name: model-proxy
+          port: 8083
+      middlewares:
+        - name: chaos-rewrite
+    - match: PathPrefix(`/`)
+      kind: Rule
+      services:
+        - name: gateway
+          port: 8080
