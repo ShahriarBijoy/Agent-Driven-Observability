@@ -1,0 +1,20 @@
+# Cluster-level bootstrap (applied by `obs k8s up` after every cluster
+# create - it is NOT part of the subject overlay).
+#
+# Profile A: pods talk to the laptop by tailnet FQDN (subject-telemetry
+# ConfigMap). k3s' CoreDNS imports /etc/coredns/custom/*.server, so this
+# forwards ts.net lookups to Tailscale's MagicDNS resolver - 100.100.100.100
+# is a fixed anycast address, identical on every tailnet, reachable from
+# containers via the VM's obs-lab-nat masquerade unit (see infra/vm/).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  tailnet.server: |
+    ts.net:53 {
+        errors
+        cache 30
+        forward . 100.100.100.100
+    }

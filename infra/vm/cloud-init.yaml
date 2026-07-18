@@ -44,6 +44,24 @@ write_files:
     content: |
       K3D_VERSION=v5.9.0
       TS_AUTHKEY=tskey-auth-REPLACE_ME
+  # Cluster pods reach the tailnet (laptop Alloy/Marquez) only if their
+  # docker-bridge source IPs are masqueraded onto tailscale0 - tailscale
+  # drops forwarded packets with foreign sources otherwise.
+  - path: /etc/systemd/system/obs-lab-nat.service
+    content: |
+      [Unit]
+      Description=NAT container traffic onto the tailnet (obs-lab Profile A)
+      After=tailscaled.service docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/sysctl -w net.ipv4.ip_forward=1
+      ExecStart=/usr/sbin/iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
+      ExecStop=/usr/sbin/iptables -t nat -D POSTROUTING -o tailscale0 -j MASQUERADE
+
+      [Install]
+      WantedBy=multi-user.target
 
 runcmd:
   - sysctl --system
@@ -66,4 +84,5 @@ runcmd:
     if [ "$TS_AUTHKEY" != "tskey-auth-REPLACE_ME" ]; then
     tailscale up --authkey="$TS_AUTHKEY" --ssh --hostname=obs-vm;
     fi
+  - systemctl daemon-reload && systemctl enable --now obs-lab-nat.service
   - touch /etc/obs-lab/.provisioned
