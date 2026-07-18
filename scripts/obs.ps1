@@ -41,6 +41,9 @@
     obs names [install]      Register https://obs-*.localhost aliases for every human-facing
                              endpoint via the portless proxy (reads ports.env - rerun after a
                              remap and the names follow). 'install' autostarts the proxy on boot.
+    obs preflight            Check required binaries, the portless proxy, and every port in
+                             ports.env (free or bound by this lab = ok; a genuine conflict
+                             prints the one-line remap to make). 8090 stays HyperHDR's.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -403,6 +406,58 @@ Raw equivalents:
   cd apps/agent-service; uv sync; uv run python -m agent_service
   cd apps/web; bun run dev
 "@
+        }
+
+        'preflight' {
+            $ok = $true
+
+            Write-Step 'required binaries on this machine (cluster-side tools live on the VM)'
+            # name -> purpose, plus a known install path for tools that skip PATH.
+            $bins = [ordered]@{
+                docker    = @('Docker Desktop', $null)
+                bun       = @('subject services + web', $null)
+                uv        = @('agent-service', $null)
+                portless  = @('https://obs-*.localhost names', $null)
+                kubectl   = @('talks to the cluster', "$env:ProgramFiles\Docker\Docker\resources\bin\kubectl.exe")
+                ssh       = @('obs k8s wraps ssh to the VM', $null)
+                tailscale = @('path to the VM', "$env:ProgramFiles\Tailscale\tailscale.exe")
+            }
+            foreach ($b in $bins.Keys) {
+                $found = (Get-Command $b -ErrorAction SilentlyContinue) -or
+                         ($bins[$b][1] -and (Test-Path $bins[$b][1]))
+                if ($found) { Write-Host ("  ok  {0,-10} {1}" -f $b, $bins[$b][0]) }
+                else { Write-Warning "missing: $b ($($bins[$b][0]))"; $ok = $false }
+            }
+
+            Write-Step 'portless proxy'
+            $null = & portless get obs-web 2>$null
+            if ($LASTEXITCODE -eq 0) { Write-Host '  ok  proxy answering, obs-* aliases registered' }
+            else { Write-Warning "portless aliases not registered - run 'obs names'"; $ok = $false }
+
+            Write-Step 'ports from infra/ports.env (free, or bound by this lab = ok)'
+            # Processes that legitimately hold lab ports: docker's port proxy,
+            # the host-run bun/vite/uv processes, and the portless proxy itself.
+            $labProcs = @('com.docker.backend', 'docker', 'wslrelay', 'vpnkit-bridge',
+                          'bun', 'node', 'python', 'uvicorn', 'portless')
+            foreach ($key in ($Ports.Keys | Where-Object { $_ -like 'OBS_*_PORT' } | Sort-Object)) {
+                $p = [int]$Ports[$key]
+                if ($p -eq 8090) { Write-Warning "$key maps onto 8090 - that port is HyperHDR-poisoned (dual-stack squat); pick another"; $ok = $false; continue }
+                $conns = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
+                if (-not $conns) { Write-Host ("  ok  {0,-22} :{1,-6} free" -f $key, $p); continue }
+                $owners = @($conns | ForEach-Object {
+                    (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+                } | Where-Object { $_ } | Sort-Object -Unique)
+                $foreign = @($owners | Where-Object { $labProcs -notcontains $_ })
+                if ($foreign.Count -eq 0) {
+                    Write-Host ("  ok  {0,-22} :{1,-6} bound by this lab ({2})" -f $key, $p, ($owners -join ','))
+                } else {
+                    $ok = $false
+                    Write-Warning ("{0} :{1} is held by '{2}' - the fix is ONE line: edit {0} in infra\ports.env to a free port, then rerun 'obs names' + 'obs up'" -f $key, $p, ($foreign -join ','))
+                }
+            }
+
+            Write-Host ''
+            if ($ok) { Write-Step 'preflight PASSED' } else { Write-Warning 'preflight FAILED - fix the items above'; exit 1 }
         }
 
         'names' {
