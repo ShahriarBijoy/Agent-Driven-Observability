@@ -37,9 +37,9 @@ services:
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       - alloy-data:/var/lib/alloy/data
     ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
-      - "12345:12345" # Alloy UI / readiness
+      - "${OBS_OTLP_GRPC_PORT:-4317}:4317" # OTLP gRPC
+      - "${OBS_OTLP_HTTP_PORT:-4318}:4318" # OTLP HTTP
+      - "${OBS_ALLOY_UI_PORT:-12345}:12345" # Alloy UI / readiness
     depends_on:
       - loki
       - tempo
@@ -54,7 +54,7 @@ services:
       - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
       - loki-data:/loki
     ports:
-      - "3100:3100"
+      - "${OBS_LOKI_PORT:-3100}:3100"
     networks:
       - obs
 
@@ -65,7 +65,7 @@ services:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"
+      - "${OBS_TEMPO_PORT:-3200}:3200"
     networks:
       - obs
 
@@ -77,7 +77,7 @@ services:
       - ./mimir/rules:/data/mimir/rules
       - mimir-data:/data/mimir
     ports:
-      - "9009:9009"
+      - "${OBS_MIMIR_PORT:-9009}:9009"
     networks:
       - obs
 
@@ -91,7 +91,7 @@ services:
       - ./pyroscope/pyroscope.yaml:/etc/pyroscope/pyroscope.yaml:ro
       - pyroscope-data:/data
     ports:
-      - "4040:4040"
+      - "${OBS_PYROSCOPE_PORT:-4040}:4040"
     networks:
       - obs
 
@@ -132,7 +132,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3001:3000"
+      - "${OBS_GRAFANA_PORT:-3001}:3000"
     depends_on:
       - mimir
       - tempo

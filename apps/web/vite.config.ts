@@ -6,8 +6,8 @@ import tsConfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
   server: {
-    // Port map (PLAN.html): gateway 8080, grafana 3001, marquez 3002, web 3003.
-    port: 3003,
+    // Canonical port map: infra/ports.env (obs.ps1 exports OBS_WEB_PORT from it).
+    port: Number(process.env["OBS_WEB_PORT"] ?? 3003),
   },
   plugins: [
     // Scoped to this app — the repo root tsconfig extends a workspace package

@@ -58,8 +58,8 @@ services:
     # marquez.dev.yml, which runs Flyway migrations on startup). compose already
     # gates this on marquez-db being healthy, so no wait-for-it script is needed.
     ports:
-      - "5000:5000" # API
-      - "5001:5001" # admin / healthcheck
+      - "${OBS_MARQUEZ_API_PORT:-5000}:5000" # API
+      - "${OBS_MARQUEZ_ADMIN_PORT:-5001}:5001" # admin / healthcheck
     depends_on:
       marquez-db:
         condition: service_healthy
@@ -74,7 +74,7 @@ services:
       MARQUEZ_PORT: "5000"
       WEB_PORT: "3000"
     ports:
-      - "3002:3000" # UI (Grafana already uses host 3001)
+      - "${OBS_MARQUEZ_UI_PORT:-3002}:3000" # UI (Grafana already uses host 3001)
     depends_on:
       - marquez-api
     networks:
@@ -93,7 +93,7 @@ services:
       DQ_RUNNER_PORT: "8091"
       DQ_CHECK_INTERVAL_SECONDS: "30"
     ports:
-      - "8091:8091"
+      - "${OBS_DQ_RUNNER_PORT:-8091}:8091"
     healthcheck:
       test:
         [

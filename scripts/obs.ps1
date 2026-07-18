@@ -62,8 +62,28 @@ param(
 # Repo root is one level up from this script (scripts/ -> repo).
 $Repo = Split-Path -Parent $PSScriptRoot
 
-# The three compose files that make up the full lab, in layer order.
+# The lab's address book (PLAN-2 SS D): every host-published port and machine
+# name lives in infra/ports.env. Parse it once; everything below reads $Ports
+# instead of hardcoding numbers, so a port remap is a one-line edit there.
+$Ports = @{}
+foreach ($line in Get-Content (Join-Path $Repo 'infra\ports.env')) {
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$') {
+        $Ports[$Matches[1]] = $Matches[2]
+    }
+}
+
+# Derived URLs used throughout. Agents deliberately uses 127.0.0.1: Windows
+# resolves localhost to ::1 first and uvicorn binds v4-only.
+$GatewayUrl = "http://localhost:$($Ports.OBS_GATEWAY_PORT)"
+$WebUrl     = "http://localhost:$($Ports.OBS_WEB_PORT)"
+$GrafanaUrl = "http://localhost:$($Ports.OBS_GRAFANA_PORT)"
+$AgentsUrl  = "http://127.0.0.1:$($Ports.OBS_AGENTS_PORT)"
+$MarquezUrl = "http://localhost:$($Ports.OBS_MARQUEZ_UI_PORT)"
+
+# The three compose files that make up the full lab, in layer order. The
+# --env-file makes the compose port substitutions read the same map.
 $Full = @(
+    '--env-file', 'infra/ports.env',
     '-f', 'infra/compose.yml',
     '-f', 'infra/compose.observability.yml',
     '-f', 'infra/compose.lineage.yml'
@@ -78,11 +98,11 @@ function Test-Up($url) {
 
 function Wait-Gateway {
     param([int]$TimeoutSec = 120)
-    Write-Step "waiting up to ${TimeoutSec}s for gateway health (http://localhost:8080/health)"
+    Write-Step "waiting up to ${TimeoutSec}s for gateway health ($GatewayUrl/health)"
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            Invoke-RestMethod -Uri 'http://localhost:8080/health' -TimeoutSec 3 | Out-Null
+            Invoke-RestMethod -Uri "$GatewayUrl/health" -TimeoutSec 3 | Out-Null
             Write-Step "gateway is healthy"
             return $true
         } catch { Start-Sleep -Seconds 3 }
@@ -96,7 +116,7 @@ function Invoke-Up {
     # Step 1 creates obs-lab-app + obs-lab-obs; the lineage layer declares them
     # external, so they must exist before the merged command runs.
     Write-Step "step 1/2: subject system (creates the shared networks)"
-    docker compose -f infra/compose.yml up -d @Extra
+    docker compose --env-file infra/ports.env -f infra/compose.yml up -d @Extra
     if ($LASTEXITCODE -ne 0) { throw "step 1 (subject system) failed with exit code $LASTEXITCODE" }
     Write-Step "step 2/2: full lab (observability + lineage planes)"
     docker compose @Full up -d @Extra
@@ -111,7 +131,7 @@ function Invoke-Load {
         [string]$Concurrency = '',
         [string]$Label = 'load'
     )
-    if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = 'http://localhost:8080' }
+    if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
     $env:TARGET_QPS = $Qps
     $env:DURATION_SECONDS = $Duration
     # Assigning $null removes the env var, so a plain run never inherits a mix
@@ -150,29 +170,31 @@ try {
             Invoke-Up -Extra @()
             if (-not (Wait-Gateway)) { Write-Warning "gateway never came up - aborting host processes + load"; break }
 
-            Write-Step "[2/4] agent-service :8093 (own window)"
-            if (Test-Up 'http://127.0.0.1:8093/health') {
+            Write-Step "[2/4] agent-service :$($Ports.OBS_AGENTS_PORT) (own window)"
+            if (Test-Up "$AgentsUrl/health") {
                 Write-Host "      already running - skipping"
             } else {
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', 'uv sync; uv run python -m agent_service'
+                $agentCmd = "`$env:AGENT_SERVICE_PORT='$($Ports.OBS_AGENTS_PORT)'; uv sync; uv run python -m agent_service"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', $agentCmd
             }
 
-            Write-Step "[3/4] web control plane :3003 (own window)"
-            if (Test-Up 'http://localhost:3003') {
+            Write-Step "[3/4] web control plane :$($Ports.OBS_WEB_PORT) (own window)"
+            if (Test-Up $WebUrl) {
                 Write-Host "      already running - skipping"
             } else {
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', 'bun run dev'
+                $webCmd = "`$env:OBS_WEB_PORT='$($Ports.OBS_WEB_PORT)'; bun run dev"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', $webCmd
             }
 
             Write-Step "[4/4] load generator ($qps qps for ${dur}s, own window)"
-            $loadCmd = "`$env:GATEWAY_URL='http://localhost:8080'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+            $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
             Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
 
             Write-Host ""
             Write-Step "everything is starting - host windows need ~15s to bind"
-            Write-Host "  Web + Agents : http://localhost:3003   (RCA chat at /agents)"
-            Write-Host "  Grafana      : http://localhost:3001"
-            Write-Host "  Marquez      : http://localhost:3002"
+            Write-Host "  Web + Agents : $WebUrl   (RCA chat at /agents)"
+            Write-Host "  Grafana      : $GrafanaUrl"
+            Write-Host "  Marquez      : $MarquezUrl"
             Write-Host "  Stop a piece: close its window (or Ctrl-C in it). 'obs down' stops the containers."
         }
 
@@ -231,8 +253,8 @@ try {
                 }
                 Write-Host ""
                 Write-Host "Each drives baseline traffic the whole time; chaos is applied/cleared on a"
-                Write-Host "clock and always reset on exit. Watch Grafana (:3001) and the incident inbox"
-                Write-Host "(:3003/incidents); the agent-service (:8093) must be up to get postmortems."
+                Write-Host "clock and always reset on exit. Watch Grafana (:$($Ports.OBS_GRAFANA_PORT)) and the incident inbox"
+                Write-Host "(:$($Ports.OBS_WEB_PORT)/incidents); the agent-service (:$($Ports.OBS_AGENTS_PORT)) must be up to get postmortems."
                 break
             }
             $qps = if ($Rest.Count -ge 2) { $Rest[1] } else { '40' }
@@ -240,16 +262,20 @@ try {
             $env:CHAOS_TARGET_QPS = $qps
             # Stall/latency drills hold connections open; give the driver headroom.
             if (-not $env:CHAOS_CONCURRENCY) { $env:CHAOS_CONCURRENCY = '128' }
+            # Chaos driver targets, all from the map (so a remap follows along).
+            if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
+            if (-not $env:MODEL_PROXY_URL) { $env:MODEL_PROXY_URL = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)" }
+            if (-not $env:RETRIEVER_URL) { $env:RETRIEVER_URL = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)" }
             Write-Step "fail '$scenario': $($FailScenarios[$scenario])"
-            Write-Step 'watch: Grafana http://localhost:3001 | incidents http://localhost:3003/incidents'
+            Write-Step "watch: Grafana $GrafanaUrl | incidents $WebUrl/incidents"
             bun --cwd=apps/load-generator run chaos
         }
 
         'chaos' {
             $action = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
             $planes = [ordered]@{
-                'model-proxy' = 'http://localhost:8083/admin/chaos'
-                'retriever'   = 'http://localhost:8082/admin/chaos'
+                'model-proxy' = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)/admin/chaos"
+                'retriever'   = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)/admin/chaos"
             }
             foreach ($name in $planes.Keys) {
                 try {
@@ -323,22 +349,22 @@ try {
 
         'urls' {
             Write-Host @"
-Control plane  http://localhost:3003   (dev mode, no auth)
-Grafana        http://localhost:3001   (anonymous Admin)
-Marquez UI     http://localhost:3002
-Gateway API    http://localhost:8080
-dq-runner      http://localhost:8091
-Agent service  http://localhost:8093   (host process, see `obs hosts`)
+Control plane  $WebUrl   (dev mode, no auth)
+Grafana        $GrafanaUrl   (anonymous Admin)
+Marquez UI     $MarquezUrl
+Gateway API    $GatewayUrl
+dq-runner      http://localhost:$($Ports.OBS_DQ_RUNNER_PORT)
+Agent service  http://localhost:$($Ports.OBS_AGENTS_PORT)   (host process, see `obs hosts`)
 "@
         }
 
         'hosts' {
             Write-Host @"
-The web UI (:3003) and agent-service (:8093) run on the HOST, not in compose.
+The web UI (:$($Ports.OBS_WEB_PORT)) and agent-service (:$($Ports.OBS_AGENTS_PORT)) run on the HOST, not in compose.
 Full lab = 'obs up' (containers) + these two, each in its own terminal:
 
-  obs agents     agent-service :8093  (Claude Agent SDK uses your Claude Code login)
-  obs web        web control plane :3003
+  obs agents     agent-service :$($Ports.OBS_AGENTS_PORT)  (Claude Agent SDK uses your Claude Code login)
+  obs web        web control plane :$($Ports.OBS_WEB_PORT)
 
 Raw equivalents:
   cd apps/agent-service; uv sync; uv run python -m agent_service
@@ -348,13 +374,15 @@ Raw equivalents:
 
         'web' {
             Set-Location (Join-Path $Repo 'apps\web')
-            Write-Step "web control plane -> http://localhost:3003  (Ctrl-C to stop)"
+            $env:OBS_WEB_PORT = $Ports.OBS_WEB_PORT
+            Write-Step "web control plane -> $WebUrl  (Ctrl-C to stop)"
             bun run dev
         }
 
         { $_ -in 'agents', 'agent', 'agent-service' } {
             Set-Location (Join-Path $Repo 'apps\agent-service')
-            Write-Step "agent-service -> http://localhost:8093  (Ctrl-C to stop)"
+            $env:AGENT_SERVICE_PORT = $Ports.OBS_AGENTS_PORT
+            Write-Step "agent-service -> http://localhost:$($Ports.OBS_AGENTS_PORT)  (Ctrl-C to stop)"
             uv sync
             uv run python -m agent_service
         }
