@@ -1,0 +1,69 @@
+#cloud-config
+# AI Observability Lab - Act II "prod" VM (Profile A, PLAN-2 SS C).
+#
+# Paste this whole file into the "Cloud config" box when creating the Hetzner
+# CAX21 (Ubuntu 24.04, ARM). One value to edit before pasting:
+#
+#   TS_AUTHKEY below - a Tailscale auth key (Admin console -> Settings ->
+#   Keys -> Auth keys -> Generate; enable "Pre-approved"). With it, the VM
+#   joins your tailnet by itself on first boot. If you leave the placeholder,
+#   ssh in over the public IP afterwards and run:  tailscale up --ssh --hostname=obs-vm
+#
+# Everything else is hands-off: Docker, k3d (pinned), kubectl, helm, a 4 GB
+# swap file (absorbs docker-build spikes on 8 GB), and inotify headroom for
+# k3s. Provisioning takes ~4-6 minutes after boot; progress lands in
+# /var/log/cloud-init-output.log and the last line touches
+# /etc/obs-lab/.provisioned when done.
+
+hostname: obs-vm
+package_update: true
+package_upgrade: true
+packages:
+  - curl
+  - git
+  - jq
+  - ca-certificates
+
+swap:
+  filename: /swap.img
+  size: 4G
+  maxsize: 4G
+
+write_files:
+  # k3s inside k3d exhausts Ubuntu's default inotify budget once the whole
+  # subject system is scheduled; raise it before the cluster ever starts.
+  - path: /etc/sysctl.d/99-obs-lab.conf
+    content: |
+      fs.inotify.max_user_instances=512
+      fs.inotify.max_user_watches=524288
+  # Without rotation caps a chatty pod can eat the 80 GB disk over weeks.
+  - path: /etc/docker/daemon.json
+    content: |
+      { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+  - path: /etc/obs-lab/provision.env
+    content: |
+      K3D_VERSION=v5.9.0
+      TS_AUTHKEY=tskey-auth-REPLACE_ME
+
+runcmd:
+  - sysctl --system
+  - curl -fsSL https://get.docker.com | sh
+  - >
+    . /etc/obs-lab/provision.env &&
+    curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh
+    | TAG=$K3D_VERSION bash
+  - >
+    ARCH=$(dpkg --print-architecture) &&
+    KVER=$(curl -Ls https://dl.k8s.io/release/stable.txt) &&
+    curl -fsSLo /usr/local/bin/kubectl
+    "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl" &&
+    chmod +x /usr/local/bin/kubectl
+  - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  # --ssh: the laptop authenticates ssh via tailnet identity, no key juggling.
+  - >
+    . /etc/obs-lab/provision.env &&
+    if [ "$TS_AUTHKEY" != "tskey-auth-REPLACE_ME" ]; then
+    tailscale up --authkey="$TS_AUTHKEY" --ssh --hostname=obs-vm;
+    fi
+  - touch /etc/obs-lab/.provisioned
