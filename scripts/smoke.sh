@@ -12,18 +12,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE_FILE="infra/compose.yml"
-GATEWAY="http://localhost:8080"
+# Overridable: obs smoke exports the mode-aware URL (k8s mode = the VM).
+GATEWAY="${GATEWAY:-http://localhost:8080}"
 HEALTH_TIMEOUT_SECONDS=180
 
 fail() {
   echo "SMOKE: FAIL — $1" >&2
-  echo "----- gateway logs (tail) -----" >&2
-  docker compose -f "$COMPOSE_FILE" logs --tail 50 gateway >&2 || true
+  if [ "${SMOKE_MODE:-compose}" != "k8s" ]; then
+    echo "----- gateway logs (tail) -----" >&2
+    docker compose -f "$COMPOSE_FILE" logs --tail 50 gateway >&2 || true
+  fi
   exit 1
 }
 
-echo "SMOKE: bringing up the subject system (build + up)..."
-docker compose -f "$COMPOSE_FILE" up -d --build
+# k8s mode (obs smoke exports SMOKE_MODE): the subject system already runs in
+# the cluster - deployed, seeded, and health-gated by k8s-build.ps1 - so the
+# compose up/seed steps must not run (they'd start a SECOND subject system).
+if [ "${SMOKE_MODE:-compose}" != "k8s" ]; then
+  echo "SMOKE: bringing up the subject system (build + up)..."
+  docker compose -f "$COMPOSE_FILE" up -d --build
+fi
 
 echo "SMOKE: waiting up to ${HEALTH_TIMEOUT_SECONDS}s for gateway health..."
 deadline=$(( $(date +%s) + HEALTH_TIMEOUT_SECONDS ))
@@ -35,8 +43,10 @@ until curl -fsS "${GATEWAY}/health" >/dev/null 2>&1; do
 done
 echo "SMOKE: gateway is healthy."
 
-echo "SMOKE: seeding the corpus (one-shot)..."
-docker compose -f "$COMPOSE_FILE" run --rm seed || fail "seed job failed"
+if [ "${SMOKE_MODE:-compose}" != "k8s" ]; then
+  echo "SMOKE: seeding the corpus (one-shot)..."
+  docker compose -f "$COMPOSE_FILE" run --rm seed || fail "seed job failed"
+fi
 
 echo "SMOKE: issuing a chat request through the gateway..."
 RESPONSE="$(curl -fsS -X POST "${GATEWAY}/v1/chat" \

@@ -44,6 +44,11 @@
     obs preflight            Check required binaries, the portless proxy, and every port in
                              ports.env (free or bound by this lab = ok; a genuine conflict
                              prints the one-line remap to make). 8090 stays HyperHDR's.
+    obs k8s <sub>            Cluster lifecycle on the VM (Profile A). Subcommands:
+                             up (start/create cluster, stop compose subject - one subject
+                             system at a time), down (stop cluster, back to compose mode),
+                             delete, status (nodes/pods + WSL clock-drift check), build,
+                             deploy, smoke, node-stop <name>, node-start <name>.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -78,13 +83,35 @@ foreach ($line in Get-Content (Join-Path $Repo 'infra\ports.env')) {
     }
 }
 
+# Which machine answers the subject-system's ports? 'compose' = this laptop;
+# 'k8s' = the cluster on the VM (Profile A). obs k8s up|down flips the file.
+$ModeFile = Join-Path $Repo '.obs-mode'
+$Mode = if ((Test-Path $ModeFile) -and ((Get-Content $ModeFile -Raw).Trim() -eq 'k8s')) { 'k8s' } else { 'compose' }
+
 # Derived URLs used throughout. Agents deliberately uses 127.0.0.1: Windows
 # resolves localhost to ::1 first and uvicorn binds v4-only.
-$GatewayUrl = "http://localhost:$($Ports.OBS_GATEWAY_PORT)"
 $WebUrl     = "http://localhost:$($Ports.OBS_WEB_PORT)"
 $GrafanaUrl = "http://localhost:$($Ports.OBS_GRAFANA_PORT)"
 $AgentsUrl  = "http://127.0.0.1:$($Ports.OBS_AGENTS_PORT)"
 $MarquezUrl = "http://localhost:$($Ports.OBS_MARQUEZ_UI_PORT)"
+
+if ($Mode -eq 'k8s') {
+    # Gateway lives behind the k3d LB -> Traefik on the VM; the chaos control
+    # planes ride the same :8080 through /chaos/* ingress routes (the pods
+    # publish no host ports). Clients append /admin/chaos to these bases and
+    # Traefik's replacePath middleware lands them on the right endpoint.
+    $GatewayUrl = "http://$($Ports.OBS_VM_HOST):$($Ports.OBS_GATEWAY_PORT)"
+    $ChaosBase = [ordered]@{
+        'model-proxy' = "$GatewayUrl/chaos/model-proxy"
+        'retriever'   = "$GatewayUrl/chaos/retriever"
+    }
+} else {
+    $GatewayUrl = "http://localhost:$($Ports.OBS_GATEWAY_PORT)"
+    $ChaosBase = [ordered]@{
+        'model-proxy' = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)"
+        'retriever'   = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)"
+    }
+}
 
 # The three compose files that make up the full lab, in layer order. The
 # --env-file makes the compose port substitutions read the same map.
@@ -152,6 +179,8 @@ function Invoke-Up {
     Write-Step "step 2/2: full lab (observability + lineage planes)"
     docker compose @Full up -d @Extra
     if ($LASTEXITCODE -ne 0) { throw "step 2 (full lab) failed with exit code $LASTEXITCODE" }
+    # Compose subject is authoritative again; k8s-mode URLs stand down.
+    Set-Content -Path $ModeFile -Value 'compose'
 }
 
 function Invoke-Load {
@@ -298,10 +327,11 @@ try {
             $env:CHAOS_TARGET_QPS = $qps
             # Stall/latency drills hold connections open; give the driver headroom.
             if (-not $env:CHAOS_CONCURRENCY) { $env:CHAOS_CONCURRENCY = '128' }
-            # Chaos driver targets, all from the map (so a remap follows along).
+            # Chaos driver targets, mode-aware and from the map: in k8s mode
+            # the bases are the /chaos/* ingress routes on the VM.
             if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
-            if (-not $env:MODEL_PROXY_URL) { $env:MODEL_PROXY_URL = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)" }
-            if (-not $env:RETRIEVER_URL) { $env:RETRIEVER_URL = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)" }
+            if (-not $env:MODEL_PROXY_URL) { $env:MODEL_PROXY_URL = $ChaosBase['model-proxy'] }
+            if (-not $env:RETRIEVER_URL) { $env:RETRIEVER_URL = $ChaosBase['retriever'] }
             Write-Step "fail '$scenario': $($FailScenarios[$scenario])"
             Write-Step "watch: Grafana $GrafanaUrl | incidents $WebUrl/incidents"
             bun --cwd=apps/load-generator run chaos
@@ -309,10 +339,8 @@ try {
 
         'chaos' {
             $action = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
-            $planes = [ordered]@{
-                'model-proxy' = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)/admin/chaos"
-                'retriever'   = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)/admin/chaos"
-            }
+            $planes = [ordered]@{}
+            foreach ($n in $ChaosBase.Keys) { $planes[$n] = "$($ChaosBase[$n])/admin/chaos" }
             foreach ($name in $planes.Keys) {
                 try {
                     if ($action -eq 'clear') {
@@ -350,7 +378,16 @@ try {
             docker compose @Full --profile load down
         }
 
-        'smoke' { bash scripts/smoke.sh }
+        'smoke' {
+            # Mode-aware: in k8s mode the gateway answers on the VM via Traefik
+            # and the compose up/seed steps inside smoke.sh must not run.
+            $env:GATEWAY = $GatewayUrl
+            $env:SMOKE_MODE = $Mode
+            # Prefer Git Bash explicitly - a bare 'bash' can resolve to WSL's
+            # System32 stub, which explodes without a default distro.
+            $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+            if (Test-Path $gitBash) { & $gitBash scripts/smoke.sh } else { bash scripts/smoke.sh }
+        }
 
         'fixes' {
             $dir = Join-Path $Repo '.artifacts\autofix'
@@ -406,6 +443,68 @@ Raw equivalents:
   cd apps/agent-service; uv sync; uv run python -m agent_service
   cd apps/web; bun run dev
 "@
+        }
+
+        'k8s' {
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            $vm = $Ports.OBS_VM_HOST
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            switch ($sub) {
+                'up' {
+                    # One subject system at a time: park the compose subject
+                    # (observability plane + laptop postgres/redis stay up -
+                    # agent-audit and Marquez live there under Profile A).
+                    Write-Step 'mode exclusivity: stopping compose subject services'
+                    docker compose --env-file infra/ports.env -f infra/compose.yml stop gateway embedder retriever model-proxy seed load-generator
+                    Write-Step "cluster on ${vm}: start (or create from infra/k8s/k3d.yaml)"
+                    scp -q -o BatchMode=yes infra/k8s/k3d.yaml infra/ports.env "root@${vm}:/root/obs-lab/"
+                    ssh -o BatchMode=yes "root@$vm" 'if k3d cluster list obs-lab >/dev/null 2>&1; then k3d cluster start obs-lab; else set -a; . /root/obs-lab/ports.env; set +a; k3d cluster create --config /root/obs-lab/k3d.yaml; fi'
+                    if ($LASTEXITCODE -ne 0) { throw "cluster start/create failed" }
+                    ssh -o BatchMode=yes "root@$vm" 'k3d kubeconfig get obs-lab' | Set-Content -Encoding ascii $kubeconfig
+                    # Cluster-level bootstrap (survives nothing - reapply every up).
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/cluster/coredns-tailnet.yaml | Out-Null
+                    Set-Content -Path $ModeFile -Value 'k8s'
+                    Write-Step "k8s mode ON. Next: 'obs k8s deploy' (or 'obs k8s build' first for fresh images)"
+                }
+                'down' {
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster stop obs-lab'
+                    Set-Content -Path $ModeFile -Value 'compose'
+                    Write-Step "cluster stopped (state kept on the VM). Compose subject: 'obs up'"
+                }
+                'delete' {
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster delete obs-lab'
+                    Set-Content -Path $ModeFile -Value 'compose'
+                    Write-Step 'cluster deleted. Registry + images on the VM survive.'
+                }
+                'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
+                'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
+                'smoke'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') smoke }
+                { $_ -in 'node-stop', 'node-start' } {
+                    if ($Rest.Count -lt 2) { Write-Warning "usage: obs k8s $sub <node-name>  (k3d-obs-lab-agent-0|1, k3d-obs-lab-server-0)"; break }
+                    $verb = if ($sub -eq 'node-stop') { 'stop' } else { 'start' }
+                    ssh -o BatchMode=yes "root@$vm" "k3d node $verb $($Rest[1])"
+                }
+                'status' {
+                    Write-Step "mode: $Mode (subject answers at $GatewayUrl)"
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster list; echo' 2>$null
+                    if ($LASTEXITCODE -ne 0) { Write-Warning "cannot reach $vm over ssh - is Tailscale up on both ends?"; break }
+                    kubectl --kubeconfig $kubeconfig get nodes 2>$null
+                    kubectl --kubeconfig $kubeconfig -n subject get pods 2>$null
+                    # WSL2's clock drifts after laptop sleep; Mimir then rejects
+                    # the (out-of-order) samples the cluster ships to it.
+                    try {
+                        $wslEpoch = [int64](wsl -e date +%s 2>$null)
+                        $hostEpoch = [int64][Math]::Floor((Get-Date -UFormat %s))
+                        $drift = [Math]::Abs($hostEpoch - $wslEpoch)
+                        if ($drift -gt 30) { Write-Warning "WSL2 clock is ${drift}s off the host - Mimir will reject samples. Fix: wsl --shutdown (then restart Docker Desktop)" }
+                        else { Write-Host "  ok  WSL2 clock drift ${drift}s" }
+                    } catch { }
+                    Write-Host ''
+                    Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
+                    Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
+                }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|node-stop|node-start)" }
+            }
         }
 
         'preflight' {
