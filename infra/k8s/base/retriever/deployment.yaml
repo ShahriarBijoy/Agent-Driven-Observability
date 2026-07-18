@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retriever
+  labels:
+    app: retriever
+  annotations:
+    kubernetes.io/change-cause: "phase-7: retriever moves into the cluster"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: retriever
+  template:
+    metadata:
+      labels:
+        app: retriever
+    spec:
+      containers:
+        - name: retriever
+          image: obs/retriever
+          workingDir: /app/apps/retriever
+          command: ["bun", "run", "start"]
+          env:
+            - name: RETRIEVER_PORT
+              value: "8082"
+          envFrom:
+            - secretRef:
+                name: subject-db-credentials
+            - configMapRef:
+                name: subject-telemetry
+          ports:
+            - name: http
+              containerPort: 8082
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              memory: 512Mi

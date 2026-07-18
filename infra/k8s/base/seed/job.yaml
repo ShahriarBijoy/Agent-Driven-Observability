@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+  labels:
+    app: seed
+spec:
+  # Auto-cleanup lets a later `kubectl apply -k` recreate the Job instead of
+  # colliding with the completed (immutable) one. The deploy script also
+  # deletes it defensively before applying.
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: seed
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: obs/retriever
+          workingDir: /app/apps/retriever
+          command: ["bun", "run", "seed"]
+          envFrom:
+            - secretRef:
+                name: subject-db-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

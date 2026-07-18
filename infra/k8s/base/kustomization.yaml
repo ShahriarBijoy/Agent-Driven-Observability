@@ -1,0 +1,39 @@
+# Base: the subject system as Kubernetes objects (PLAN-2 Phase 7).
+# Profile A note: the subject's Postgres + Redis live IN the cluster (request-
+# path DB round-trips stay local to the workloads); the laptop keeps its own
+# compose Postgres for the agent-audit schema and Marquez.
+# Environment-specific values (registry, telemetry egress, credentials) come
+# from overlays/ - this base never names a machine or a secret value.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: subject
+
+resources:
+  - namespace.yaml
+  - postgres/pvc.yaml
+  - postgres/deployment.yaml
+  - postgres/service.yaml
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - gateway/deployment.yaml
+  - gateway/service.yaml
+  - embedder/deployment.yaml
+  - embedder/service.yaml
+  - retriever/deployment.yaml
+  - retriever/service.yaml
+  - model-proxy/deployment.yaml
+  - model-proxy/service.yaml
+  - load-generator/deployment.yaml
+  - seed/job.yaml
+
+configMapGenerator:
+  # Copies of infra/postgres/init/ (kustomize cannot reference files outside
+  # its root). If the canonical scripts change, re-copy them here.
+  - name: subject-pg-init
+    files:
+      - postgres/init/01-init.sql
+      - postgres/init/02-data-observability.sql
+      - postgres/init/03-agents.sql
+    options:
+      disableNameSuffixHash: true

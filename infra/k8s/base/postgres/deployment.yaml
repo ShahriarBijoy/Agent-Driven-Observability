@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+  annotations:
+    kubernetes.io/change-cause: "phase-7: subject postgres moves into the cluster"
+spec:
+  replicas: 1
+  # RWO volume: never run old+new pod at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          env:
+            # Keep initdb's files one level below the mount so the provisioned
+            # dir (which may not be empty) doesn't trip initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB - a K8s Secret,
+            # not inline env, so a stale-secret incident can exist (PLAN-2 P7).
+            - secretRef:
+                name: subject-db-credentials
+          ports:
+            - name: pg
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "lab", "-d", "observability_lab"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "lab", "-d", "observability_lab"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: initdb
+          configMap:
+            name: subject-pg-init

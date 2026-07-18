@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  labels:
+    app: load-generator
+  annotations:
+    kubernetes.io/change-cause: "phase-7: in-cluster load-generator (scaled to zero)"
+spec:
+  # Parked at zero - the compose `load` profile equivalent. Scale to 1 for
+  # in-cluster load; targets go via cluster DNS, never host ports.
+  replicas: 0
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+        - name: load-generator
+          image: obs/load-generator
+          workingDir: /app/apps/load-generator
+          command: ["bun", "run", "start"]
+          env:
+            - name: GATEWAY_URL
+              value: http://gateway:8080
+            - name: MODEL_PROXY_URL
+              value: http://model-proxy:8083
+            - name: RETRIEVER_URL
+              value: http://retriever:8082
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
