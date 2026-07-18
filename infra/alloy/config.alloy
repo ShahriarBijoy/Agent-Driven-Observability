@@ -20,7 +20,8 @@ otelcol.receiver.otlp "default" {
     // page, so the receiver must answer CORS preflights from the app origin.
     cors {
       // 3004 covers Vite's auto-increment when 3003 is already taken.
-      allowed_origins = ["http://localhost:3003", "http://localhost:3004"]
+      // obs-web.localhost is the portless https name for the same app.
+      allowed_origins = ["http://localhost:3003", "http://localhost:3004", "https://obs-web.localhost"]
       allowed_headers = ["*"]
     }
   }

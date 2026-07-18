@@ -38,6 +38,9 @@
     obs ps                   Show container status.
     obs logs  [service...]   Follow logs (optionally for specific services).
     obs urls                 Print the service address table.
+    obs names [install]      Register https://obs-*.localhost aliases for every human-facing
+                             endpoint via the portless proxy (reads ports.env - rerun after a
+                             remap and the names follow). 'install' autostarts the proxy on boot.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -109,6 +112,31 @@ function Wait-Gateway {
     }
     Write-Warning "gateway did not become healthy within ${TimeoutSec}s"
     return $false
+}
+
+function Use-OpenSsl {
+    # portless shells out to openssl to mint its local CA. Windows rarely has
+    # it on PATH, but Git for Windows always ships one - borrow that.
+    if (Get-Command openssl -ErrorAction SilentlyContinue) { return $true }
+    $gitSsl = @("$env:ProgramFiles\Git\mingw64\bin", "$env:ProgramFiles\Git\usr\bin") |
+        Where-Object { Test-Path (Join-Path $_ 'openssl.exe') } | Select-Object -First 1
+    if ($gitSsl) { $env:Path = "$gitSsl;$env:Path"; return $true }
+    Write-Warning 'openssl not found (portless needs it for its local CA). Install: winget install -e --id ShiningLight.OpenSSL.Dev'
+    return $false
+}
+
+function Get-NameUrls {
+    # When the portless aliases are registered, hand the web app https names:
+    # an https://obs-web.localhost page may not embed or fetch plain-http
+    # localhost URLs (mixed content), so iframes + RUM must use names too.
+    $probe = & portless get obs-grafana 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $probe) { return $null }
+    [ordered]@{
+        VITE_GRAFANA_URL      = 'https://obs-grafana.localhost'
+        VITE_MARQUEZ_URL      = 'https://obs-marquez.localhost'
+        VITE_OTLP_TRACES_URL  = 'https://obs-otlp.localhost/v1/traces'
+        VITE_OTLP_METRICS_URL = 'https://obs-otlp.localhost/v1/metrics'
+    }
 }
 
 function Invoke-Up {
@@ -183,6 +211,11 @@ try {
                 Write-Host "      already running - skipping"
             } else {
                 $webCmd = "`$env:OBS_WEB_PORT='$($Ports.OBS_WEB_PORT)'; bun run dev"
+                $names = Get-NameUrls
+                if ($names) {
+                    $envSets = ($names.Keys | ForEach-Object { "`$env:$_='$($names[$_])'" }) -join '; '
+                    $webCmd = "$envSets; $webCmd"
+                }
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', $webCmd
             }
 
@@ -372,9 +405,47 @@ Raw equivalents:
 "@
         }
 
+        'names' {
+            $action = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'register' }
+            if ($action -eq 'install') { portless service install; break }
+            # Human-facing endpoints only - headless infra keeps numbers (PLAN-2 SS D).
+            $aliases = [ordered]@{
+                'obs-web'       = $Ports.OBS_WEB_PORT
+                'obs-grafana'   = $Ports.OBS_GRAFANA_PORT
+                'obs-gateway'   = $Ports.OBS_GATEWAY_PORT
+                'obs-agents'    = $Ports.OBS_AGENTS_PORT
+                'obs-gitea'     = $Ports.OBS_GITEA_PORT
+                'obs-argocd'    = $Ports.OBS_ARGOCD_PORT
+                'obs-rollouts'  = $Ports.OBS_ROLLOUTS_PORT
+                'obs-chaos'     = $Ports.OBS_CHAOSMESH_PORT
+                'obs-marquez'   = $Ports.OBS_MARQUEZ_UI_PORT
+                'obs-pyroscope' = $Ports.OBS_PYROSCOPE_PORT
+                'obs-alloy'     = $Ports.OBS_ALLOY_UI_PORT
+                'obs-otlp'      = $Ports.OBS_OTLP_HTTP_PORT
+            }
+            Use-OpenSsl | Out-Null
+            Write-Step 'portless proxy (:443) - starting if not already up'
+            portless proxy start
+            Write-Step 'trusting the local CA (no-op when already trusted; may prompt once)'
+            portless trust
+            Write-Step 'registering aliases from infra/ports.env'
+            foreach ($name in $aliases.Keys) {
+                portless alias $name $aliases[$name] --force | Out-Null
+                Write-Host ("  https://{0}.localhost  ->  :{1}" -f $name, $aliases[$name])
+            }
+            Write-Host ''
+            Write-Host "Names follow the map: edit infra/ports.env, rerun 'obs names', done."
+            Write-Host "Optional autostart on boot: obs names install"
+        }
+
         'web' {
             Set-Location (Join-Path $Repo 'apps\web')
             $env:OBS_WEB_PORT = $Ports.OBS_WEB_PORT
+            $names = Get-NameUrls
+            if ($names) {
+                foreach ($k in $names.Keys) { Set-Item "env:$k" $names[$k] }
+                Write-Step 'portless names active - Grafana/Marquez iframes + RUM use https://obs-*.localhost'
+            }
             Write-Step "web control plane -> $WebUrl  (Ctrl-C to stop)"
             bun run dev
         }

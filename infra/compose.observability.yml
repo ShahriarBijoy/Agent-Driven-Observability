@@ -122,6 +122,9 @@ services:
   grafana:
     image: grafana/grafana:13.0.1
     environment:
+      # Grafana is also reachable as https://obs-grafana.localhost (portless);
+      # root_url keeps redirects/absolute links working behind that name.
+      GF_SERVER_ROOT_URL: "https://obs-grafana.localhost"
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"

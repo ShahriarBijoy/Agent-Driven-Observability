@@ -8,6 +8,8 @@ export default defineConfig({
   server: {
     // Canonical port map: infra/ports.env (obs.ps1 exports OBS_WEB_PORT from it).
     port: Number(process.env["OBS_WEB_PORT"] ?? 3003),
+    // portless fronts the dev server as https://obs-web.localhost.
+    allowedHosts: [".localhost"],
   },
   plugins: [
     // Scoped to this app — the repo root tsconfig extends a workspace package
