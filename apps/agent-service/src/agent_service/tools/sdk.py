@@ -216,7 +216,64 @@ async def _runbook(args: dict) -> dict:
     return _text(await backends.runbook_read(args["path"]))
 
 
-_STATELESS = [_loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook]
+@tool(
+    "k8s_events",
+    "Curated timeline of Kubernetes events (from the cluster's event stream in Loki): "
+    "scheduling failures, image pulls, OOM kills, probe failures, restarts. Returns compact "
+    "oldest-first entries (time, level, object, reason, message). Prefer this over raw "
+    "loki_query or kubectl for 'what happened to X' questions; narrow with namespace, "
+    "object_name (substring of the pod/deployment name), or level=warning.",
+    {
+        "type": "object",
+        "properties": {
+            "namespace": {"type": "string", "description": "filter to one namespace (e.g. subject)"},
+            "object_name": {"type": "string", "description": "filter to events mentioning this object name"},
+            "level": {"type": "string", "description": "info | warning | error"},
+            "range": {"type": "string", "description": "lookback like 15m, 1h (default 1h)"},
+            "limit": {"type": "integer", "description": "max events (default 60, cap 200)"},
+        },
+    },
+)
+async def _k8s_events(args: dict) -> dict:
+    return _text(
+        await backends.k8s_events(
+            args.get("namespace", ""), args.get("object_name", ""), args.get("level", ""),
+            args.get("range", "1h"), int(args.get("limit", 60)),
+        )
+    )
+
+
+@tool(
+    "kubectl_read",
+    "Read-only kubectl against the lab cluster (agent-ro identity): verb is get, describe, "
+    "or top. Examples: get deployments -n subject; describe pod gateway-abc -n subject; top "
+    "pods. namespace defaults to 'subject' when a name is given, all namespaces otherwise. "
+    "Secrets are refused. Output is plain kubectl text.",
+    {
+        "type": "object",
+        "properties": {
+            "verb": {"type": "string", "description": "get | describe | top"},
+            "resource": {"type": "string", "description": "resource kind, e.g. pods, deployments, nodes, events"},
+            "name": {"type": "string", "description": "one object's name (optional)"},
+            "namespace": {"type": "string", "description": "namespace (optional)"},
+            "selector": {"type": "string", "description": "label selector like app=gateway (optional)"},
+        },
+        "required": ["verb"],
+    },
+)
+async def _kubectl(args: dict) -> dict:
+    return _text(
+        await backends.kubectl_read(
+            args["verb"], args.get("resource", ""), args.get("name", ""),
+            args.get("namespace", ""), args.get("selector", ""),
+        )
+    )
+
+
+_STATELESS = [
+    _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook,
+    _k8s_events, _kubectl,
+]
 
 
 # ---- per-run server (binds ctx into approval + artifact) ---------------------
@@ -324,8 +381,9 @@ READ_TOOLS = [
     mcp("marquez_lineage"), mcp("pg_select"), mcp("runbook_read"),
 ]
 
-# The read-only cluster tools the investigating agents get. Names verified
-# against kubernetes-mcp-server v0.0.65 (--read-only --toolsets core,config).
+# The read-only cluster window the investigating agents get: the external
+# kubernetes-mcp-server tools (names verified against v0.0.65 with
+# --read-only --toolsets core,config) plus the two shaped tools above.
 # configuration_view is deliberately absent: it echoes the kubeconfig -
 # bearer token included - straight into the transcript.
 K8S_READ_TOOLS = [
@@ -334,10 +392,11 @@ K8S_READ_TOOLS = [
     k8s("resources_get"), k8s("events_list"), k8s("namespaces_list"),
     k8s("nodes_log"), k8s("nodes_top"), k8s("nodes_stats_summary"),
 ]
+CLUSTER_READ_TOOLS = [*K8S_READ_TOOLS, mcp("k8s_events"), mcp("kubectl_read")]
 
 TOOLSETS: dict[str, list[str]] = {
-    "rca": [*READ_TOOLS, *K8S_READ_TOOLS, mcp("save_artifact")],
-    "incident-reporter": [*READ_TOOLS, *K8S_READ_TOOLS, mcp("save_artifact")],
+    "rca": [*READ_TOOLS, *CLUSTER_READ_TOOLS, mcp("save_artifact")],
+    "incident-reporter": [*READ_TOOLS, *CLUSTER_READ_TOOLS, mcp("save_artifact")],
     "dashboard-generator": [
         mcp("mimir_query"), mcp("grafana_get_dashboard"), mcp("grafana_create_dashboard"),
     ],
@@ -402,6 +461,10 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Live CPU/memory usage per node"},
     {"name": k8s("nodes_stats_summary"), "kind": "mcp",
      "description": "Kubelet stats summary for a node (per-pod resource detail)"},
+    {"name": mcp("k8s_events"), "kind": "mcp",
+     "description": "Curated Kubernetes event timeline from the Loki event stream"},
+    {"name": mcp("kubectl_read"), "kind": "mcp",
+     "description": "Read-only kubectl get/describe/top (fixed argv, secrets refused)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -421,7 +484,11 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Prefer few, well-chosen queries over many chatty ones. Narrate as you go: before each "
         "round of tool calls, write one short sentence saying what you're checking and why — the "
         "operator watches live, and a silent run looks stuck. Be concise and specific: name "
-        "the service, span, tenant, or metric. When you reach a conclusion worth keeping, save a "
+        "the service, span, tenant, or metric. For CLUSTER questions (pods, deployments, nodes, "
+        "restarts, scheduling), use the read-only cluster window: k8s_events for 'what happened "
+        "to X' timelines, kubectl_read for get/describe/top, and the k8s:* tools for specs, "
+        "logs, and live usage — never Bash, and Secrets are denied by construction. "
+        "When you reach a conclusion worth keeping, save a "
         "short Markdown summary with save_artifact. When a visual would explain the finding "
         "better than prose — a latency curve, a before/after comparison, a dependency sketch — "
         "also save ONE HTML artifact (kind='html'): a single self-contained file, inline CSS and "
@@ -434,7 +501,11 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "You are the incident reporter. You receive a Grafana alert payload and write a "
         "structured postmortem. Investigate with the read-only tools (Loki/Tempo/Mimir/Marquez/"
         "Postgres): establish what fired, the blast radius (which tenant/endpoint), the likely "
-        "cause (name the slow span or error signature), and concrete next steps. Narrate as you "
+        "cause (name the slow span or error signature), and concrete next steps. For alerts "
+        "about the CLUSTER (CrashLoopBackOff, OOMKilled, image pulls, replicas, nodes), lead "
+        "with k8s_events and kubectl_read describe on the affected object, then correlate with "
+        "container_* metrics in Mimir — the working-set-vs-limit shape distinguishes an OOM "
+        "from a crash bug. Narrate as you "
         "go: one short sentence before each round of queries saying what you're checking. Then call "
         "save_artifact with kind='markdown' to store the postmortem. Sections: Summary, Impact, "
         "Timeline, Evidence (with the queries you ran), Likely cause, Recommended actions. "

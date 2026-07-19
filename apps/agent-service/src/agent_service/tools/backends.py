@@ -9,8 +9,10 @@ less, but structured": these return compact, decision-ready shapes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 from typing import Any
@@ -363,6 +365,161 @@ async def runbook_read(path: str) -> dict:
         return {"error": "runbook not found", "path": path}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"read failed: {exc}", "path": path}
+
+
+# ---- Kubernetes shaped reads (PLAN-2 P8) ------------------------------------
+#
+# The cluster is legible through two shapes: k8s_events turns the clusterEvents
+# Loki stream into a compact timeline (instead of a kubectl wall the model has
+# to re-parse every turn), and kubectl_read wraps get/describe/top as FIXED
+# ARGV subprocess calls (the gh_open_pr pattern) so investigating agents never
+# need Bash for cluster reads. Both go through the agent-ro kubeconfig.
+
+_EVENTS_JOB = "integrations/kubernetes/eventhandler"
+_LOGFMT_RE = re.compile(r'(\w+)=(?:"((?:[^"\\]|\\.)*)"|(\S+))')
+_K8S_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_K8S_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$")
+_K8S_RESOURCE_RE = re.compile(r"^[a-z][a-z0-9.-]{0,80}$")
+_K8S_SELECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9=!,._/-]{0,199}$")
+_EVENT_LEVELS = {"info": "Info", "normal": "Info", "warning": "Warning", "error": "Error"}
+
+
+def _logfmt(line: str) -> dict[str, str]:
+    return {k: (q if q is not None else b) for k, q, b in
+            ((m[0], m[1] or None, m[2]) for m in _LOGFMT_RE.findall(line))}
+
+
+async def k8s_events(
+    namespace: str = "",
+    object_name: str = "",
+    level: str = "",
+    range: str = "1h",
+    limit: int = 60,
+) -> dict:
+    """Curated timeline of Kubernetes events from the clusterEvents stream."""
+    selectors = [f'job="{_EVENTS_JOB}"']
+    if namespace:
+        if not _K8S_NAMESPACE_RE.match(namespace):
+            return {"error": f"invalid namespace: {namespace!r}"}
+        selectors.append(f'namespace="{namespace}"')
+    if level:
+        mapped = _EVENT_LEVELS.get(level.strip().lower())
+        if mapped is None:
+            return {"error": f"invalid level {level!r} (use info|warning|error)"}
+        selectors.append(f'level="{mapped}"')
+    logql = "{" + ", ".join(selectors) + "}"
+    if object_name:
+        if not _K8S_NAME_RE.match(object_name):
+            return {"error": f"invalid object_name: {object_name!r}"}
+        logql += f" |= `{object_name}`"
+
+    limit = max(1, min(int(limit), 200))
+    raw = await loki_query(logql, range, limit=limit)
+    if "error" in raw:
+        return raw
+    events = []
+    for row in raw.get("lines", []):
+        fields = _logfmt(row.get("line", ""))
+        labels = row.get("labels", {})
+        ts = datetime.fromtimestamp(int(row["ts"]) / 1e9).astimezone().strftime("%H:%M:%S")
+        entry = {
+            "time": ts,
+            "level": labels.get("level", ""),
+            "namespace": labels.get("namespace", ""),
+            "object": f"{fields.get('kind', labels.get('kind', '?'))}/{fields.get('name', labels.get('name', '?'))}",
+            "reason": labels.get("reason", fields.get("reason", "")),
+            "message": fields.get("msg", "")[:240],
+        }
+        count = fields.get("count", "")
+        if count and count != "1":
+            entry["seen"] = f"x{count}"
+        events.append(entry)
+    events.reverse()  # loki_query is newest-first; a timeline reads oldest-first
+    return {
+        "query": logql,
+        "range": range,
+        "count": len(events),
+        "note": "timeline oldest-first, local time HH:MM:SS; narrow with namespace/object_name/level if truncated",
+        "events": events,
+    }
+
+
+async def kubectl_read(
+    verb: str,
+    resource: str = "",
+    name: str = "",
+    namespace: str = "",
+    selector: str = "",
+) -> dict:
+    """Run one read-only kubectl verb with a fixed, validated argv (no shell)."""
+    kubeconfig = config.k8s_kubeconfig
+    if not os.path.exists(kubeconfig):
+        return {"error": "no cluster credentials: run `obs k8s agent-kubeconfig` first"}
+    verb = verb.strip().lower()
+    if verb not in ("get", "describe", "top"):
+        return {"error": f"verb {verb!r} not allowed (get|describe|top only)"}
+    for label, value, pattern in (
+        ("resource", resource, _K8S_RESOURCE_RE),
+        ("name", name, _K8S_NAME_RE),
+        ("namespace", namespace, _K8S_NAMESPACE_RE),
+        ("selector", selector, _K8S_SELECTOR_RE),
+    ):
+        if value and not pattern.match(value):
+            return {"error": f"invalid {label}: {value!r}"}
+    # Secrets stay dark even though RBAC already denies them — a clear refusal
+    # beats a cryptic Forbidden.
+    if resource.split(".")[0].rstrip("s") == "secret":
+        return {"error": "secrets are off-limits to the investigating agents"}
+
+    argv = ["kubectl", "--kubeconfig", kubeconfig, verb]
+    if verb == "get":
+        if not resource:
+            return {"error": "get needs a resource (e.g. pods, deployments, events)"}
+        argv.append(resource)
+        if name:
+            argv += [name, "-n", namespace or "subject"]
+        elif namespace:
+            argv += ["-n", namespace]
+        else:
+            argv.append("-A")
+        argv += ["-o", "wide"]
+        if selector:
+            argv += ["-l", selector]
+    elif verb == "describe":
+        if not resource or not (name or selector):
+            return {"error": "describe needs a resource plus a name or selector"}
+        argv.append(resource)
+        if name:
+            argv.append(name)
+        if selector:
+            argv += ["-l", selector]
+        argv += ["-n", namespace or "subject"]
+    else:  # top
+        if resource not in ("pods", "nodes", "pod", "node"):
+            return {"error": "top works on pods or nodes"}
+        argv.append("pods" if resource.startswith("pod") else "nodes")
+        if resource.startswith("pod"):
+            argv += (["-n", namespace] if namespace else ["-A"])
+            if selector:
+                argv += ["-l", selector]
+
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, argv, capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "kubectl timed out after 30s", "argv": argv[3:]}
+    except FileNotFoundError:
+        return {"error": "kubectl is not installed on the agent-service host"}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"kubectl failed: {exc}"}
+    out = (proc.stdout or "").strip()
+    if len(out) > 8000:
+        out = out[:8000] + f"\n… (+{len(out) - 8000} chars truncated — narrow the query)"
+    result: dict[str, Any] = {"argv": argv[3:], "output": out}
+    if proc.returncode != 0:
+        result["error"] = (proc.stderr or "").strip()[:500] or f"kubectl exited {proc.returncode}"
+    return result
 
 
 # ---- gh (open PR) -----------------------------------------------------------
