@@ -1,0 +1,27 @@
+# Read-only cluster identity for the AI agents (PLAN-2 P7).
+#
+# The interactive rca agent gets kubectl (via Bash) against THIS ServiceAccount
+# only - ClusterRole `view`: no secrets, no writes, no exec. Exam-facing agents
+# never get Bash at all (P11); this identity is for exploratory play and for
+# the read-only k8s tools that later phases add.
+#
+# Tokens are minted with `obs k8s agent-kubeconfig` at 168h - the default 1h
+# TTL would die mid-exam (P12). k3d.yaml raises the apiserver's max accordingly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-ro
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-ro-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: agent-ro
+    namespace: kube-system

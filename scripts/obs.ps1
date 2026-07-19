@@ -479,8 +479,9 @@ Raw equivalents:
                     ssh -o BatchMode=yes "root@$vm" 'if k3d cluster list obs-lab >/dev/null 2>&1; then k3d cluster start obs-lab; else set -a; . /root/obs-lab/ports.env; set +a; k3d cluster create --config /root/obs-lab/k3d.yaml; fi'
                     if ($LASTEXITCODE -ne 0) { throw "cluster start/create failed" }
                     ssh -o BatchMode=yes "root@$vm" 'k3d kubeconfig get obs-lab' | Set-Content -Encoding ascii $kubeconfig
-                    # Cluster-level bootstrap (survives nothing - reapply every up).
-                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/cluster/coredns-tailnet.yaml | Out-Null
+                    # Cluster-level bootstrap (survives nothing - reapply every up):
+                    # CoreDNS tailnet forward + the agents' read-only identity.
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/cluster/ | Out-Null
                     Set-Content -Path $ModeFile -Value 'k8s'
                     Write-Step "k8s mode ON. Next: 'obs k8s deploy' (or 'obs k8s build' first for fresh images)"
                 }
@@ -493,6 +494,40 @@ Raw equivalents:
                     ssh -o BatchMode=yes "root@$vm" 'k3d cluster delete obs-lab'
                     Set-Content -Path $ModeFile -Value 'compose'
                     Write-Step 'cluster deleted. Registry + images on the VM survive.'
+                }
+                'agent-kubeconfig' {
+                    # Week-long read-only kubeconfig for the agents. 168h beats
+                    # the 1h default that would die mid-exam (P12); k3d.yaml
+                    # raised the apiserver cap so this is mintable.
+                    $tok = (ssh -o BatchMode=yes "root@$vm" 'kubectl create token agent-ro -n kube-system --duration=168h').Trim()
+                    if ($LASTEXITCODE -ne 0 -or -not $tok) { throw 'token mint failed - is the cluster up (obs k8s up)?' }
+                    $caLine = (Get-Content $kubeconfig | Where-Object { $_ -match 'certificate-authority-data:' } | Select-Object -First 1)
+                    $ca = ($caLine -split ':\s*', 2)[1].Trim()
+                    $dest = Join-Path $Repo 'apps\agent-service\.kube\agent-ro.yaml'
+                    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+                    @"
+# Read-only cluster access for the agents (ClusterRole view; see
+# infra/k8s/cluster/agent-ro.yaml). Minted $(Get-Date -Format s) for 168h by
+# 'obs k8s agent-kubeconfig' - rerun to rotate. NOT tracked by git.
+apiVersion: v1
+kind: Config
+clusters:
+  - name: obs-lab
+    cluster:
+      server: https://${vm}:$($Ports.OBS_K3D_API_PORT)
+      certificate-authority-data: $ca
+users:
+  - name: agent-ro
+    user:
+      token: $tok
+contexts:
+  - name: agent-ro@obs-lab
+    context:
+      cluster: obs-lab
+      user: agent-ro
+current-context: agent-ro@obs-lab
+"@ | Set-Content -Encoding ascii $dest
+                    Write-Step "wrote $dest (valid 168h)"
                 }
                 'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
                 'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
@@ -629,6 +664,10 @@ Raw equivalents:
             $env:AGENT_SERVICE_PORT = $Ports.OBS_AGENTS_PORT
             $tok = Get-ObsToken
             if ($tok) { $env:OBS_TOKEN = $tok }
+            # Agents' kubectl (rca via Bash) sees the cluster read-only, never
+            # through the operator's admin kubeconfig.
+            $roKube = Join-Path $Repo 'apps\agent-service\.kube\agent-ro.yaml'
+            if (Test-Path $roKube) { $env:KUBECONFIG = $roKube }
             Write-Step "agent-service -> http://localhost:$($Ports.OBS_AGENTS_PORT)  (Ctrl-C to stop)"
             uv sync
             uv run python -m agent_service
