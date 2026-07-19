@@ -93,6 +93,23 @@ telemetryServices:
 
 # --- collectors (Alloy CRs via the bundled alloy-operator) -------------------
 
+# Evidence-plane DNS pin: the crime scene recorder must not go blind with the
+# victim. Failure scenario 9 deliberately breaks CoreDNS; these /etc/hosts
+# entries keep the monitoring collectors shipping to the laptop while app pods
+# (which do NOT get the pin - they're supposed to suffer) lose name
+# resolution. IP = the laptop's stable Tailscale address ('tailscale ip -4'
+# locally; rewire here if the laptop ever rejoins the tailnet as a new node).
+# (Nesting note: collectorCommon.alloy holds ALLOY-CHART VALUES, so the
+# chart's own `alloy:` block repeats inside it - .alloy.alloy is correct;
+# one level up lands at CR-spec root and is silently ignored.)
+collectorCommon:
+  alloy:
+    alloy:
+      hostAliases:
+        - ip: 100.66.139.120
+          hostnames:
+            - shahriar.tail813d2f.ts.net
+
 collectors:
   # Scrapes KSM + cadvisor + kubelet + apiserver; remote_writes to Mimir.
   alloy-metrics:
