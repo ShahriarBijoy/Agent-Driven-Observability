@@ -69,8 +69,28 @@ clusterMetrics:
   # control plane (scheduler/controller-manager/proxy) binds localhost inside
   # the k3s server process - unscrapable without k3s flag surgery, and the
   # mixin dashboards for them are node-exporter-shaped anyway. Leave off.
+  #
+  # Unlike KSM/cadvisor, this source ships with NO default allowlist - first
+  # scrape measured 36.8k of the lab's 39.4k cluster series (93%). The
+  # explicit keep-list below is what the mixin apiserver dashboard + its
+  # availability recording rules actually read (~3.7k series, the SLI
+  # histogram being most of it).
   apiServer:
     enabled: true
+    metricsTuning:
+      useDefaultAllowList: false
+      includeMetrics:
+        - up
+        - apiserver_request_total
+        - apiserver_request_sli_duration_seconds_bucket
+        - apiserver_request_terminations_total
+        - apiserver_current_inflight_requests
+        - workqueue_adds_total
+        - workqueue_depth
+        - workqueue_queue_duration_seconds_bucket
+        - process_cpu_seconds_total
+        - process_resident_memory_bytes
+        - go_goroutines
 
 clusterEvents:
   enabled: true

@@ -17,3 +17,32 @@ cluster does to itself.
 Daily flow: `obs k8s up` → `obs k8s build` → `obs k8s deploy` → `obs smoke`.
 GitOps replaces the build/deploy half in Phase 10. The VM side lives in
 `infra/vm/` (cloud-init + NAT unit + provisioning guide).
+
+## K8s observability (Phase 8)
+
+`monitoring/values.yaml` + `obs k8s monitoring` install the grafana/k8s-monitoring
+chart (pinned v4.3.0, namespace `monitoring`): kube-state-metrics + cadvisor +
+kubelet + an allowlisted apiserver scrape remote-write into laptop Mimir,
+cluster events and pod logs push into laptop Loki — same tailnet egress path as
+the subject system, with a hostAliases pin so the monitoring collectors keep
+shipping when a scenario breaks CoreDNS. node-exporter stays off: three k3d
+"nodes" share one kernel, so host metrics would be the same numbers, thrice.
+
+What consumes it:
+
+- **Dashboards** — kubernetes-mixin (built by `infra/grafana/mixins/build.sh`
+  with job selectors aligned to `integrations/kubernetes/*` — misaligned
+  selectors are the classic silently-empty-dashboards footgun), a hand-rolled
+  events dashboard, and the cardinality guard (`Mimir / Cardinality`): cluster
+  telemetry gets a 40–80k active-series budget inside Mimir's 100k cap. The
+  un-allowlisted apiserver shipped 36.8k series on day one; the keep-list in
+  values.yaml holds it near 4k.
+- **Alerts** — 8 curated cause-alerts (folder _Lab Alerts - K8s_) with 60–120s
+  `for` timings; they route to the agent webhook like everything else.
+- **The agents** — kubernetes-mcp-server (read-only, agent-ro identity,
+  Secrets denied twice) plus the shaped `k8s_events` / `kubectl_read` tools in
+  agent-service; investigating agents never need Bash for cluster reads.
+- **Failure scenarios** — `obs fail oomkill | imagepull | crashloop |
+readiness-break`: pod-template patches with one shared revert
+  (`rollout undo`). Measured chain on this lab: fault → firing alert →
+  incident-reporter run in ~2m20s.
