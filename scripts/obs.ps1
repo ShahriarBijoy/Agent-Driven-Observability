@@ -232,6 +232,10 @@ $FailScenarios = [ordered]@{
     throttle = 'model-proxy sheds 50% with 429s -> users degraded, NOTHING pages     (~8 min)'
     full     = 'the whole Plan-p6 cycle: latency -> errors -> retriever outage       (~26 min)'
     'pod-kill' = 'k8s only: delete every gateway pod mid-traffic -> 5xx blip -> reschedule (~5 min)'
+    oomkill    = 'k8s only: retriever memory limit -> 64Mi under load -> OOMKilled sawtooth (~7 min)'
+    imagepull  = 'k8s only: gateway image -> tag that never existed -> ImagePullBackOff     (~7 min)'
+    crashloop  = 'k8s only: retriever DATABASE_URL -> garbage -> CrashLoopBackOff at boot   (~7 min)'
+    'readiness-break' = 'k8s only: gateway probe -> wrong path -> Running but never Ready   (~7 min)'
 }
 
 Push-Location $Repo
@@ -335,7 +339,7 @@ try {
                 Write-Host "usage: obs fail <scenario> [baseline-qps]   (baseline default: 40 qps)"
                 Write-Host ""
                 foreach ($name in $FailScenarios.Keys) {
-                    Write-Host ("  {0,-9} {1}" -f $name, $FailScenarios[$name])
+                    Write-Host ("  {0,-15} {1}" -f $name, $FailScenarios[$name])
                 }
                 Write-Host ""
                 Write-Host "Each drives baseline traffic the whole time; chaos is applied/cleared on a"
@@ -360,6 +364,53 @@ try {
                 Write-Step 'pods rescheduling - watch the 5xx blip on Grafana, then recovery:'
                 kubectl --kubeconfig $kubeconfig -n subject get pods -l app=gateway
                 Write-Step "load keeps running ~4 more minutes. Ask the RCA agent about the blip - with its kubectl grant it should conclude 'transient pod restart, no code regression'."
+                break
+            }
+
+            if ($scenario -in 'oomkill', 'imagepull', 'crashloop', 'readiness-break') {
+                # P8's k8s-native faults. Every injection edits the POD
+                # TEMPLATE, so all four share ONE paired revert: rollout undo
+                # restores the previous ReplicaSet exactly (image, env,
+                # resources, probes - no drift, no state to remember).
+                if ($Mode -ne 'k8s') { Write-Warning "$scenario needs k8s mode (obs k8s up) - the compose subject has no pod specs to break"; break }
+                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+                $target = if ($scenario -in 'oomkill', 'crashloop') { 'deployment/retriever' } else { 'deployment/gateway' }
+                $dur = '420'
+                Write-Step "${scenario}: ${dur}s baseline load @ $qps qps; fault at t=45s, auto-revert ~t=360s"
+                Write-Host "  manual revert any time: kubectl --kubeconfig `"$kubeconfig`" -n subject rollout undo $target"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+                Start-Sleep -Seconds 45
+                switch ($scenario) {
+                    'oomkill' {
+                        # The demo the phase unlocks: working set flat-tops at
+                        # the new limit; the agent reads it off last_terminated_
+                        # reason + the sawtooth and recommends the exact revert.
+                        Write-Step 'retriever memory: requests 384Mi -> 48Mi, limit 512Mi -> 64Mi'
+                        kubectl --kubeconfig $kubeconfig -n subject set resources deployment/retriever --requests=memory=48Mi --limits=memory=64Mi
+                    }
+                    'imagepull' {
+                        Write-Step 'gateway image -> obs-registry:5010/gateway:phantom (a tag that never existed)'
+                        kubectl --kubeconfig $kubeconfig -n subject set image deployment/gateway gateway=obs-registry:5010/gateway:phantom
+                    }
+                    'crashloop' {
+                        # Verified fail-fast: postgres client throws
+                        # ERR_INVALID_URL at module load, exit 1 before bind.
+                        Write-Step 'retriever DATABASE_URL -> "garbage" (crashes at boot, old pod keeps serving)'
+                        kubectl --kubeconfig $kubeconfig -n subject set env deployment/retriever DATABASE_URL=garbage
+                    }
+                    'readiness-break' {
+                        Write-Step 'gateway readiness probe -> /definitely-not-ready (pod Running, never Ready)'
+                        kubectl --kubeconfig $kubeconfig -n subject patch deployment gateway --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/definitely-not-ready"}]'
+                    }
+                }
+                kubectl --kubeconfig $kubeconfig -n subject get pods
+                Write-Step "fault active ~5 min. Watch 'Lab Alerts - K8s' + the events dashboard; the incident inbox gets the postmortem ($WebUrl/incidents)."
+                Start-Sleep -Seconds 315
+                Write-Step "auto-revert: rollout undo $target"
+                kubectl --kubeconfig $kubeconfig -n subject rollout undo $target
+                kubectl --kubeconfig $kubeconfig -n subject rollout status $target --timeout=180s
+                Write-Step 'reverted and rolled out. The postmortem should name the exact spec change - check the inbox.'
                 break
             }
 
