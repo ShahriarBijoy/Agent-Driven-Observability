@@ -24,6 +24,13 @@ spec:
           workingDir: /app/apps/load-generator
           command: ["bun", "run", "start"]
           env:
+            # Per-pod metric identity (see gateway/deployment.yaml).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME)"
             - name: GATEWAY_URL
               value: http://gateway:8080
             - name: MODEL_PROXY_URL

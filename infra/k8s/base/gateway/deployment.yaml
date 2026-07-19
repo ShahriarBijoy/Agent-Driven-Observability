@@ -24,6 +24,15 @@ spec:
           workingDir: /app/apps/gateway
           command: ["bun", "run", "start"]
           env:
+            # Per-pod metric identity: without service.instance.id, replicas
+            # export IDENTICAL series and their interleaved counters make
+            # rate() see resets (compose never hit this - single instances).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME)"
             - name: GATEWAY_PORT
               value: "8080"
             - name: EMBEDDER_URL

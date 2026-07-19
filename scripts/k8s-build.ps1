@@ -69,6 +69,12 @@ function Invoke-K8sBuild {
 }
 
 function Invoke-K8sDeploy {
+    # Never pin deployments to a tag that was never pushed - the rollout would
+    # just hang in ImagePullBackOff until its timeout.
+    $tags = ssh -o BatchMode=yes "root@$Vm" "curl -s http://localhost:$RegPort/v2/gateway/tags/list"
+    if ($tags -notmatch $Sha) {
+        throw "image :$Sha is not in the registry - run 'obs k8s build' first (HEAD moved since the last build)"
+    }
     # A completed Job is immutable; clear it so apply can recreate.
     kubectl --kubeconfig $Kubeconfig -n subject delete job seed --ignore-not-found | Out-Null
     Write-Step "kubectl apply -k overlays/lab"
