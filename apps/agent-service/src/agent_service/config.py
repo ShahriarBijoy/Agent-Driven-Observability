@@ -68,6 +68,11 @@ class Config:
     # Fixed dev credentials (mirrors the BFF: ADR-002, the `acme` tenant).
     dev_tenant: str
 
+    # Shared secret for state-changing endpoints (X-Obs-Token header). The
+    # service binds 0.0.0.0, so the approval gate must not be LAN-bypassable
+    # (PLAN-2 P7). None = endpoints stay closed and report how to fix it.
+    obs_token: str | None
+
 
 def load_config() -> Config:
     otel = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip() or None
@@ -94,6 +99,7 @@ def load_config() -> Config:
             _env("GRAFANA_DASHBOARDS_DIR", "infra/grafana/provisioning/dashboards")
         ),
         dev_tenant=_env("DEV_TENANT", "acme"),
+        obs_token=os.environ.get("OBS_TOKEN", "").strip() or None,
     )
 
 

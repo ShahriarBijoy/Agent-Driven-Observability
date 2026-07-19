@@ -62,7 +62,7 @@ export async function updateAgentSettings(
   try {
     const res = await fetch(new URL("/settings", base), {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-obs-token": serverEnv.obsToken },
       body: JSON.stringify(update),
     });
     if (!res.ok) return null;
@@ -115,7 +115,7 @@ export async function submitApprovalDecision(
   try {
     const res = await fetch(new URL(`/runs/${encodeURIComponent(req.runId)}/approve`, base), {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-obs-token": serverEnv.obsToken },
       body: JSON.stringify({ approvalId: req.approvalId, decision: req.decision }),
     });
     if (!res.ok) return null;

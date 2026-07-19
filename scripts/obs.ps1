@@ -144,6 +144,20 @@ function Wait-Gateway {
     return $false
 }
 
+function Get-ObsToken {
+    # Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
+    # Canonical home: the repo-root .env; the agent-service .env is honored
+    # too so raw `uv run` outside obs keeps working.
+    foreach ($f in @((Join-Path $Repo '.env'), (Join-Path $Repo 'apps\agent-service\.env'))) {
+        if (Test-Path $f) {
+            foreach ($line in Get-Content $f) {
+                if ($line -match '^\s*OBS_TOKEN\s*=\s*(.+?)\s*$') { return $Matches[1] }
+            }
+        }
+    }
+    return $null
+}
+
 function Use-OpenSsl {
     # portless shells out to openssl to mint its local CA. Windows rarely has
     # it on PATH, but Git for Windows always ships one - borrow that.
@@ -235,6 +249,8 @@ try {
                 Write-Host "      already running - skipping"
             } else {
                 $agentCmd = "`$env:AGENT_SERVICE_PORT='$($Ports.OBS_AGENTS_PORT)'; uv sync; uv run python -m agent_service"
+                $tok = Get-ObsToken
+                if ($tok) { $agentCmd = "`$env:OBS_TOKEN='$tok'; $agentCmd" }
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', $agentCmd
             }
 
@@ -248,6 +264,8 @@ try {
                     $envSets = ($names.Keys | ForEach-Object { "`$env:$_='$($names[$_])'" }) -join '; '
                     $webCmd = "$envSets; $webCmd"
                 }
+                $tok = Get-ObsToken
+                if ($tok) { $webCmd = "`$env:OBS_TOKEN='$tok'; $webCmd" }
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', $webCmd
             }
 
@@ -595,6 +613,8 @@ Raw equivalents:
         'web' {
             Set-Location (Join-Path $Repo 'apps\web')
             $env:OBS_WEB_PORT = $Ports.OBS_WEB_PORT
+            $tok = Get-ObsToken
+            if ($tok) { $env:OBS_TOKEN = $tok }
             $names = Get-NameUrls
             if ($names) {
                 foreach ($k in $names.Keys) { Set-Item "env:$k" $names[$k] }
@@ -607,6 +627,8 @@ Raw equivalents:
         { $_ -in 'agents', 'agent', 'agent-service' } {
             Set-Location (Join-Path $Repo 'apps\agent-service')
             $env:AGENT_SERVICE_PORT = $Ports.OBS_AGENTS_PORT
+            $tok = Get-ObsToken
+            if ($tok) { $env:OBS_TOKEN = $tok }
             Write-Step "agent-service -> http://localhost:$($Ports.OBS_AGENTS_PORT)  (Ctrl-C to stop)"
             uv sync
             uv run python -m agent_service
