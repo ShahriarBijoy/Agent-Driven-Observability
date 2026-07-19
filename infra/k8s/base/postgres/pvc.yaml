@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  # k3s local-path: volume is provisioned on whichever agent first runs the
+  # pod and stays pinned there - a node-kill with Postgres on it is a real
+  # single-point-of-failure story, on purpose.
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi

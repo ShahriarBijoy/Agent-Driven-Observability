@@ -14,6 +14,7 @@ Plus triggered entrypoints added in later milestones (dashboard, webhook, etc.).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine
@@ -198,6 +199,35 @@ async def auto_fix(request: Request) -> JSONResponse:
     return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
 
 
+def require_obs_token(request: Request) -> JSONResponse | None:
+    """Gate for state-changing endpoints (PLAN-2 P7 hardening).
+
+    The service binds 0.0.0.0 for container->host webhooks, which also exposes
+    it to the LAN - and the approval gate is the lab's core safety mechanism.
+    Callers must present the shared X-Obs-Token (from the host .env). With no
+    token configured the endpoints stay CLOSED: silently-open would defeat the
+    point, so the error says exactly what to set.
+    """
+    if config.obs_token is None:
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "auth_unconfigured",
+                    "message": "OBS_TOKEN is not set; mutating endpoints are closed. "
+                    "Set OBS_TOKEN in the host .env and restart agent-service.",
+                }
+            },
+            status_code=503,
+        )
+    supplied = request.headers.get("x-obs-token", "")
+    if not hmac.compare_digest(supplied, config.obs_token):
+        return JSONResponse(
+            {"error": {"code": "forbidden", "message": "missing or invalid X-Obs-Token"}},
+            status_code=403,
+        )
+    return None
+
+
 @app.get("/settings")
 async def get_settings() -> JSONResponse:
     stg = await settings_store.load()
@@ -206,6 +236,9 @@ async def get_settings() -> JSONResponse:
 
 @app.put("/settings")
 async def put_settings(request: Request) -> JSONResponse:
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
     try:
         payload = await request.json()
     except Exception:  # noqa: BLE001
@@ -244,6 +277,9 @@ async def stream_run(run_id: str) -> StreamingResponse:
 
 @app.post("/runs/{run_id}/approve")
 async def approve(run_id: str, request: Request) -> JSONResponse:
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
     try:
         body = ApprovalDecisionBody.model_validate(await request.json())
     except Exception as exc:  # noqa: BLE001

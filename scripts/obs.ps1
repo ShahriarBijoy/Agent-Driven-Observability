@@ -38,6 +38,17 @@
     obs ps                   Show container status.
     obs logs  [service...]   Follow logs (optionally for specific services).
     obs urls                 Print the service address table.
+    obs names [install]      Register https://obs-*.localhost aliases for every human-facing
+                             endpoint via the portless proxy (reads ports.env - rerun after a
+                             remap and the names follow). 'install' autostarts the proxy on boot.
+    obs preflight            Check required binaries, the portless proxy, and every port in
+                             ports.env (free or bound by this lab = ok; a genuine conflict
+                             prints the one-line remap to make). 8090 stays HyperHDR's.
+    obs k8s <sub>            Cluster lifecycle on the VM (Profile A). Subcommands:
+                             up (start/create cluster, stop compose subject - one subject
+                             system at a time), down (stop cluster, back to compose mode),
+                             delete, status (nodes/pods + WSL clock-drift check), build,
+                             deploy, smoke, node-stop <name>, node-start <name>.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -62,8 +73,50 @@ param(
 # Repo root is one level up from this script (scripts/ -> repo).
 $Repo = Split-Path -Parent $PSScriptRoot
 
-# The three compose files that make up the full lab, in layer order.
+# The lab's address book (PLAN-2 SS D): every host-published port and machine
+# name lives in infra/ports.env. Parse it once; everything below reads $Ports
+# instead of hardcoding numbers, so a port remap is a one-line edit there.
+$Ports = @{}
+foreach ($line in Get-Content (Join-Path $Repo 'infra\ports.env')) {
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$') {
+        $Ports[$Matches[1]] = $Matches[2]
+    }
+}
+
+# Which machine answers the subject-system's ports? 'compose' = this laptop;
+# 'k8s' = the cluster on the VM (Profile A). obs k8s up|down flips the file.
+$ModeFile = Join-Path $Repo '.obs-mode'
+$Mode = if ((Test-Path $ModeFile) -and ((Get-Content $ModeFile -Raw).Trim() -eq 'k8s')) { 'k8s' } else { 'compose' }
+
+# Derived URLs used throughout. Agents deliberately uses 127.0.0.1: Windows
+# resolves localhost to ::1 first and uvicorn binds v4-only.
+$WebUrl     = "http://localhost:$($Ports.OBS_WEB_PORT)"
+$GrafanaUrl = "http://localhost:$($Ports.OBS_GRAFANA_PORT)"
+$AgentsUrl  = "http://127.0.0.1:$($Ports.OBS_AGENTS_PORT)"
+$MarquezUrl = "http://localhost:$($Ports.OBS_MARQUEZ_UI_PORT)"
+
+if ($Mode -eq 'k8s') {
+    # Gateway lives behind the k3d LB -> Traefik on the VM; the chaos control
+    # planes ride the same :8080 through /chaos/* ingress routes (the pods
+    # publish no host ports). Clients append /admin/chaos to these bases and
+    # Traefik's replacePath middleware lands them on the right endpoint.
+    $GatewayUrl = "http://$($Ports.OBS_VM_HOST):$($Ports.OBS_GATEWAY_PORT)"
+    $ChaosBase = [ordered]@{
+        'model-proxy' = "$GatewayUrl/chaos/model-proxy"
+        'retriever'   = "$GatewayUrl/chaos/retriever"
+    }
+} else {
+    $GatewayUrl = "http://localhost:$($Ports.OBS_GATEWAY_PORT)"
+    $ChaosBase = [ordered]@{
+        'model-proxy' = "http://localhost:$($Ports.OBS_MODEL_PROXY_PORT)"
+        'retriever'   = "http://localhost:$($Ports.OBS_RETRIEVER_PORT)"
+    }
+}
+
+# The three compose files that make up the full lab, in layer order. The
+# --env-file makes the compose port substitutions read the same map.
 $Full = @(
+    '--env-file', 'infra/ports.env',
     '-f', 'infra/compose.yml',
     '-f', 'infra/compose.observability.yml',
     '-f', 'infra/compose.lineage.yml'
@@ -78,11 +131,11 @@ function Test-Up($url) {
 
 function Wait-Gateway {
     param([int]$TimeoutSec = 120)
-    Write-Step "waiting up to ${TimeoutSec}s for gateway health (http://localhost:8080/health)"
+    Write-Step "waiting up to ${TimeoutSec}s for gateway health ($GatewayUrl/health)"
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            Invoke-RestMethod -Uri 'http://localhost:8080/health' -TimeoutSec 3 | Out-Null
+            Invoke-RestMethod -Uri "$GatewayUrl/health" -TimeoutSec 3 | Out-Null
             Write-Step "gateway is healthy"
             return $true
         } catch { Start-Sleep -Seconds 3 }
@@ -91,16 +144,57 @@ function Wait-Gateway {
     return $false
 }
 
+function Get-ObsToken {
+    # Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
+    # Canonical home: the repo-root .env; the agent-service .env is honored
+    # too so raw `uv run` outside obs keeps working.
+    foreach ($f in @((Join-Path $Repo '.env'), (Join-Path $Repo 'apps\agent-service\.env'))) {
+        if (Test-Path $f) {
+            foreach ($line in Get-Content $f) {
+                if ($line -match '^\s*OBS_TOKEN\s*=\s*(.+?)\s*$') { return $Matches[1] }
+            }
+        }
+    }
+    return $null
+}
+
+function Use-OpenSsl {
+    # portless shells out to openssl to mint its local CA. Windows rarely has
+    # it on PATH, but Git for Windows always ships one - borrow that.
+    if (Get-Command openssl -ErrorAction SilentlyContinue) { return $true }
+    $gitSsl = @("$env:ProgramFiles\Git\mingw64\bin", "$env:ProgramFiles\Git\usr\bin") |
+        Where-Object { Test-Path (Join-Path $_ 'openssl.exe') } | Select-Object -First 1
+    if ($gitSsl) { $env:Path = "$gitSsl;$env:Path"; return $true }
+    Write-Warning 'openssl not found (portless needs it for its local CA). Install: winget install -e --id ShiningLight.OpenSSL.Dev'
+    return $false
+}
+
+function Get-NameUrls {
+    # When the portless aliases are registered, hand the web app https names:
+    # an https://obs-web.localhost page may not embed or fetch plain-http
+    # localhost URLs (mixed content), so iframes + RUM must use names too.
+    $probe = & portless get obs-grafana 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $probe) { return $null }
+    [ordered]@{
+        VITE_GRAFANA_URL      = 'https://obs-grafana.localhost'
+        VITE_MARQUEZ_URL      = 'https://obs-marquez.localhost'
+        VITE_OTLP_TRACES_URL  = 'https://obs-otlp.localhost/v1/traces'
+        VITE_OTLP_METRICS_URL = 'https://obs-otlp.localhost/v1/metrics'
+    }
+}
+
 function Invoke-Up {
     param([string[]]$Extra)
     # Step 1 creates obs-lab-app + obs-lab-obs; the lineage layer declares them
     # external, so they must exist before the merged command runs.
     Write-Step "step 1/2: subject system (creates the shared networks)"
-    docker compose -f infra/compose.yml up -d @Extra
+    docker compose --env-file infra/ports.env -f infra/compose.yml up -d @Extra
     if ($LASTEXITCODE -ne 0) { throw "step 1 (subject system) failed with exit code $LASTEXITCODE" }
     Write-Step "step 2/2: full lab (observability + lineage planes)"
     docker compose @Full up -d @Extra
     if ($LASTEXITCODE -ne 0) { throw "step 2 (full lab) failed with exit code $LASTEXITCODE" }
+    # Compose subject is authoritative again; k8s-mode URLs stand down.
+    Set-Content -Path $ModeFile -Value 'compose'
 }
 
 function Invoke-Load {
@@ -111,7 +205,7 @@ function Invoke-Load {
         [string]$Concurrency = '',
         [string]$Label = 'load'
     )
-    if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = 'http://localhost:8080' }
+    if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
     $env:TARGET_QPS = $Qps
     $env:DURATION_SECONDS = $Duration
     # Assigning $null removes the env var, so a plain run never inherits a mix
@@ -135,6 +229,7 @@ $FailScenarios = [ordered]@{
     flaky    = 'model-proxy "bad minutes" -> flapping 5xx bursts, healthy in between (~14 min)'
     throttle = 'model-proxy sheds 50% with 429s -> users degraded, NOTHING pages     (~8 min)'
     full     = 'the whole Plan-p6 cycle: latency -> errors -> retriever outage       (~26 min)'
+    'pod-kill' = 'k8s only: delete every gateway pod mid-traffic -> 5xx blip -> reschedule (~5 min)'
 }
 
 Push-Location $Repo
@@ -150,29 +245,40 @@ try {
             Invoke-Up -Extra @()
             if (-not (Wait-Gateway)) { Write-Warning "gateway never came up - aborting host processes + load"; break }
 
-            Write-Step "[2/4] agent-service :8093 (own window)"
-            if (Test-Up 'http://127.0.0.1:8093/health') {
+            Write-Step "[2/4] agent-service :$($Ports.OBS_AGENTS_PORT) (own window)"
+            if (Test-Up "$AgentsUrl/health") {
                 Write-Host "      already running - skipping"
             } else {
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', 'uv sync; uv run python -m agent_service'
+                $agentCmd = "`$env:AGENT_SERVICE_PORT='$($Ports.OBS_AGENTS_PORT)'; uv sync; uv run python -m agent_service"
+                $tok = Get-ObsToken
+                if ($tok) { $agentCmd = "`$env:OBS_TOKEN='$tok'; $agentCmd" }
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\agent-service') -ArgumentList '-NoExit', '-Command', $agentCmd
             }
 
-            Write-Step "[3/4] web control plane :3003 (own window)"
-            if (Test-Up 'http://localhost:3003') {
+            Write-Step "[3/4] web control plane :$($Ports.OBS_WEB_PORT) (own window)"
+            if (Test-Up $WebUrl) {
                 Write-Host "      already running - skipping"
             } else {
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', 'bun run dev'
+                $webCmd = "`$env:OBS_WEB_PORT='$($Ports.OBS_WEB_PORT)'; bun run dev"
+                $names = Get-NameUrls
+                if ($names) {
+                    $envSets = ($names.Keys | ForEach-Object { "`$env:$_='$($names[$_])'" }) -join '; '
+                    $webCmd = "$envSets; $webCmd"
+                }
+                $tok = Get-ObsToken
+                if ($tok) { $webCmd = "`$env:OBS_TOKEN='$tok'; $webCmd" }
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\web') -ArgumentList '-NoExit', '-Command', $webCmd
             }
 
             Write-Step "[4/4] load generator ($qps qps for ${dur}s, own window)"
-            $loadCmd = "`$env:GATEWAY_URL='http://localhost:8080'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+            $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
             Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
 
             Write-Host ""
             Write-Step "everything is starting - host windows need ~15s to bind"
-            Write-Host "  Web + Agents : http://localhost:3003   (RCA chat at /agents)"
-            Write-Host "  Grafana      : http://localhost:3001"
-            Write-Host "  Marquez      : http://localhost:3002"
+            Write-Host "  Web + Agents : $WebUrl   (RCA chat at /agents)"
+            Write-Host "  Grafana      : $GrafanaUrl"
+            Write-Host "  Marquez      : $MarquezUrl"
             Write-Host "  Stop a piece: close its window (or Ctrl-C in it). 'obs down' stops the containers."
         }
 
@@ -231,26 +337,48 @@ try {
                 }
                 Write-Host ""
                 Write-Host "Each drives baseline traffic the whole time; chaos is applied/cleared on a"
-                Write-Host "clock and always reset on exit. Watch Grafana (:3001) and the incident inbox"
-                Write-Host "(:3003/incidents); the agent-service (:8093) must be up to get postmortems."
+                Write-Host "clock and always reset on exit. Watch Grafana (:$($Ports.OBS_GRAFANA_PORT)) and the incident inbox"
+                Write-Host "(:$($Ports.OBS_WEB_PORT)/incidents); the agent-service (:$($Ports.OBS_AGENTS_PORT)) must be up to get postmortems."
                 break
             }
             $qps = if ($Rest.Count -ge 2) { $Rest[1] } else { '40' }
+
+            if ($scenario -eq 'pod-kill') {
+                # The first Kubernetes-native failure: no /admin/chaos knob,
+                # the orchestrator itself is the failure domain.
+                if ($Mode -ne 'k8s') { Write-Warning "pod-kill needs k8s mode (obs k8s up) - the compose subject has no pods"; break }
+                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+                $dur = '300'
+                Write-Step "pod-kill: ${dur}s of baseline load @ $qps qps; gateway pods die at t=60s"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+                Start-Sleep -Seconds 60
+                Write-Step 'kubectl delete pod -l app=gateway (all replicas, mid-traffic)'
+                kubectl --kubeconfig $kubeconfig -n subject delete pod -l app=gateway
+                Write-Step 'pods rescheduling - watch the 5xx blip on Grafana, then recovery:'
+                kubectl --kubeconfig $kubeconfig -n subject get pods -l app=gateway
+                Write-Step "load keeps running ~4 more minutes. Ask the RCA agent about the blip - with its kubectl grant it should conclude 'transient pod restart, no code regression'."
+                break
+            }
+
             $env:CHAOS_SCHEDULE = "chaos/$scenario.yaml"
             $env:CHAOS_TARGET_QPS = $qps
             # Stall/latency drills hold connections open; give the driver headroom.
             if (-not $env:CHAOS_CONCURRENCY) { $env:CHAOS_CONCURRENCY = '128' }
+            # Chaos driver targets, mode-aware and from the map: in k8s mode
+            # the bases are the /chaos/* ingress routes on the VM.
+            if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
+            if (-not $env:MODEL_PROXY_URL) { $env:MODEL_PROXY_URL = $ChaosBase['model-proxy'] }
+            if (-not $env:RETRIEVER_URL) { $env:RETRIEVER_URL = $ChaosBase['retriever'] }
             Write-Step "fail '$scenario': $($FailScenarios[$scenario])"
-            Write-Step 'watch: Grafana http://localhost:3001 | incidents http://localhost:3003/incidents'
+            Write-Step "watch: Grafana $GrafanaUrl | incidents $WebUrl/incidents"
             bun --cwd=apps/load-generator run chaos
         }
 
         'chaos' {
             $action = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
-            $planes = [ordered]@{
-                'model-proxy' = 'http://localhost:8083/admin/chaos'
-                'retriever'   = 'http://localhost:8082/admin/chaos'
-            }
+            $planes = [ordered]@{}
+            foreach ($n in $ChaosBase.Keys) { $planes[$n] = "$($ChaosBase[$n])/admin/chaos" }
             foreach ($name in $planes.Keys) {
                 try {
                     if ($action -eq 'clear') {
@@ -288,7 +416,16 @@ try {
             docker compose @Full --profile load down
         }
 
-        'smoke' { bash scripts/smoke.sh }
+        'smoke' {
+            # Mode-aware: in k8s mode the gateway answers on the VM via Traefik
+            # and the compose up/seed steps inside smoke.sh must not run.
+            $env:GATEWAY = $GatewayUrl
+            $env:SMOKE_MODE = $Mode
+            # Prefer Git Bash explicitly - a bare 'bash' can resolve to WSL's
+            # System32 stub, which explodes without a default distro.
+            $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+            if (Test-Path $gitBash) { & $gitBash scripts/smoke.sh } else { bash scripts/smoke.sh }
+        }
 
         'fixes' {
             $dir = Join-Path $Repo '.artifacts\autofix'
@@ -323,22 +460,22 @@ try {
 
         'urls' {
             Write-Host @"
-Control plane  http://localhost:3003   (dev mode, no auth)
-Grafana        http://localhost:3001   (anonymous Admin)
-Marquez UI     http://localhost:3002
-Gateway API    http://localhost:8080
-dq-runner      http://localhost:8091
-Agent service  http://localhost:8093   (host process, see `obs hosts`)
+Control plane  $WebUrl   (dev mode, no auth)
+Grafana        $GrafanaUrl   (anonymous Admin)
+Marquez UI     $MarquezUrl
+Gateway API    $GatewayUrl
+dq-runner      http://localhost:$($Ports.OBS_DQ_RUNNER_PORT)
+Agent service  http://localhost:$($Ports.OBS_AGENTS_PORT)   (host process, see `obs hosts`)
 "@
         }
 
         'hosts' {
             Write-Host @"
-The web UI (:3003) and agent-service (:8093) run on the HOST, not in compose.
+The web UI (:$($Ports.OBS_WEB_PORT)) and agent-service (:$($Ports.OBS_AGENTS_PORT)) run on the HOST, not in compose.
 Full lab = 'obs up' (containers) + these two, each in its own terminal:
 
-  obs agents     agent-service :8093  (Claude Agent SDK uses your Claude Code login)
-  obs web        web control plane :3003
+  obs agents     agent-service :$($Ports.OBS_AGENTS_PORT)  (Claude Agent SDK uses your Claude Code login)
+  obs web        web control plane :$($Ports.OBS_WEB_PORT)
 
 Raw equivalents:
   cd apps/agent-service; uv sync; uv run python -m agent_service
@@ -346,15 +483,212 @@ Raw equivalents:
 "@
         }
 
+        'k8s' {
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            $vm = $Ports.OBS_VM_HOST
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            switch ($sub) {
+                'up' {
+                    # One subject system at a time: park the compose subject
+                    # (observability plane + laptop postgres/redis stay up -
+                    # agent-audit and Marquez live there under Profile A).
+                    Write-Step 'mode exclusivity: stopping compose subject services'
+                    docker compose --env-file infra/ports.env -f infra/compose.yml stop gateway embedder retriever model-proxy seed load-generator
+                    Write-Step "cluster on ${vm}: start (or create from infra/k8s/k3d.yaml)"
+                    scp -q -o BatchMode=yes infra/k8s/k3d.yaml infra/ports.env "root@${vm}:/root/obs-lab/"
+                    ssh -o BatchMode=yes "root@$vm" 'if k3d cluster list obs-lab >/dev/null 2>&1; then k3d cluster start obs-lab; else set -a; . /root/obs-lab/ports.env; set +a; k3d cluster create --config /root/obs-lab/k3d.yaml; fi'
+                    if ($LASTEXITCODE -ne 0) { throw "cluster start/create failed" }
+                    ssh -o BatchMode=yes "root@$vm" 'k3d kubeconfig get obs-lab' | Set-Content -Encoding ascii $kubeconfig
+                    # Cluster-level bootstrap (survives nothing - reapply every up):
+                    # CoreDNS tailnet forward + the agents' read-only identity.
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/cluster/ | Out-Null
+                    Set-Content -Path $ModeFile -Value 'k8s'
+                    Write-Step "k8s mode ON. Next: 'obs k8s deploy' (or 'obs k8s build' first for fresh images)"
+                }
+                'down' {
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster stop obs-lab'
+                    Set-Content -Path $ModeFile -Value 'compose'
+                    Write-Step "cluster stopped (state kept on the VM). Compose subject: 'obs up'"
+                }
+                'delete' {
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster delete obs-lab'
+                    Set-Content -Path $ModeFile -Value 'compose'
+                    Write-Step 'cluster deleted. Registry + images on the VM survive.'
+                }
+                'agent-kubeconfig' {
+                    # Week-long read-only kubeconfig for the agents. 168h beats
+                    # the 1h default that would die mid-exam (P12); k3d.yaml
+                    # raised the apiserver cap so this is mintable.
+                    $tok = (ssh -o BatchMode=yes "root@$vm" 'kubectl create token agent-ro -n kube-system --duration=168h').Trim()
+                    if ($LASTEXITCODE -ne 0 -or -not $tok) { throw 'token mint failed - is the cluster up (obs k8s up)?' }
+                    $caLine = (Get-Content $kubeconfig | Where-Object { $_ -match 'certificate-authority-data:' } | Select-Object -First 1)
+                    $ca = ($caLine -split ':\s*', 2)[1].Trim()
+                    $dest = Join-Path $Repo 'apps\agent-service\.kube\agent-ro.yaml'
+                    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+                    @"
+# Read-only cluster access for the agents (ClusterRole view; see
+# infra/k8s/cluster/agent-ro.yaml). Minted $(Get-Date -Format s) for 168h by
+# 'obs k8s agent-kubeconfig' - rerun to rotate. NOT tracked by git.
+apiVersion: v1
+kind: Config
+clusters:
+  - name: obs-lab
+    cluster:
+      server: https://${vm}:$($Ports.OBS_K3D_API_PORT)
+      certificate-authority-data: $ca
+users:
+  - name: agent-ro
+    user:
+      token: $tok
+contexts:
+  - name: agent-ro@obs-lab
+    context:
+      cluster: obs-lab
+      user: agent-ro
+current-context: agent-ro@obs-lab
+"@ | Set-Content -Encoding ascii $dest
+                    Write-Step "wrote $dest (valid 168h)"
+                }
+                'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
+                'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
+                'smoke'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') smoke }
+                { $_ -in 'node-stop', 'node-start' } {
+                    if ($Rest.Count -lt 2) { Write-Warning "usage: obs k8s $sub <node-name>  (k3d-obs-lab-agent-0|1, k3d-obs-lab-server-0)"; break }
+                    $verb = if ($sub -eq 'node-stop') { 'stop' } else { 'start' }
+                    ssh -o BatchMode=yes "root@$vm" "k3d node $verb $($Rest[1])"
+                }
+                'status' {
+                    Write-Step "mode: $Mode (subject answers at $GatewayUrl)"
+                    ssh -o BatchMode=yes "root@$vm" 'k3d cluster list; echo' 2>$null
+                    if ($LASTEXITCODE -ne 0) { Write-Warning "cannot reach $vm over ssh - is Tailscale up on both ends?"; break }
+                    kubectl --kubeconfig $kubeconfig get nodes 2>$null
+                    kubectl --kubeconfig $kubeconfig -n subject get pods 2>$null
+                    # WSL2's clock drifts after laptop sleep; Mimir then rejects
+                    # the (out-of-order) samples the cluster ships to it.
+                    try {
+                        $wslEpoch = [int64](wsl -e date +%s 2>$null)
+                        $hostEpoch = [int64][Math]::Floor((Get-Date -UFormat %s))
+                        $drift = [Math]::Abs($hostEpoch - $wslEpoch)
+                        if ($drift -gt 30) { Write-Warning "WSL2 clock is ${drift}s off the host - Mimir will reject samples. Fix: wsl --shutdown (then restart Docker Desktop)" }
+                        else { Write-Host "  ok  WSL2 clock drift ${drift}s" }
+                    } catch { }
+                    Write-Host ''
+                    Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
+                    Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
+                }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|node-stop|node-start)" }
+            }
+        }
+
+        'preflight' {
+            $ok = $true
+
+            Write-Step 'required binaries on this machine (cluster-side tools live on the VM)'
+            # name -> purpose, plus a known install path for tools that skip PATH.
+            $bins = [ordered]@{
+                docker    = @('Docker Desktop', $null)
+                bun       = @('subject services + web', $null)
+                uv        = @('agent-service', $null)
+                portless  = @('https://obs-*.localhost names', $null)
+                kubectl   = @('talks to the cluster', "$env:ProgramFiles\Docker\Docker\resources\bin\kubectl.exe")
+                ssh       = @('obs k8s wraps ssh to the VM', $null)
+                tailscale = @('path to the VM', "$env:ProgramFiles\Tailscale\tailscale.exe")
+            }
+            foreach ($b in $bins.Keys) {
+                $found = (Get-Command $b -ErrorAction SilentlyContinue) -or
+                         ($bins[$b][1] -and (Test-Path $bins[$b][1]))
+                if ($found) { Write-Host ("  ok  {0,-10} {1}" -f $b, $bins[$b][0]) }
+                else { Write-Warning "missing: $b ($($bins[$b][0]))"; $ok = $false }
+            }
+
+            Write-Step 'portless proxy'
+            $null = & portless get obs-web 2>$null
+            if ($LASTEXITCODE -eq 0) { Write-Host '  ok  proxy answering, obs-* aliases registered' }
+            else { Write-Warning "portless aliases not registered - run 'obs names'"; $ok = $false }
+
+            Write-Step 'ports from infra/ports.env (free, or bound by this lab = ok)'
+            # Processes that legitimately hold lab ports: docker's port proxy,
+            # the host-run bun/vite/uv processes, and the portless proxy itself.
+            $labProcs = @('com.docker.backend', 'docker', 'wslrelay', 'vpnkit-bridge',
+                          'bun', 'node', 'python', 'uvicorn', 'portless')
+            foreach ($key in ($Ports.Keys | Where-Object { $_ -like 'OBS_*_PORT' } | Sort-Object)) {
+                $p = [int]$Ports[$key]
+                if ($p -eq 8090) { Write-Warning "$key maps onto 8090 - that port is HyperHDR-poisoned (dual-stack squat); pick another"; $ok = $false; continue }
+                $conns = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
+                if (-not $conns) { Write-Host ("  ok  {0,-22} :{1,-6} free" -f $key, $p); continue }
+                $owners = @($conns | ForEach-Object {
+                    (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+                } | Where-Object { $_ } | Sort-Object -Unique)
+                $foreign = @($owners | Where-Object { $labProcs -notcontains $_ })
+                if ($foreign.Count -eq 0) {
+                    Write-Host ("  ok  {0,-22} :{1,-6} bound by this lab ({2})" -f $key, $p, ($owners -join ','))
+                } else {
+                    $ok = $false
+                    Write-Warning ("{0} :{1} is held by '{2}' - the fix is ONE line: edit {0} in infra\ports.env to a free port, then rerun 'obs names' + 'obs up'" -f $key, $p, ($foreign -join ','))
+                }
+            }
+
+            Write-Host ''
+            if ($ok) { Write-Step 'preflight PASSED' } else { Write-Warning 'preflight FAILED - fix the items above'; exit 1 }
+        }
+
+        'names' {
+            $action = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'register' }
+            if ($action -eq 'install') { portless service install; break }
+            # Human-facing endpoints only - headless infra keeps numbers (PLAN-2 SS D).
+            $aliases = [ordered]@{
+                'obs-web'       = $Ports.OBS_WEB_PORT
+                'obs-grafana'   = $Ports.OBS_GRAFANA_PORT
+                'obs-gateway'   = $Ports.OBS_GATEWAY_PORT
+                'obs-agents'    = $Ports.OBS_AGENTS_PORT
+                'obs-gitea'     = $Ports.OBS_GITEA_PORT
+                'obs-argocd'    = $Ports.OBS_ARGOCD_PORT
+                'obs-rollouts'  = $Ports.OBS_ROLLOUTS_PORT
+                'obs-chaos'     = $Ports.OBS_CHAOSMESH_PORT
+                'obs-marquez'   = $Ports.OBS_MARQUEZ_UI_PORT
+                'obs-pyroscope' = $Ports.OBS_PYROSCOPE_PORT
+                'obs-alloy'     = $Ports.OBS_ALLOY_UI_PORT
+                'obs-otlp'      = $Ports.OBS_OTLP_HTTP_PORT
+            }
+            Use-OpenSsl | Out-Null
+            Write-Step 'portless proxy (:443) - starting if not already up'
+            portless proxy start
+            Write-Step 'trusting the local CA (no-op when already trusted; may prompt once)'
+            portless trust
+            Write-Step 'registering aliases from infra/ports.env'
+            foreach ($name in $aliases.Keys) {
+                portless alias $name $aliases[$name] --force | Out-Null
+                Write-Host ("  https://{0}.localhost  ->  :{1}" -f $name, $aliases[$name])
+            }
+            Write-Host ''
+            Write-Host "Names follow the map: edit infra/ports.env, rerun 'obs names', done."
+            Write-Host "Optional autostart on boot: obs names install"
+        }
+
         'web' {
             Set-Location (Join-Path $Repo 'apps\web')
-            Write-Step "web control plane -> http://localhost:3003  (Ctrl-C to stop)"
+            $env:OBS_WEB_PORT = $Ports.OBS_WEB_PORT
+            $tok = Get-ObsToken
+            if ($tok) { $env:OBS_TOKEN = $tok }
+            $names = Get-NameUrls
+            if ($names) {
+                foreach ($k in $names.Keys) { Set-Item "env:$k" $names[$k] }
+                Write-Step 'portless names active - Grafana/Marquez iframes + RUM use https://obs-*.localhost'
+            }
+            Write-Step "web control plane -> $WebUrl  (Ctrl-C to stop)"
             bun run dev
         }
 
         { $_ -in 'agents', 'agent', 'agent-service' } {
             Set-Location (Join-Path $Repo 'apps\agent-service')
-            Write-Step "agent-service -> http://localhost:8093  (Ctrl-C to stop)"
+            $env:AGENT_SERVICE_PORT = $Ports.OBS_AGENTS_PORT
+            $tok = Get-ObsToken
+            if ($tok) { $env:OBS_TOKEN = $tok }
+            # Agents' kubectl (rca via Bash) sees the cluster read-only, never
+            # through the operator's admin kubeconfig.
+            $roKube = Join-Path $Repo 'apps\agent-service\.kube\agent-ro.yaml'
+            if (Test-Path $roKube) { $env:KUBECONFIG = $roKube }
+            Write-Step "agent-service -> http://localhost:$($Ports.OBS_AGENTS_PORT)  (Ctrl-C to stop)"
             uv sync
             uv run python -m agent_service
         }

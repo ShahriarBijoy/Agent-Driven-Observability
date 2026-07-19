@@ -1,0 +1,58 @@
+# Overlay "lab" - Profile A values (PLAN-2 SS C): cluster on obs-vm, LGTM
+# stack + agents on the laptop. Everything machine- or secret-shaped lives
+# HERE, never in base.
+#
+# Registry note: image names use obs-registry:5010 - the cluster-side name of
+# the k3d-managed registry (pods pull through the registries.yaml mirror k3d
+# generates). The build side pushes the same repos as localhost:5010 on the
+# VM. If OBS_REGISTRY_PORT is ever remapped, scripts/k8s-build.ps1 rewrites
+# these refs via `kustomize edit set image` from the map.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: subject
+
+resources:
+  - ../../base
+
+images:
+  - name: obs/gateway
+    newName: obs-registry:5010/gateway
+    newTag: dev
+  - name: obs/embedder
+    newName: obs-registry:5010/embedder
+    newTag: dev
+  - name: obs/retriever
+    newName: obs-registry:5010/retriever
+    newTag: dev
+  - name: obs/model-proxy
+    newName: obs-registry:5010/model-proxy
+    newTag: dev
+  - name: obs/load-generator
+    newName: obs-registry:5010/load-generator
+    newTag: dev
+
+secretGenerator:
+  # Fixed name (no hash suffix): rotating this Secret WITHOUT restarting the
+  # deployments is exactly the stale-secret incident the failure matrix wants.
+  - name: subject-db-credentials
+    literals:
+      - POSTGRES_USER=lab
+      - POSTGRES_PASSWORD=lab
+      - POSTGRES_DB=observability_lab
+      - DATABASE_URL=postgres://lab:lab@postgres:5432/observability_lab
+      - REDIS_URL=redis://redis:6379
+    options:
+      disableNameSuffixHash: true
+
+configMapGenerator:
+  # Cluster egress (Profile A): telemetry + lineage flow to the LAPTOP's
+  # Alloy/Marquez over the tailnet, by MagicDNS FQDN (single-label names
+  # don't survive the CoreDNS->systemd-resolved forwarding chain).
+  - name: subject-telemetry
+    literals:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://shahriar.tail813d2f.ts.net:4318
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=10000
+      - MARQUEZ_URL=http://shahriar.tail813d2f.ts.net:5000
+    options:
+      disableNameSuffixHash: true

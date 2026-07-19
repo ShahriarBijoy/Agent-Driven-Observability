@@ -15,4 +15,10 @@ export const serverEnv = {
   /** Fixed dev credentials (ADR-002): the `acme` tenant's bearer token. */
   devToken: process.env["DEV_TOKEN"] ?? "dev-local-token",
   devTenant: process.env["DEV_TENANT"] ?? "acme",
+  /**
+   * Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
+   * `obs web` exports it from the host .env; without it, approve/settings
+   * calls are rejected by the service (which is the point).
+   */
+  obsToken: process.env["OBS_TOKEN"] ?? "",
 } as const;
