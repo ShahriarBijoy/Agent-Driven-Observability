@@ -21,9 +21,41 @@ from .validation import safe_artifact_name
 
 SERVER = "obslab"
 
+# External stdio MCP child: containers/kubernetes-mcp-server, the agents'
+# read-only window into the cluster API (PLAN-2 P8). Read-only by
+# CONSTRUCTION, not by prompt: --read-only strips every mutating tool from
+# the server's tool list, k8s-mcp.toml denies Secret reads server-side, and
+# the agent-ro ClusterRole (view) denies them at the API as a third layer.
+K8S_SERVER = "k8s"
+
 
 def mcp(name: str) -> str:
     return f"mcp__{SERVER}__{name}"
+
+
+def k8s(name: str) -> str:
+    return f"mcp__{K8S_SERVER}__{name}"
+
+
+def k8s_mcp_server() -> dict[str, Any] | None:
+    """Stdio config for kubernetes-mcp-server, or None while the agent-ro
+    kubeconfig hasn't been minted (obs k8s agent-kubeconfig)."""
+    kubeconfig = config.k8s_kubeconfig
+    if not os.path.exists(kubeconfig):
+        return None
+    argv = [
+        *config.k8s_mcp_cmd.split(),
+        "--read-only",
+        "--disable-multi-cluster",
+        "--toolsets", "core,config",
+        "--kubeconfig", kubeconfig,
+        "--config", config.k8s_mcp_config_path,
+    ]
+    if os.name == "nt":
+        # npx is npx.cmd on Windows; Node's spawn only finds it through the
+        # shell shim.
+        argv = ["cmd", "/c", *argv]
+    return {"type": "stdio", "command": argv[0], "args": argv[1:]}
 
 
 def _text(payload: dict[str, Any]) -> dict[str, Any]:
@@ -292,9 +324,20 @@ READ_TOOLS = [
     mcp("marquez_lineage"), mcp("pg_select"), mcp("runbook_read"),
 ]
 
+# The read-only cluster tools the investigating agents get. Names verified
+# against kubernetes-mcp-server v0.0.65 (--read-only --toolsets core,config).
+# configuration_view is deliberately absent: it echoes the kubeconfig -
+# bearer token included - straight into the transcript.
+K8S_READ_TOOLS = [
+    k8s("pods_list"), k8s("pods_list_in_namespace"), k8s("pods_get"),
+    k8s("pods_log"), k8s("pods_top"), k8s("resources_list"),
+    k8s("resources_get"), k8s("events_list"), k8s("namespaces_list"),
+    k8s("nodes_log"), k8s("nodes_top"), k8s("nodes_stats_summary"),
+]
+
 TOOLSETS: dict[str, list[str]] = {
-    "rca": [*READ_TOOLS, mcp("save_artifact")],
-    "incident-reporter": [*READ_TOOLS, mcp("save_artifact")],
+    "rca": [*READ_TOOLS, *K8S_READ_TOOLS, mcp("save_artifact")],
+    "incident-reporter": [*READ_TOOLS, *K8S_READ_TOOLS, mcp("save_artifact")],
     "dashboard-generator": [
         mcp("mimir_query"), mcp("grafana_get_dashboard"), mcp("grafana_create_dashboard"),
     ],
@@ -335,6 +378,30 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Pause the run for an operator approve/deny decision"},
     {"name": mcp("gh_open_pr"), "kind": "mcp",
      "description": "Open a pull request from the contained workspace clone"},
+    {"name": k8s("pods_list"), "kind": "mcp",
+     "description": "List pods across all cluster namespaces"},
+    {"name": k8s("pods_list_in_namespace"), "kind": "mcp",
+     "description": "List pods in one cluster namespace"},
+    {"name": k8s("pods_get"), "kind": "mcp",
+     "description": "Get one pod's full spec and status"},
+    {"name": k8s("pods_log"), "kind": "mcp",
+     "description": "Read a pod's container logs from the cluster"},
+    {"name": k8s("pods_top"), "kind": "mcp",
+     "description": "Live CPU/memory usage per pod (kubectl top)"},
+    {"name": k8s("resources_list"), "kind": "mcp",
+     "description": "List any cluster resource kind (deployments, services, ...)"},
+    {"name": k8s("resources_get"), "kind": "mcp",
+     "description": "Get any one cluster resource (Secrets are denied)"},
+    {"name": k8s("events_list"), "kind": "mcp",
+     "description": "List live Kubernetes events (all or one namespace)"},
+    {"name": k8s("namespaces_list"), "kind": "mcp",
+     "description": "List cluster namespaces"},
+    {"name": k8s("nodes_log"), "kind": "mcp",
+     "description": "Read node-level logs (kubelet journal)"},
+    {"name": k8s("nodes_top"), "kind": "mcp",
+     "description": "Live CPU/memory usage per node"},
+    {"name": k8s("nodes_stats_summary"), "kind": "mcp",
+     "description": "Kubelet stats summary for a node (per-pod resource detail)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",

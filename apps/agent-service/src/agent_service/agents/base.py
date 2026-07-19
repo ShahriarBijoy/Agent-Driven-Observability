@@ -76,7 +76,11 @@ def stop_reason(
 
 
 def _display_name(name: str) -> str:
-    return name[len(_MCP_PREFIX):] if name.startswith(_MCP_PREFIX) else name
+    if name.startswith(_MCP_PREFIX):
+        return name[len(_MCP_PREFIX):]
+    if name.startswith("mcp__"):  # other servers keep a short server prefix: k8s:pods_get
+        return name[len("mcp__"):].replace("__", ":", 1)
+    return name
 
 
 def _result_text(content: Any) -> str:
@@ -113,6 +117,19 @@ async def run_agent_session(
     if extra_allowed:
         allowed += extra_allowed
 
+    # The k8s MCP child (an npx subprocess per session) is only worth spawning
+    # when this agent may actually call it — and only exists once the agent-ro
+    # kubeconfig has been minted. Resolve BEFORE the boundary text below so the
+    # model is never promised tools that won't be there.
+    mcp_servers: dict[str, Any] = {toolsdk.SERVER: server}
+    k8s_prefix = f"mcp__{toolsdk.K8S_SERVER}__"
+    if any(name.startswith(k8s_prefix) for name in allowed):
+        k8s_server = toolsdk.k8s_mcp_server()
+        if k8s_server is not None:
+            mcp_servers[toolsdk.K8S_SERVER] = k8s_server
+        else:
+            allowed = [name for name in allowed if not name.startswith(k8s_prefix)]
+
     # State the tool boundary explicitly, and hand the model the context it
     # otherwise wastes turns hunting for (current time for "around 18:45"
     # questions — observed Bash calls just to convert epochs).
@@ -136,7 +153,7 @@ async def run_agent_session(
 
     options = ClaudeAgentOptions(
         system_prompt=toolsdk.SYSTEM_PROMPTS.get(agent_kind, "") + boundary,
-        mcp_servers={toolsdk.SERVER: server},
+        mcp_servers=mcp_servers,
         allowed_tools=allowed,
         disallowed_tools=disallowed,
         permission_mode=permission_mode,
