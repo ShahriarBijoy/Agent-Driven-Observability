@@ -229,6 +229,7 @@ $FailScenarios = [ordered]@{
     flaky    = 'model-proxy "bad minutes" -> flapping 5xx bursts, healthy in between (~14 min)'
     throttle = 'model-proxy sheds 50% with 429s -> users degraded, NOTHING pages     (~8 min)'
     full     = 'the whole Plan-p6 cycle: latency -> errors -> retriever outage       (~26 min)'
+    'pod-kill' = 'k8s only: delete every gateway pod mid-traffic -> 5xx blip -> reschedule (~5 min)'
 }
 
 Push-Location $Repo
@@ -341,6 +342,25 @@ try {
                 break
             }
             $qps = if ($Rest.Count -ge 2) { $Rest[1] } else { '40' }
+
+            if ($scenario -eq 'pod-kill') {
+                # The first Kubernetes-native failure: no /admin/chaos knob,
+                # the orchestrator itself is the failure domain.
+                if ($Mode -ne 'k8s') { Write-Warning "pod-kill needs k8s mode (obs k8s up) - the compose subject has no pods"; break }
+                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+                $dur = '300'
+                Write-Step "pod-kill: ${dur}s of baseline load @ $qps qps; gateway pods die at t=60s"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+                Start-Sleep -Seconds 60
+                Write-Step 'kubectl delete pod -l app=gateway (all replicas, mid-traffic)'
+                kubectl --kubeconfig $kubeconfig -n subject delete pod -l app=gateway
+                Write-Step 'pods rescheduling - watch the 5xx blip on Grafana, then recovery:'
+                kubectl --kubeconfig $kubeconfig -n subject get pods -l app=gateway
+                Write-Step "load keeps running ~4 more minutes. Ask the RCA agent about the blip - with its kubectl grant it should conclude 'transient pod restart, no code regression'."
+                break
+            }
+
             $env:CHAOS_SCHEDULE = "chaos/$scenario.yaml"
             $env:CHAOS_TARGET_QPS = $qps
             # Stall/latency drills hold connections open; give the driver headroom.
