@@ -1,0 +1,280 @@
+# Curated Kubernetes cause-alerts (PLAN-2 P8) - folder "Lab Alerts - K8s".
+#
+# Eight rules, hand-picked over importing the mixin's alert pile: each one
+# names a CAUSE the agent can act on (crashloop, image pull, OOM, ...), not a
+# symptom. Timing is lab-scale on purpose: `for` runs 60-120s where the mixin
+# defaults to 10-15m - untuned, the Phase 12 exam would spend hours waiting
+# for alerts on failures that are injected, not emergent.
+#
+# Routing: the root notification policy sends EVERYTHING to the agent-webhook
+# contact point (grouped by folder+alertname), so firing any of these spawns
+# an incident-reporter run. severity page->sev1 / warning->sev2 in
+# summarize_alert; tenant defaults to acme there. The Mimir ruler stays
+# record-only - Grafana provisioning is where lab alerts live.
+#
+# Query-shape notes that earn their keep:
+#  - waiting_reason / last_terminated_reason series only EXIST while KSM sees
+#    the condition -> noDataState OK everywhere, absence is health.
+#  - OOMKilled gates on a recent restart because last_terminated_reason
+#    otherwise persists (and would page) until the NEXT termination.
+#  - PodNotReady joins against phase Pending|Running so completed Jobs (seed)
+#    with their permanent ready=false don't page forever.
+#  - FailedScheduling is a Loki query over the clusterEvents stream - the
+#    scheduler narrates its failures as events, not metrics.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: k8s-causes
+    folder: Lab Alerts - K8s
+    interval: 30s
+    rules:
+      - uid: k8s-pod-crashloop
+        title: KubePodCrashLooping
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum by (namespace, pod, container) (kube_pod_container_status_waiting_reason{cluster="obs-lab", reason="CrashLoopBackOff"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 60s
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff"
+      - uid: k8s-container-waiting
+        title: KubeContainerWaiting
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum by (namespace, pod, container, reason) (kube_pod_container_status_waiting_reason{cluster="obs-lab", reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName|CreateContainerConfigError|CreateContainerError"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 90s
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} stuck waiting: {{ $labels.reason }}"
+      - uid: k8s-pod-not-ready
+        title: KubePodNotReady
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum by (namespace, pod) (kube_pod_status_ready{cluster="obs-lab", condition="false"} * on (namespace, pod) group_left () sum by (namespace, pod) (kube_pod_status_phase{cluster="obs-lab", phase=~"Pending|Running"} == 1))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 120s
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} has been not-ready for 2 minutes (readiness probe or startup trouble)"
+      - uid: k8s-deploy-replicas-mismatch
+        title: KubeDeploymentReplicasMismatch
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: kube_deployment_spec_replicas{cluster="obs-lab"} != kube_deployment_status_replicas_available{cluster="obs-lab"}
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 120s
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.deployment }} available replicas != spec for 2 minutes"
+      - uid: k8s-oomkilled
+        title: KubeContainerOOMKilled
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{cluster="obs-lab", reason="OOMKilled"} * on (namespace, pod, container) group_left () clamp_min(increase(kube_pod_container_status_restarts_total{cluster="obs-lab"}[10m]), 0))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled within the last 10 minutes - check its memory limit against the working-set graph"
+      - uid: k8s-node-not-ready
+        title: KubeNodeNotReady
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum by (node) (kube_node_status_condition{cluster="obs-lab", condition="Ready", status=~"false|unknown"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Error
+        for: 60s
+        labels:
+          severity: page
+        annotations:
+          summary: "node {{ $labels.node }} is not Ready (or Unknown - kubelet unreachable)"
+      - uid: k8s-failed-scheduling
+        title: KubeFailedScheduling
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              refId: A
+              expr: sum(count_over_time({job="integrations/kubernetes/eventhandler", reason="FailedScheduling"} [5m]))
+              queryType: instant
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 2
+        noDataState: OK
+        execErrState: Error
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: "more than 2 FailedScheduling events in 5 minutes - a workload is asking for resources the agents don't have"
+      - uid: k8s-pvc-filling
+        title: KubePVCFillingUp
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: 100 * min by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{cluster="obs-lab"} / kubelet_volume_stats_capacity_bytes{cluster="obs-lab"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 15
+        noDataState: OK
+        execErrState: Error
+        for: 120s
+        labels:
+          severity: warning
+        annotations:
+          summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is under 15% free space"

@@ -1,0 +1,3 @@
+# jb-managed; build.sh refetches. The lock file IS committed - it pins the
+# mixin commit the checked-in dashboards were built from.
+vendor/

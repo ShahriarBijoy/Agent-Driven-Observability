@@ -13,7 +13,6 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from opentelemetry import trace
 
 from . import db
 from .hub import hub

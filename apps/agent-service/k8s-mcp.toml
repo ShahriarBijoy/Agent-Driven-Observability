@@ -1,0 +1,12 @@
+# kubernetes-mcp-server config for the agents' cluster window (PLAN-2 P8).
+#
+# Read-only BY CONSTRUCTION, not by prompt: --read-only (set in tools/sdk.py)
+# strips every mutating tool from the MCP tool list, and denied_resources
+# below refuses Secret reads server-side - the agent-ro ClusterRole (view)
+# already denies them at the API too, so a leak needs two independent
+# failures. Path is passed via --config; flags on the command line win.
+
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"
