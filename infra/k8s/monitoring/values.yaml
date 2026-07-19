@@ -1,0 +1,112 @@
+# infra/k8s/monitoring/values.yaml - grafana/k8s-monitoring chart v4 (PLAN-2 P8).
+#
+# The cluster becomes legible: kube-state-metrics (state as metrics), cAdvisor
+# (resource usage), Kubernetes events, and pod logs - all landing in the SAME
+# laptop Mimir/Loki the agent already queries. Installed by 'obs k8s
+# monitoring' (helm on the VM, namespace "monitoring", pinned chart version).
+#
+# Endpoints are the laptop's MagicDNS FQDN, same egress path the subject
+# system uses (overlays/lab): CoreDNS ts.net forward + the VM's NAT unit.
+# Ports are OBS_MIMIR_PORT/OBS_LOKI_PORT/OBS_OTLP_HTTP_PORT from
+# infra/ports.env - a remap there means editing the three URLs here.
+#
+# node-exporter stays OFF (telemetryServices default): all three k3d "nodes"
+# are containers sharing the VM's one kernel, so per-node host metrics would
+# be the same numbers triplicated - lies with a job label. Host metrics for
+# the VM itself are a non-goal; the failure domain is pods, not iron.
+
+cluster:
+  name: obs-lab
+
+destinations:
+  # Metrics: straight remote_write into laptop Mimir (tenant "anonymous").
+  # The chart wants the FULL push URL - it does not append the path.
+  mimir:
+    type: prometheus
+    url: http://shahriar.tail813d2f.ts.net:9009/api/v1/push
+  # Logs (events + pod logs): straight push into laptop Loki.
+  loki:
+    type: loki
+    url: http://shahriar.tail813d2f.ts.net:3100/loki/api/v1/push
+  # Traces: through the laptop Alloy's scrub + tail-sampling pipeline, NOT
+  # direct to Tempo - same funnel the subject system uses. Metrics/logs stay
+  # disabled here so nothing double-ships around Mimir/Loki above. No cluster
+  # feature produces traces yet; this is the socket future features plug into.
+  alloy-otlp:
+    type: otlp
+    protocol: http
+    url: http://shahriar.tail813d2f.ts.net:4318
+    metrics:
+      enabled: false
+    logs:
+      enabled: false
+    traces:
+      enabled: true
+
+# --- what gets collected -----------------------------------------------------
+
+clusterMetrics:
+  enabled: true
+  collector: alloy-metrics
+  # Default allowlists ON everywhere (metricsTuning.useDefaultAllowList=true
+  # is the chart default) - allowlists over regret. Budget: the new cluster
+  # metrics get ~40-80k active series inside Mimir's 100k cap; the
+  # k8s-cardinality dashboard + mimir-series-limit alert watch the line.
+  kube-state-metrics:
+    enabled: true
+    metricsTuning:
+      useDefaultAllowList: true
+      # Two the default allowlist drops but P8 needs: readiness for the
+      # KubePodNotReady story, waiting_reason for CrashLoopBackOff /
+      # ImagePullBackOff / CreateContainerConfigError cause-alerts.
+      includeMetrics:
+        - kube_pod_status_ready
+        - kube_pod_container_status_waiting_reason
+  cadvisor:
+    enabled: true
+  # The apiserver is the one control-plane component worth watching at lab
+  # scale (mixin dashboard + FailedScheduling forensics). The rest of the
+  # control plane (scheduler/controller-manager/proxy) binds localhost inside
+  # the k3s server process - unscrapable without k3s flag surgery, and the
+  # mixin dashboards for them are node-exporter-shaped anyway. Leave off.
+  apiServer:
+    enabled: true
+
+clusterEvents:
+  enabled: true
+  collector: alloy-singleton
+  # Everything, all namespaces: events are the single richest RCA signal in a
+  # cluster and they are tiny (logfmt lines, labels: level/kind/reason).
+
+podLogsViaLoki:
+  enabled: true
+  collector: alloy-logs
+  # All namespaces too - the monitoring plane's own logs are evidence when
+  # scenario 9 breaks CoreDNS. Stream labels: cluster/namespace/pod/container,
+  # job="<namespace>/<container>".
+
+# v4 split exporter deployment out of the features: without this the chart
+# scrapes a kube-state-metrics that nobody deployed.
+telemetryServices:
+  kube-state-metrics:
+    deploy: true
+
+# --- collectors (Alloy CRs via the bundled alloy-operator) -------------------
+
+collectors:
+  # Scrapes KSM + cadvisor + kubelet + apiserver; remote_writes to Mimir.
+  alloy-metrics:
+    presets: [small, clustered, statefulset]
+  # Watches the events API (exactly-once -> a singleton, not a daemonset).
+  alloy-singleton:
+    presets: [small, deployment]
+  # Tails /var/log/pods on every node - INCLUDING the tainted server, where
+  # kube-system pods (CoreDNS, Traefik) live; their logs are exactly what the
+  # agent needs when cluster plumbing is the crime scene.
+  alloy-logs:
+    presets: [small, filesystem-log-reader, daemonset]
+    controller:
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule

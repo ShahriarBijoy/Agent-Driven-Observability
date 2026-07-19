@@ -48,7 +48,9 @@
                              up (start/create cluster, stop compose subject - one subject
                              system at a time), down (stop cluster, back to compose mode),
                              delete, status (nodes/pods + WSL clock-drift check), build,
-                             deploy, smoke, node-stop <name>, node-start <name>.
+                             deploy, smoke, node-stop <name>, node-start <name>,
+                             monitoring (install/upgrade the k8s-monitoring chart from
+                             infra/k8s/monitoring/values.yaml - P8 telemetry).
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -549,6 +551,16 @@ current-context: agent-ro@obs-lab
 "@ | Set-Content -Encoding ascii $dest
                     Write-Step "wrote $dest (valid 168h)"
                 }
+                'monitoring' {
+                    # P8: kube-state-metrics + cadvisor/kubelet + events + pod
+                    # logs -> the laptop's Mimir/Loki (see values.yaml for the
+                    # egress story). Idempotent; rerun after editing values.
+                    Write-Step "k8s-monitoring chart on ${vm} (helm, ns monitoring, chart pinned in values header)"
+                    scp -q -o BatchMode=yes infra/k8s/monitoring/values.yaml "root@${vm}:/root/obs-lab/monitoring-values.yaml"
+                    ssh -o BatchMode=yes "root@$vm" 'helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1; helm repo update grafana >/dev/null 2>&1; helm upgrade --install k8s-monitoring grafana/k8s-monitoring --version 4.3.0 -n monitoring --create-namespace -f /root/obs-lab/monitoring-values.yaml --wait --timeout 5m'
+                    if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
+                    kubectl --kubeconfig $kubeconfig -n monitoring get pods
+                }
                 'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
                 'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
                 'smoke'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') smoke }
@@ -576,7 +588,7 @@ current-context: agent-ro@obs-lab
                     Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
                     Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
                 }
-                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|node-stop|node-start)" }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|node-stop|node-start)" }
             }
         }
 
