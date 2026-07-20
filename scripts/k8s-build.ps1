@@ -44,6 +44,14 @@ $Sha = (git -C $Repo rev-parse --short HEAD).Trim()
 function Write-Step($msg) { Write-Host ">> $msg" -ForegroundColor Cyan }
 
 function Invoke-K8sBuild {
+    # The registry is a k3d-managed container: 'k3d cluster stop' (obs k8s
+    # down) takes it down too, and a push then dies mid-build with a cryptic
+    # "connection refused" on :$RegPort. Fail early with the actual fix.
+    ssh -o BatchMode=yes "root@$Vm" "curl -sf -m 5 http://localhost:$RegPort/v2/ >/dev/null"
+    if ($LASTEXITCODE -ne 0) {
+        throw "registry :$RegPort on $Vm is not answering - the cluster is stopped. Run 'obs k8s up' first."
+    }
+
     $tar = Join-Path $env:TEMP "obs-lab-src-$Sha.tar"
     Write-Step "archiving HEAD ($Sha) -> $tar"
     git -C $Repo archive --format=tar -o $tar HEAD
