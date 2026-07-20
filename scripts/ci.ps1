@@ -80,6 +80,30 @@ switch ($Action) {
         Invoke-Vm 'bash /root/obs-lab/src/scripts/ci-bootstrap.sh'
         if ($LASTEXITCODE -ne 0) { throw 'CI bootstrap failed' }
 
+        # Laptop side: the 'gitea' remote + a stored credential, so plain
+        # `git push gitea` works for humans and for the auto-fixer alike.
+        $remoteUrl = "$GiteaUrl/obs/obs-lab.git"
+        $existing = git -C $Repo remote get-url gitea 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            git -C $Repo remote add gitea $remoteUrl
+            Write-Step "added git remote 'gitea' -> $remoteUrl"
+        } elseif ("$existing".Trim() -ne $remoteUrl) {
+            git -C $Repo remote set-url gitea $remoteUrl
+        }
+        $tok = (Invoke-Vm 'cat /root/obs-lab/.gitea-token').Trim()
+        # No-BOM pipe (bash-over-ssh taught us; git credential is line-based too).
+        $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        "protocol=http`nhost=${Vm}:$($Ports.OBS_GITEA_PORT)`nusername=obs`npassword=$tok`n" | git credential approve
+
+        # First run only: seed obs-lab with the repo history (mirror + CI need
+        # a main to exist). After that, pushing is the humans'/CI's business.
+        $repoInfo = Invoke-RestMethod -Uri "$GiteaUrl/api/v1/repos/obs/obs-lab" -Headers @{ Authorization = "token $tok" } -TimeoutSec 10
+        if ($repoInfo.empty) {
+            Write-Step 'seeding obs/obs-lab with origin/main history'
+            git -C $Repo push -q gitea origin/main:refs/heads/main
+            if ($LASTEXITCODE -ne 0) { Write-Warning 'initial push to gitea failed - push manually: git push gitea origin/main:refs/heads/main' }
+        }
+
         Write-Step "CI layer is up on ${Vm}:"
         Write-Host "  Gitea    $GiteaUrl  (also https://obs-gitea.localhost after 'obs names')"
         Write-Host "  ci-shim  http://${Vm}:$($Ports.OBS_CI_SHIM_PORT)/health"

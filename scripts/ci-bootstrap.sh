@@ -31,3 +31,35 @@ OBS_CI_RUNNER_TOKEN=$(compose exec -T -u 1000 gitea gitea actions generate-runne
 export OBS_CI_RUNNER_TOKEN
 echo ">> compose up: runner + ci-shim"
 compose up -d --build --wait runner ci-shim
+
+# --- repos (P9 task 3) -------------------------------------------------------
+# obs-lab: the subject source, primary remote for CI (the laptop pushes here;
+# scripts/ci.ps1 wires the laptop-side remote + credential).
+# obs-gitops: empty on purpose - it becomes Phase 10's desired-state repo.
+GITEA_PORT=$(grep -oP '^OBS_GITEA_PORT=\K.*' ports.env)
+API="http://localhost:${GITEA_PORT}/api/v1"
+api() { curl -sf -H "Authorization: token $(cat .gitea-token)" -H "Content-Type: application/json" "$@"; }
+
+ensure_repo() {
+  if ! api "$API/repos/obs/$1" >/dev/null 2>&1; then
+    api -X POST "$API/user/repos" \
+      -d "{\"name\":\"$1\",\"description\":\"$2\",\"private\":true,\"default_branch\":\"main\",\"auto_init\":false}" >/dev/null
+    echo ">> created repo obs/$1"
+  fi
+}
+ensure_repo obs-lab "AI Observability Lab - subject source (primary remote for CI)"
+ensure_repo obs-gitops "Desired state for the cluster (empty until Phase 10)"
+
+# Push-mirror obs-lab -> the existing GitHub repo, so history stays synced.
+# The fine-grained PAT (Contents: RW on that one repo) is provisioned by hand
+# to /root/obs-lab/.github-mirror-pat - never via the source tree. No PAT
+# file, no mirror; rerun `obs ci up` after adding it.
+if [ -s .github-mirror-pat ]; then
+  if ! api "$API/repos/obs/obs-lab/push_mirrors" | grep -q 'github\.com'; then
+    api -X POST "$API/repos/obs/obs-lab/push_mirrors" \
+      -d "{\"remote_address\":\"https://github.com/ShahriarBijoy/Agent-Driven-Observability.git\",\"remote_username\":\"ShahriarBijoy\",\"remote_password\":\"$(cat .github-mirror-pat)\",\"interval\":\"8h0m0s\",\"sync_on_commit\":true}" >/dev/null
+    echo ">> push-mirror wired: obs/obs-lab -> github.com/ShahriarBijoy/Agent-Driven-Observability (sync on commit)"
+  fi
+else
+  echo ">> NOTE: no /root/obs-lab/.github-mirror-pat - GitHub push-mirror not configured"
+fi
