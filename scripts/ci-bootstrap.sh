@@ -50,6 +50,16 @@ ensure_repo() {
 ensure_repo obs-lab "AI Observability Lab - subject source (primary remote for CI)"
 ensure_repo obs-gitops "Desired state for the cluster (empty until Phase 10)"
 
+# The deploy job needs cluster access: ship the operator kubeconfig into the
+# repo as an Actions secret. Overwritten on every up, so a recreated cluster
+# heals on the next `obs ci up`. (Server name obs-vm resolves in job
+# containers via the runner's --add-host=obs-vm:host-gateway.)
+if k3d cluster list obs-lab >/dev/null 2>&1; then
+  KUBE_B64=$(k3d kubeconfig get obs-lab | base64 -w0)
+  api -X PUT "$API/repos/obs/obs-lab/actions/secrets/KUBECONFIG_B64" \
+    -d "{\"data\":\"$KUBE_B64\"}" >/dev/null && echo ">> actions secret KUBECONFIG_B64 refreshed"
+fi
+
 # Push-mirror obs-lab -> the existing GitHub repo, so history stays synced.
 # The fine-grained PAT (Contents: RW on that one repo) is provisioned by hand
 # to /root/obs-lab/.github-mirror-pat - never via the source tree. No PAT

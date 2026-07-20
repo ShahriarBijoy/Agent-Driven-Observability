@@ -1,0 +1,78 @@
+# CI for the subject system (PLAN-2 P9). Runs on the VM's act_runner against
+# the Gitea copy of this repo (obs/obs-lab): test -> build+push -> deploy.
+#
+# Steps stay plain `run` commands on purpose - Gitea Actions is ~95%
+# GitHub-compatible, and marketplace actions that assume GitHub APIs are the
+# 5%. actions/checkout is the one exception (it's the compatible core).
+#
+# The runner mounts the VM's Docker socket into job containers, so `docker
+# build/push localhost:5010/...` executes on the VM daemon - localhost IS the
+# k3d registry. The kubeconfig arrives as a repo Actions secret
+# (KUBECONFIG_B64, provisioned by scripts/ci-bootstrap.sh); its server name
+# obs-vm resolves inside job containers via the runner's --add-host.
+name: ci
+run-name: "${{ gitea.actor }}: ${{ gitea.event.head_commit.message }}"
+
+on:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: install
+        run: bun install --frozen-lockfile
+      - name: test
+        run: bun run test
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build once, push :sha + :dev for every service
+        run: |
+          sha=$(git rev-parse --short HEAD)
+          docker build -f infra/Dockerfile -t obs-app:$sha .
+          for svc in gateway embedder retriever model-proxy load-generator; do
+            docker tag obs-app:$sha localhost:5010/$svc:$sha
+            docker tag obs-app:$sha localhost:5010/$svc:dev
+            docker push -q localhost:5010/$svc:$sha
+            docker push -q localhost:5010/$svc:dev
+          done
+
+  deploy:
+    # Trunk-based: only main reaches the cluster. Until Phase 10 swaps this
+    # job for a gitops-repo bump, deploy is kubectl straight at the overlay -
+    # the same flow scripts/k8s-build.ps1 drives by hand.
+    needs: build-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install kubectl
+        run: |
+          curl -fsSLo /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x /usr/local/bin/kubectl
+      - name: deploy :sha to the cluster
+        run: |
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > /tmp/kubeconfig
+          export KUBECONFIG=/tmp/kubeconfig
+          sha=$(git rev-parse --short HEAD)
+          # A completed Job is immutable; clear it so apply can recreate.
+          kubectl -n subject delete job seed --ignore-not-found
+          kubectl apply -k infra/k8s/overlays/lab
+          for svc in gateway embedder retriever model-proxy load-generator; do
+            kubectl -n subject set image deployment/$svc $svc=obs-registry:5010/$svc:$sha
+            kubectl -n subject annotate deployment/$svc \
+              "kubernetes.io/change-cause=deploy :$sha via gitea ci" --overwrite
+          done
+          for d in gateway embedder retriever model-proxy; do
+            kubectl -n subject rollout status deployment/$d --timeout=180s
+          done
