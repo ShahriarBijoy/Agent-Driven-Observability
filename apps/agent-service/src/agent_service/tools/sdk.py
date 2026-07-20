@@ -270,9 +270,94 @@ async def _kubectl(args: dict) -> dict:
     )
 
 
+@tool(
+    "gitea_ci_runs",
+    "Recent CI pipeline runs from the local Gitea forge (obs/obs-lab), newest-first, with "
+    "per-job status and timing. Use for 'what shipped / what ran in CI recently' questions; "
+    "narrow with branch (e.g. main). Each run carries the sha to feed into gitea_compare.",
+    {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "max runs (default 5, cap 20)"},
+            "branch": {"type": "string", "description": "filter to one branch (e.g. main)"},
+        },
+    },
+)
+async def _gitea_runs(args: dict) -> dict:
+    return _text(
+        await backends.gitea_ci_runs(int(args.get("limit", 5)), args.get("branch", ""))
+    )
+
+
+@tool(
+    "gitea_compare",
+    "base...head diff from the forge: the commits between two refs (branch, tag, or sha) "
+    "with messages, authors, and per-file additions/deletions. THE tool for naming the "
+    "exact commit/file behind a regression — e.g. compare the previously deployed sha "
+    "against the currently deployed one from the deploy annotations.",
+    {
+        "type": "object",
+        "properties": {
+            "base": {"type": "string", "description": "older ref (branch, tag, or sha)"},
+            "head": {"type": "string", "description": "newer ref (branch, tag, or sha)"},
+        },
+        "required": ["base", "head"],
+    },
+)
+async def _gitea_compare(args: dict) -> dict:
+    return _text(await backends.gitea_compare(args["base"], args["head"]))
+
+
+@tool(
+    "grafana_annotations",
+    "Deploy markers (and other Grafana annotations) in a lookback window, oldest-first. "
+    "Default tag filter 'deployment'; each deploy annotation carries the service and the "
+    "deployed sha. Ask 'what changed right before this alert?' with this FIRST, then walk "
+    "the sha into gitea_ci_runs/gitea_compare.",
+    {
+        "type": "object",
+        "properties": {
+            "range": {"type": "string", "description": "lookback like 2h, 24h (default 2h)"},
+            "tags": {"type": "array", "items": {"type": "string"},
+                     "description": "annotation tags to match (default ['deployment'])"},
+        },
+    },
+)
+async def _grafana_annotations(args: dict) -> dict:
+    return _text(
+        await backends.grafana_annotations(args.get("range", "2h"), args.get("tags"))
+    )
+
+
+@tool(
+    "gitea_open_pr",
+    "Open a pull request on the local Gitea forge (obs/obs-lab) from an ALREADY-PUSHED "
+    "branch via the REST API. Use when a branch exists on the forge but has no PR (e.g. a "
+    "prior run pushed and stopped). Requires a prior request_approval decision of "
+    "'approved', same as gh_open_pr.",
+    {
+        "type": "object",
+        "properties": {
+            "head": {"type": "string", "description": "the pushed branch to merge"},
+            "base": {"type": "string", "description": "target branch (default main)"},
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+        },
+        "required": ["head", "title"],
+    },
+)
+async def _gitea_pr(args: dict) -> dict:
+    return _text(
+        await backends.gitea_open_pr(
+            args["head"], args.get("base", "main"), args["title"], args.get("body", "")
+        )
+    )
+
+
 _STATELESS = [
     _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook,
-    _k8s_events, _kubectl,
+    _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
+    _gitea_pr,
 ]
 
 
@@ -305,8 +390,9 @@ def build_mcp_server(ctx: RunContext):
         "gh_open_pr",
         "Open a pull request from the contained workspace clone. Edit files directly with Edit "
         "first, then call this (patch optional). Requires a prior approval — call request_approval "
-        "and get 'approved' before opening the PR. Against a local remote it reports the pushed "
-        "branch + diff instead of a GitHub URL.",
+        "and get 'approved' before opening the PR. The PR host is picked from the workspace's "
+        "origin: Gitea origins get a Gitea API PR, GitHub origins go through gh; a local bare "
+        "remote reports the pushed branch + diff instead.",
         {
             "type": "object",
             "properties": {
@@ -394,9 +480,17 @@ K8S_READ_TOOLS = [
 ]
 CLUSTER_READ_TOOLS = [*K8S_READ_TOOLS, mcp("k8s_events"), mcp("kubectl_read")]
 
+# Delivery history (PLAN-2 P9): deploy annotations + CI runs + diffs — the
+# "what changed right before this?" axis of an investigation.
+DELIVERY_READ_TOOLS = [
+    mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
+]
+
 TOOLSETS: dict[str, list[str]] = {
-    "rca": [*READ_TOOLS, *CLUSTER_READ_TOOLS, mcp("save_artifact")],
-    "incident-reporter": [*READ_TOOLS, *CLUSTER_READ_TOOLS, mcp("save_artifact")],
+    "rca": [*READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS, mcp("save_artifact")],
+    "incident-reporter": [
+        *READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS, mcp("save_artifact"),
+    ],
     "dashboard-generator": [
         mcp("mimir_query"), mcp("grafana_get_dashboard"), mcp("grafana_create_dashboard"),
     ],
@@ -406,7 +500,8 @@ TOOLSETS: dict[str, list[str]] = {
     ],
     "auto-fixer": [
         "Read", "Edit", "Glob", "Bash",
-        mcp("gh_open_pr"), mcp("request_approval"), mcp("save_artifact"),
+        mcp("gh_open_pr"), mcp("gitea_open_pr"), mcp("request_approval"),
+        mcp("save_artifact"),
     ],
 }
 
@@ -465,6 +560,14 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Curated Kubernetes event timeline from the Loki event stream"},
     {"name": mcp("kubectl_read"), "kind": "mcp",
      "description": "Read-only kubectl get/describe/top (fixed argv, secrets refused)"},
+    {"name": mcp("gitea_ci_runs"), "kind": "mcp",
+     "description": "Recent CI runs (with per-job status) from the Gitea forge"},
+    {"name": mcp("gitea_compare"), "kind": "mcp",
+     "description": "base...head commit + file diff from the Gitea forge"},
+    {"name": mcp("grafana_annotations"), "kind": "mcp",
+     "description": "Deploy markers / annotations in a Grafana time window"},
+    {"name": mcp("gitea_open_pr"), "kind": "mcp",
+     "description": "Open a Gitea PR from an already-pushed branch (REST API)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -488,6 +591,11 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "restarts, scheduling), use the read-only cluster window: k8s_events for 'what happened "
         "to X' timelines, kubectl_read for get/describe/top, and the k8s:* tools for specs, "
         "logs, and live usage — never Bash, and Secrets are denied by construction. "
+        "For DELIVERY questions ('what shipped?', 'did a deploy cause this?'), walk the chain: "
+        "grafana_annotations for deploy markers near the incident onset, gitea_ci_runs for the "
+        "runs behind them, gitea_compare (previous deployed sha ... current sha) to name the "
+        "exact commit and file. A regression that starts minutes after a deploy annotation is "
+        "guilty until proven otherwise. "
         "When you reach a conclusion worth keeping, save a "
         "short Markdown summary with save_artifact. When a visual would explain the finding "
         "better than prose — a latency curve, a before/after comparison, a dependency sketch — "
@@ -505,7 +613,9 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "about the CLUSTER (CrashLoopBackOff, OOMKilled, image pulls, replicas, nodes), lead "
         "with k8s_events and kubectl_read describe on the affected object, then correlate with "
         "container_* metrics in Mimir — the working-set-vs-limit shape distinguishes an OOM "
-        "from a crash bug. Narrate as you "
+        "from a crash bug. ALWAYS check grafana_annotations for a deploy marker shortly before "
+        "the alert fired; if one exists, gitea_compare the previous deployed sha against it and "
+        "name the commit in 'Likely cause'. Narrate as you "
         "go: one short sentence before each round of queries saying what you're checking. Then call "
         "save_artifact with kind='markdown' to store the postmortem. Sections: Summary, Impact, "
         "Timeline, Evidence (with the queries you ran), Likely cause, Recommended actions. "
@@ -541,6 +651,9 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "one-sentence summary of the change and receive 'approved' BEFORE opening a pull request; "
         "if denied, stop and explain — do not open the PR. Once approved, call gh_open_pr with a "
         "focused branch name, a title, and a body explaining the fix (you edited files directly, so "
-        "the patch argument is optional). Keep the change minimal and well-described."
+        "the patch argument is optional) — it opens the PR on GitHub or the local Gitea forge "
+        "automatically, picked by the workspace's origin host. If it reports branch_pushed without "
+        "a PR, follow up with gitea_open_pr for that branch. Keep the change minimal and "
+        "well-described."
     ),
 }
