@@ -25,7 +25,11 @@ volumes:
 
 services:
   gitea:
-    image: gitea/gitea:1.25.5
+    # 1.26, not the plan's 1.25: workflow_run/workflow_job webhook deliveries
+    # and step-level job data only exist from 1.26 - verified empirically
+    # (1.25.5 registered the hook but never fired workflow_run, and its jobs
+    # API has no steps array; the shim's trace shape needs both).
+    image: gitea/gitea:1.26.4
     environment:
       USER_UID: "1000"
       USER_GID: "1000"
@@ -103,6 +107,10 @@ services:
       OTLP_URL: "http://${OBS_LAPTOP_FQDN:-shahriar.tail813d2f.ts.net}:${OBS_OTLP_HTTP_PORT:-4318}"
       GRAFANA_URL: "http://${OBS_LAPTOP_FQDN:-shahriar.tail813d2f.ts.net}:${OBS_GRAFANA_PORT:-3001}"
       GITEA_URL: http://gitea:3000
+      # For the one API round-trip per deploy (commit timestamp -> DORA lead
+      # time; the 1.26 webhook payload ships head_commit: null). Injected by
+      # scripts/ci-bootstrap.sh from the VM-local token file.
+      GITEA_TOKEN: ${OBS_CI_GITEA_TOKEN:-}
     ports:
       - "${OBS_CI_SHIM_PORT:-8095}:8095"
     # MagicDNS resolver (fixed anycast address, reachable through the NAT

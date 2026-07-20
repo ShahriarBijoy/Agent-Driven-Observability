@@ -29,6 +29,8 @@ fi
 
 OBS_CI_RUNNER_TOKEN=$(compose exec -T -u 1000 gitea gitea actions generate-runner-token | tr -d '[:space:]')
 export OBS_CI_RUNNER_TOKEN
+OBS_CI_GITEA_TOKEN=$(cat .gitea-token)
+export OBS_CI_GITEA_TOKEN
 echo ">> compose up: runner + ci-shim"
 compose up -d --build --wait runner ci-shim
 
@@ -49,6 +51,15 @@ ensure_repo() {
 }
 ensure_repo obs-lab "AI Observability Lab - subject source (primary remote for CI)"
 ensure_repo obs-gitops "Desired state for the cluster (empty until Phase 10)"
+
+# Pipelines-as-telemetry: obs-lab's workflow_run/workflow_job webhooks feed
+# ci-shim on the shared compose network. Requires the ALLOWED_HOST_LIST env
+# in compose.ci.yml - without it Gitea drops these deliveries silently.
+if ! api "$API/repos/obs/obs-lab/hooks" | grep -q 'ci-shim:8095'; then
+  api -X POST "$API/repos/obs/obs-lab/hooks" \
+    -d '{"type":"gitea","active":true,"events":["workflow_run","workflow_job"],"config":{"url":"http://ci-shim:8095/webhook","content_type":"json"}}' >/dev/null
+  echo ">> webhook wired: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
+fi
 
 # The deploy job needs cluster access: ship the operator kubeconfig into the
 # repo as an Actions secret. Overwritten on every up, so a recreated cluster

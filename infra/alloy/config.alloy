@@ -171,3 +171,16 @@ prometheus.scrape "gitea" {
   scrape_interval = "30s"
   forward_to      = [prometheus.remote_write.mimir_self.receiver]
 }
+
+// ci-shim's DORA + pipeline metrics (cicd_*), same tailnet scrape path. The
+// pending-jobs gauge here is the cicd-queue-stall alert's only live signal —
+// a dead runner produces no completed-run events, ever.
+prometheus.scrape "cicd" {
+  targets = [{
+    "__address__" = "obs-vm:8095",
+    "job"         = "cicd",
+  }]
+  metrics_path    = "/metrics"
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.mimir_self.receiver]
+}
