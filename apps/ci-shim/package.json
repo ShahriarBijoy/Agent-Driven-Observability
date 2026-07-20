@@ -1,0 +1,20 @@
+{
+  "name": "@obs/ci-shim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun run src/main.ts",
+    "build": "echo \"@obs/ci-shim: build (noop)\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "oxlint ."
+  },
+  "dependencies": {
+    "hono": "^4.12.23"
+  },
+  "devDependencies": {
+    "@obs/tsconfig": "workspace:*"
+  }
+}

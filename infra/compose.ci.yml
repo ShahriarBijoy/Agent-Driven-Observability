@@ -1,0 +1,126 @@
+# CI layer (PLAN-2 P9): Gitea forge + Actions runner + ci-shim telemetry.
+#
+# Profile A: this whole file runs ON THE VM (obs ci up ships the source tree
+# and composes it there, same flow as obs k8s build). It is deliberately
+# self-contained - its own obs-lab-ci network, no dependency on the laptop
+# compose layers - because the delivery control plane is part of the failure
+# domain and must be breakable without touching the observability plane.
+# Telemetry egress goes the same way the cluster's does: over the tailnet to
+# the laptop's Alloy/Grafana, by MagicDNS FQDN (single-label names don't
+# survive Docker's DNS forwarding; the obs-lab-nat unit masquerades container
+# traffic onto tailscale0 - see infra/vm/cloud-init.yaml).
+name: observability-lab
+
+networks:
+  ci:
+    # Job containers are attached to this network too (container.network in
+    # infra/ci/runner-config.yaml) so `gitea:3000` resolves inside workflow
+    # steps exactly as it does for the runner itself.
+    name: obs-lab-ci
+    driver: bridge
+
+volumes:
+  gitea-data:
+  runner-data:
+
+services:
+  gitea:
+    image: gitea/gitea:1.25.5
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # INSTALL_LOCK skips the browser install wizard - config is env-only,
+      # the bootstrap in scripts/ci.ps1 creates the admin user via CLI.
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /data/gitea/gitea.db
+      # ROOT_URL is what humans click (laptop resolves obs-vm over the
+      # tailnet) AND what job containers may hit for checkouts - they get
+      # `--add-host=obs-vm:host-gateway` from the runner config, so the same
+      # name works on both paths.
+      GITEA__server__ROOT_URL: "http://${OBS_VM_HOST:-obs-vm}:${OBS_GITEA_PORT:-3005}/"
+      GITEA__server__DOMAIN: "${OBS_VM_HOST:-obs-vm}"
+      GITEA__server__SSH_DOMAIN: "${OBS_VM_HOST:-obs-vm}"
+      GITEA__server__SSH_PORT: "${OBS_GITEA_SSH_PORT:-2222}"
+      GITEA__actions__ENABLED: "true"
+      # Prometheus /metrics for the laptop Alloy to scrape over the tailnet.
+      GITEA__metrics__ENABLED: "true"
+      # THE webhook gotcha: without this allowlist Gitea silently drops
+      # deliveries to private addresses - ci-shim would never hear a thing.
+      GITEA__webhook__ALLOWED_HOST_LIST: "private,loopback"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    ports:
+      - "${OBS_GITEA_PORT:-3005}:3000"
+      - "${OBS_GITEA_SSH_PORT:-2222}:22"
+    volumes:
+      - gitea-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - ci
+
+  # Actions runner. Registers itself against Gitea on first start (the
+  # registration token is minted by `obs ci up` and passed through the env;
+  # after that the identity persists in runner-data and the token is unused).
+  # Jobs run as sibling containers on the VM's Docker via the mounted socket.
+  runner:
+    image: gitea/act_runner:0.6.1
+    environment:
+      CONFIG_FILE: /config.yaml
+      GITEA_INSTANCE_URL: http://gitea:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN: ${OBS_CI_RUNNER_TOKEN:-}
+      GITEA_RUNNER_NAME: obs-runner
+      # ubuntu-latest -> the multi-arch (arm64-safe) Gitea runner image;
+      # bun -> the same oven/bun the subject services are built from.
+      GITEA_RUNNER_LABELS: "ubuntu-latest:docker://gitea/runner-images:ubuntu-latest,bun:docker://oven/bun:1.3.8"
+    volumes:
+      - ./ci/runner-config.yaml:/config.yaml:ro
+      - runner-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      gitea:
+        condition: service_healthy
+    networks:
+      - ci
+
+  # Pipelines-as-telemetry (PLAN-2 P9 task 5). Consumes Gitea's
+  # workflow_run/workflow_job webhooks and emits the completed run as one
+  # post-hoc OTLP trace batch + DORA metrics + Grafana deploy annotations.
+  # Compose service, not a host process: it holds no OAuth, so it doesn't
+  # earn host-process status.
+  ci-shim:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    working_dir: /app/apps/ci-shim
+    command: ["bun", "run", "start"]
+    environment:
+      CI_SHIM_PORT: "8095"
+      OTLP_URL: "http://${OBS_LAPTOP_FQDN:-shahriar.tail813d2f.ts.net}:${OBS_OTLP_HTTP_PORT:-4318}"
+      GRAFANA_URL: "http://${OBS_LAPTOP_FQDN:-shahriar.tail813d2f.ts.net}:${OBS_GRAFANA_PORT:-3001}"
+      GITEA_URL: http://gitea:3000
+    ports:
+      - "${OBS_CI_SHIM_PORT:-8095}:8095"
+    # MagicDNS resolver (fixed anycast address, reachable through the NAT
+    # unit) so the laptop's ts.net FQDN resolves; 1.1.1.1 as fallback.
+    dns:
+      - 100.100.100.100
+      - 1.1.1.1
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:8095/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - ci

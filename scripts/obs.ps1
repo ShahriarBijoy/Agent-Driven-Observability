@@ -51,6 +51,10 @@
                              deploy, smoke, node-stop <name>, node-start <name>,
                              monitoring (install/upgrade the k8s-monitoring chart from
                              infra/k8s/monitoring/values.yaml - P8 telemetry).
+    obs ci <sub>             CI layer on the VM (Profile A): Gitea + Actions runner +
+                             ci-shim (P9). Subcommands: up (ship source, compose up,
+                             bootstrap admin/token/runner), down, logs [svc],
+                             token (API token for agent-service), status.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -641,6 +645,12 @@ current-context: agent-ro@obs-lab
                 }
                 default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|node-stop|node-start)" }
             }
+        }
+
+        'ci' {
+            # Delivery control plane on the VM (P9) - see scripts/ci.ps1.
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            & (Join-Path $PSScriptRoot 'ci.ps1') $sub @($Rest | Select-Object -Skip 1)
         }
 
         'preflight' {
