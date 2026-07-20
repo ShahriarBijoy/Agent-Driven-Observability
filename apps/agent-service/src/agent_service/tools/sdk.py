@@ -294,18 +294,26 @@ async def _gitea_runs(args: dict) -> dict:
     "base...head diff from the forge: the commits between two refs (branch, tag, or sha) "
     "with messages, authors, and per-file additions/deletions. THE tool for naming the "
     "exact commit/file behind a regression — e.g. compare the previously deployed sha "
-    "against the currently deployed one from the deploy annotations.",
+    "against the currently deployed one from the deploy annotations. Pass "
+    "include_diff=true (small spans only) to get each commit's unified diff and cite the "
+    "exact lines.",
     {
         "type": "object",
         "properties": {
             "base": {"type": "string", "description": "older ref (branch, tag, or sha)"},
             "head": {"type": "string", "description": "newer ref (branch, tag, or sha)"},
+            "include_diff": {"type": "boolean",
+                             "description": "attach each commit's unified diff (≤5 commits)"},
         },
         "required": ["base", "head"],
     },
 )
 async def _gitea_compare(args: dict) -> dict:
-    return _text(await backends.gitea_compare(args["base"], args["head"]))
+    return _text(
+        await backends.gitea_compare(
+            args["base"], args["head"], bool(args.get("include_diff", False))
+        )
+    )
 
 
 @tool(

@@ -644,9 +644,11 @@ async def gitea_ci_runs(limit: int = 5, branch: str = "") -> dict:
         return {"error": f"gitea runs query failed: {exc}"}
 
 
-async def gitea_compare(base: str, head: str) -> dict:
+async def gitea_compare(base: str, head: str, include_diff: bool = False) -> dict:
     """base...head diff summary from the forge: commits + per-file stats.
-    The 'name the exact commit' half of code-to-incident correlation."""
+    include_diff adds each commit's unified diff (truncated) when the span is
+    small — the 'name the exact commit, file, and line' half of
+    code-to-incident correlation."""
     headers = _gitea_headers()
     if headers is None:
         return {"error": _GITEA_HELP}
@@ -670,14 +672,26 @@ async def gitea_compare(base: str, head: str) -> dict:
                 if f.get("filename"):
                     touched[f["filename"]] = f.get("status") or "changed"
             stats = c.get("stats") or {}
-            commits.append({
+            entry = {
                 "sha": (c.get("sha") or "")[:10],
                 "message": (c.get("commit", {}).get("message") or "").strip()[:200],
                 "author": c.get("commit", {}).get("author", {}).get("name"),
                 "date": c.get("commit", {}).get("author", {}).get("date"),
                 "additions": stats.get("additions"), "deletions": stats.get("deletions"),
                 "files": commit_files[:20],
-            })
+            }
+            if include_diff and len(data.get("commits", [])) <= 5:
+                try:
+                    dresp = await _http().get(
+                        f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/git/commits/"
+                        f"{c.get('sha')}.diff",
+                        headers=headers,
+                    )
+                    dresp.raise_for_status()
+                    entry["diff"] = dresp.text[:4000]
+                except Exception:  # noqa: BLE001 — diff is best-effort
+                    pass
+            commits.append(entry)
         return {
             "repo": config.gitea_repo, "base": base, "head": head,
             "total_commits": data.get("total_commits", len(commits)),
