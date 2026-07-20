@@ -83,17 +83,20 @@ switch ($Action) {
         # Laptop side: the 'gitea' remote + a stored credential, so plain
         # `git push gitea` works for humans and for the auto-fixer alike.
         $remoteUrl = "$GiteaUrl/obs/obs-lab.git"
-        $existing = git -C $Repo remote get-url gitea 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        # (list-then-branch, not get-url + 2>$null: PS 5.1 turns native stderr
+        # into a terminating NativeCommandError under ErrorActionPreference Stop)
+        if (@(git -C $Repo remote) -notcontains 'gitea') {
             git -C $Repo remote add gitea $remoteUrl
             Write-Step "added git remote 'gitea' -> $remoteUrl"
-        } elseif ("$existing".Trim() -ne $remoteUrl) {
+        } elseif ("$(git -C $Repo remote get-url gitea)".Trim() -ne $remoteUrl) {
             git -C $Repo remote set-url gitea $remoteUrl
         }
+        # Auth via a scoped extraheader in the repo config - deterministic and
+        # prompt-free, unlike `git credential approve` piped from PS 5.1
+        # (which mangles the input and leaves git raising a GUI prompt).
         $tok = (Invoke-Vm 'cat /root/obs-lab/.gitea-token').Trim()
-        # No-BOM pipe (bash-over-ssh taught us; git credential is line-based too).
-        $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-        "protocol=http`nhost=${Vm}:$($Ports.OBS_GITEA_PORT)`nusername=obs`npassword=$tok`n" | git credential approve
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
+        git -C $Repo config "http.http://${Vm}:$($Ports.OBS_GITEA_PORT)/.extraheader" "Authorization: Basic $b64"
 
         # First run only: seed obs-lab with the repo history (mirror + CI need
         # a main to exist). After that, pushing is the humans'/CI's business.
