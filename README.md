@@ -1,6 +1,8 @@
 # AI Observability Lab
 
-A free, local, Docker-Compose learning lab where a small AI inference gateway becomes the subject of full-spectrum observability. The gateway serves a real RAG pipeline (embedder → pgvector retriever → mock LLM) and emits logs, metrics, distributed traces, data-lineage events, and data-quality signals. Claude agents then read that telemetry — Grafana dashboards, Tempo traces, Marquez lineage, Postgres — to diagnose problems, write postmortems, and trigger remediations behind approval gates.
+A free learning lab where a small AI inference gateway becomes the subject of full-spectrum observability. The gateway serves a real RAG pipeline (embedder → pgvector retriever → mock LLM) and emits logs, metrics, distributed traces, data-lineage events, and data-quality signals. Claude agents then read that telemetry — Grafana dashboards, Tempo traces, Marquez lineage, Postgres — to diagnose problems, write postmortems, and trigger remediations behind approval gates.
+
+**Act I** (phases 0–6) runs everything in local Docker Compose. **Act II** (phases 7+) moves the subject system onto a real k3d Kubernetes cluster on a small remote VM, reached over Tailscale — while the observability plane and the agents stay on the laptop, which becomes the on-call workstation. Every byte of telemetry flows back home, so no amount of cluster mayhem can destroy the evidence.
 
 ## What's inside
 
@@ -10,6 +12,8 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 - **Control plane** — a TanStack Start web app (`:3003`): golden signals, embedded Grafana/Marquez, incident inbox, runbooks, and a streaming agent chat with live tool calls and artifacts
 - **Claude agents** — a host-side FastAPI service (`:8093`, Claude Agent SDK) with five agents: RCA assistant, incident reporter, dashboard generator, runbook executor (per-step approvals), and auto-fixer (PR behind an approval gate). Every run is itself a Tempo trace.
 - **Chaos & SLOs** — a clock-driven chaos scheduler, SLO specs compiled to Mimir recording rules, multi-window burn-rate alerts, browser RUM, opt-in eBPF profiling, and a one-command incident demo
+- **Kubernetes (Act II)** — the subject system runs as pods in a k3d cluster (1 tainted server + 2 killable agents) on a cheap cloud VM; `infra/ports.env` is the single address book, `obs k8s` wraps the whole lifecycle, and the agents get a read-only cluster identity (`agent-ro`)
+- **K8s observability** — the grafana/k8s-monitoring chart ships cluster state (kube-state-metrics), container usage (cAdvisor), Kubernetes events, and pod logs into the same Mimir/Loki; kubernetes-mixin dashboards (job labels aligned), 8 fast cause-alerts (CrashLooping, OOMKilled, ImagePullBackOff…) wired to the agent webhook, a cardinality-budget dashboard, and a read-only cluster window for the agents (kubernetes-mcp-server + shaped `k8s_events` / `kubectl_read` tools — Secrets denied by construction)
 
 ## Prerequisites
 
@@ -17,6 +21,7 @@ A free, local, Docker-Compose learning lab where a small AI inference gateway be
 - **Bun** ≥ 1.1 (workspaces + Turborepo)
 - **uv** (Python; for the agent-service)
 - **Claude Code** logged in on this machine — the agent-service authenticates the Claude Agent SDK against your local session; no API key needed
+- **For the Act II k8s mode only**: `kubectl` locally, plus a small Linux VM (4 vCPU / 8 GB, Docker + k3d + Tailscale — see `infra/vm/`) on the same tailnet
 
 ## Quickstart
 
@@ -50,17 +55,21 @@ The full lab is those three pieces: **containers + `obs agents` + `obs web`**. T
 
 ### `obs` command reference
 
-| Command                  | What it does                                                               |
-| ------------------------ | -------------------------------------------------------------------------- |
-| `obs all [qps] [secs]`   | Everything: containers, agent-service, web, and load, in their own windows |
-| `obs up [--build]`       | Bring up the full lab (handles the compose network-ordering gotcha)        |
-| `obs down [-v]`          | Tear it down (`-v` also wipes volumes: seeded data + Grafana state)        |
-| `obs load [qps] [secs]`  | Drive synthetic traffic (defaults 120 qps / 300s)                          |
-| `obs demo [qps] [secs]`  | Full cycle: up --build → wait healthy → load → down                        |
-| `obs web` / `obs agents` | Run a host process in the current terminal                                 |
-| `obs smoke`              | Phase-1 end-to-end smoke test                                              |
-| `obs ps` / `obs logs`    | Container status / follow logs                                             |
-| `obs urls` / `obs hosts` | Print the address table / host-process commands                            |
+| Command                  | What it does                                                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `obs all [qps] [secs]`   | Everything: containers, agent-service, web, and load, in their own windows                                                                                               |
+| `obs up [--build]`       | Bring up the full lab (handles the compose network-ordering gotcha)                                                                                                      |
+| `obs down [-v]`          | Tear it down (`-v` also wipes volumes: seeded data + Grafana state)                                                                                                      |
+| `obs load [qps] [secs]`  | Drive synthetic traffic (defaults 120 qps / 300s)                                                                                                                        |
+| `obs demo [qps] [secs]`  | Full cycle: up --build → wait healthy → load → down                                                                                                                      |
+| `obs web` / `obs agents` | Run a host process in the current terminal                                                                                                                               |
+| `obs fail <scenario>`    | Failure drills with baseline traffic: 8 compose chaos scenarios plus the k8s-native `pod-kill`, `oomkill`, `imagepull`, `crashloop`, `readiness-break` (all auto-revert) |
+| `obs k8s <sub>`          | Act II cluster lifecycle on the VM: `up` `down` `status` `build` `deploy` `smoke` `monitoring` (install the k8s-monitoring chart) `agent-kubeconfig` `node-stop/start`   |
+| `obs names [install]`    | Register `https://obs-*.localhost` aliases for the human-facing endpoints                                                                                                |
+| `obs preflight`          | Check required binaries and every port in `infra/ports.env`                                                                                                              |
+| `obs smoke`              | Phase-1 end-to-end smoke test                                                                                                                                            |
+| `obs ps` / `obs logs`    | Container status / follow logs                                                                                                                                           |
+| `obs urls` / `obs hosts` | Print the address table / host-process commands                                                                                                                          |
 
 ### Without the wrapper (macOS / Linux)
 
@@ -83,6 +92,8 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 | Agent service | http://localhost:8093 | host process               |
 | dq-runner     | http://localhost:8091 | `/violations`, `POST /run` |
 | Pyroscope     | http://localhost:4040 | profiles (opt-in profiler) |
+
+Every host-published port lives in **`infra/ports.env`** — a collision with another project is a one-line remap there, and everything (compose, obs.ps1, the k3d config) follows. In k8s mode the gateway answers at the VM's tailnet name on the same `:8080`.
 
 Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo` (bravo), `dev-token-abuser` (abuser — tiny quota, trips 429s).
 
@@ -112,6 +123,8 @@ Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo`
   bun run demo:incident
   ```
 - **Scheduled chaos** (full 26-min timeline that drives the SLO burn-rate alerts): `bun run chaos:run`
+- **Break the cluster** (k8s mode): `obs fail oomkill` drops the retriever's memory limit to 64Mi under load — watch the working-set graph flat-top at the new ceiling, the `KubeContainerOOMKilled` alert fire, and the incident-reporter's postmortem distinguish "killed for exceeding its allowance" from "crashed" (~2 min from fault to agent-on-the-case). `crashloop`, `imagepull`, and `readiness-break` tell the other classic Kubernetes failure stories; all revert themselves.
+- **Ask the agent about the cluster**: "describe the gateway deployment and its recent events" — answered through read-only cluster tools only (`k8s_events` timelines, caged `kubectl_read`, the k8s MCP server). Ask it to read a Secret and watch three independent layers refuse.
 - **Follow the telemetry**: in Grafana, click a latency exemplar on the RED dashboard to jump to its Tempo trace, then "Logs for this span" to land on the matching `trace_id` in Loki. Every agent run is also a trace (`service.name=agent-service`).
 
 > **Windows note:** the agent-service binds IPv4; the web app defaults to `http://127.0.0.1:8093` because `localhost` may resolve to IPv6 first and refuse the connection.
@@ -145,15 +158,19 @@ packages/
   lineage/          # @obs/lineage — OpenLineage builders + Marquez emitter
   ui/ tsconfig/     # design tokens, shared tsconfig presets
 infra/
+  ports.env                    # THE address book — every host-published port, one file
   compose.yml                  # subject system (Postgres, Redis, TS services, seed, load)
   compose.observability.yml    # Alloy + Loki/Tempo/Mimir + Grafana + Pyroscope
   compose.lineage.yml          # Marquez + dq-runner
+  k8s/                         # Act II: k3d config, kustomize base + lab overlay,
+                               #   cluster bootstrap, k8s-monitoring chart values
+  vm/                          # obs-vm provisioning (cloud-init, tailnet NAT unit)
+  grafana/mixins/              # kubernetes-mixin dashboard build (jsonnet, dockerized)
 slo/                # SLO specs (source of truth for recording rules + alerts)
 runbooks/           # Markdown runbooks the executor agent walks with approvals
-scripts/            # obs.ps1 (the CLI), dev-up.sh, smoke.sh, demo-incident.sh
-docs/               # PLAN.html (the full phased plan), ADRs, plain-language explainers
+scripts/            # obs.ps1 (the CLI), k8s-build.ps1, dev-up.sh, smoke.sh, demo-incident.sh
 ```
 
 ## Docs
 
-The full phased plan (0–6) lives in `docs/PLAN.html`; design decisions are in `docs/adr/`; plain-language walkthroughs of each plane are in `docs/phase-*-explained.html`.
+The phased plans (Act I and Act II), ADRs, and plain-language explainers are kept in a local-only `docs/` folder that is deliberately not tracked in this repo. The operator-facing documentation that ships here lives in the per-component `README.md` files under `infra/`, `apps/`, and `scripts/`.
