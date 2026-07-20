@@ -40,6 +40,8 @@ Thumbs.db
 
 # local-only docs (kept on disk, not in the repo)
 /docs/
+PROJECT_REVIEW.md
 .obs-mode
 # minted read-only cluster credentials (obs k8s agent-kubeconfig)
 apps/agent-service/.kube/
+.foglamp/
