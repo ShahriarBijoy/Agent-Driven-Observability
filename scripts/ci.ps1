@@ -114,8 +114,8 @@ switch ($Action) {
         $tok = (Invoke-Vm 'cat /root/obs-lab/.gitea-token 2>/dev/null').Trim()
         if ($tok) {
             try {
-                $runners = Invoke-RestMethod -Uri "$GiteaUrl/api/v1/admin/runners" -Headers @{ Authorization = "token $tok" } -TimeoutSec 5
-                foreach ($r in $runners) {
+                $resp = Invoke-RestMethod -Uri "$GiteaUrl/api/v1/admin/actions/runners" -Headers @{ Authorization = "token $tok" } -TimeoutSec 5
+                foreach ($r in $resp.runners) {
                     $state = if ($r.status) { $r.status } else { '?' }
                     Write-Host ("  runner  {0,-12} {1}  labels: {2}" -f $r.name, $state, ($r.labels.name -join ', '))
                 }

@@ -154,3 +154,20 @@ prometheus.remote_write "mimir_self" {
     url = "http://mimir:9009/api/v1/push"
   }
 }
+
+// --- Gitea forge metrics (Phase 9) -------------------------------------------
+// The CI control plane runs on the VM (infra/compose.ci.yml); its Prometheus
+// endpoint is scraped ACROSS the tailnet from here — Docker Desktop forwards
+// container DNS to the host resolver, so the MagicDNS name works. Gives the
+// CI dashboard forge-side truth (repo/user/webhook counts, Go runtime) next
+// to ci-shim's pipeline metrics, and doubles as a liveness signal for the
+// cicd-queue-stall alert's "is Gitea even up" context.
+prometheus.scrape "gitea" {
+  targets = [{
+    "__address__" = "obs-vm:3005",
+    "job"         = "gitea",
+  }]
+  metrics_path    = "/metrics"
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.mimir_self.receiver]
+}
