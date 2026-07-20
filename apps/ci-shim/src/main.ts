@@ -92,6 +92,18 @@ registry.register(
   ),
 );
 
+// Pre-seed the hot label sets at zero. A counter whose first-ever sample is
+// already 1 contributes NOTHING to increase() - Prometheus can't see the
+// birth step - and the shim restarts on every `obs ci up`, so without this
+// the first run/deploy after each restart would vanish from the DORA panels.
+for (const result of ["success", "failure"]) {
+  runsTotal.inc({ workflow: "ci", branch: "main", result }, 0);
+  runDuration.seed({ workflow: "ci", result });
+}
+for (const job of ["test", "build-push", "deploy"]) queueSeconds.seed({ job });
+for (const svc of DEPLOYED_SERVICES) deploymentsTotal.inc({ service: svc, result: "success" }, 0);
+leadTime.seed({});
+
 // --- webhook state -----------------------------------------------------------
 // workflow_job payloads per run, so the run-completed handler has per-job
 // (and per-step) timings without an API round-trip. In-memory on purpose:

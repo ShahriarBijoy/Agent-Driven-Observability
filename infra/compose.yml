@@ -52,7 +52,10 @@ services:
       retries: 12
       start_period: 10s
     networks:
+      # obs too (P9): Grafana's labpg datasource reads the incidents table for
+      # the DORA MTTR panel; Grafana lives only on obs-lab-obs.
       - app
+      - obs
 
   redis:
     image: redis:7-alpine

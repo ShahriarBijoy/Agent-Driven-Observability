@@ -50,6 +50,14 @@ export class Histogram {
     this.buckets = [...buckets].sort((a, b) => a - b);
   }
 
+  /** Create the series at zero without observing - see main.ts seeding. */
+  seed(labels: Labels): void {
+    const key = labelKey(labels);
+    if (!this.series.has(key)) {
+      this.series.set(key, { counts: this.buckets.map(() => 0), sum: 0, count: 0 });
+    }
+  }
+
   observe(labels: Labels, value: number): void {
     const key = labelKey(labels);
     let s = this.series.get(key);
