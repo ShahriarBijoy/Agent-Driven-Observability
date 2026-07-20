@@ -560,6 +560,16 @@ async def gh_open_pr(repo: str | None, branch: str, title: str, body: str, patch
         push = _run(["git", "push", "-u", "origin", branch, "--force"])
         if push.returncode != 0:
             return {"error": f"git push failed: {push.stderr.strip()}"}
+        # Pick the PR host by the remote's host (PLAN-2 P9 red-team fix #4):
+        # a Gitea origin gets a Gitea API PR — gh would push the branch and
+        # then fail to open anything.
+        origin_url = _run(["git", "remote", "get-url", "origin"]).stdout.strip()
+        if config.gitea_url and origin_url.startswith(config.gitea_url):
+            api_pr = await gitea_open_pr(branch, base, title, body)
+            if "error" not in api_pr:
+                return {"status": "opened", "branch": branch, "pr_url": api_pr.get("pr_url")}
+            return {"status": "branch_pushed", "branch": branch, "base": base,
+                    "note": f"pushed to gitea but PR creation failed: {api_pr['error']}"}
         pr = _run(["gh", "pr", "create", "--base", base, "--head", branch,
                    "--title", title, "--body", body])
         if pr.returncode == 0:
@@ -580,3 +590,172 @@ async def gh_open_pr(repo: str | None, branch: str, title: str, body: str, patch
         return {"error": "git/gh command timed out"}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"gh_open_pr failed: {exc}"}
+
+
+# ---- Gitea (delivery history + PRs, PLAN-2 P9) -------------------------------
+
+
+def _gitea_headers() -> dict[str, str] | None:
+    if not config.gitea_token:
+        return None
+    return {"Authorization": f"token {config.gitea_token}"}
+
+
+_GITEA_HELP = "GITEA_TOKEN is not configured — run 'obs ci token' and add it to apps/agent-service/.env"
+
+
+async def gitea_ci_runs(limit: int = 5, branch: str = "") -> dict:
+    """Recent CI runs with per-job status from the local forge. Compact,
+    newest-first — the delivery-history half of 'what shipped recently?'."""
+    headers = _gitea_headers()
+    if headers is None:
+        return {"error": _GITEA_HELP}
+    limit = max(1, min(limit, 20))
+    base = f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/actions"
+    try:
+        params: dict[str, str] = {"limit": str(limit)}
+        if branch.strip():
+            params["branch"] = branch.strip()
+        resp = await _http().get(f"{base}/runs", params=params, headers=headers)
+        resp.raise_for_status()
+        runs = []
+        for r in resp.json().get("workflow_runs", [])[:limit]:
+            jobs = []
+            try:
+                jresp = await _http().get(f"{base}/runs/{r['id']}/jobs", headers=headers)
+                jresp.raise_for_status()
+                jobs = [
+                    {"name": j.get("name"), "conclusion": j.get("conclusion") or j.get("status"),
+                     "started_at": j.get("started_at"), "completed_at": j.get("completed_at")}
+                    for j in jresp.json().get("jobs", [])
+                ]
+            except Exception:  # noqa: BLE001 — job detail is best-effort
+                pass
+            runs.append({
+                "id": r.get("id"), "run_number": r.get("run_number"),
+                "status": r.get("status"), "conclusion": r.get("conclusion"),
+                "branch": r.get("head_branch"), "sha": (r.get("head_sha") or "")[:10],
+                "title": (r.get("display_title") or "").strip()[:120],
+                "started_at": r.get("started_at"), "url": r.get("html_url"),
+                "jobs": jobs,
+            })
+        return {"repo": config.gitea_repo, "count": len(runs), "runs": runs}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"gitea runs query failed: {exc}"}
+
+
+async def gitea_compare(base: str, head: str, include_diff: bool = False) -> dict:
+    """base...head diff summary from the forge: commits + per-file stats.
+    include_diff adds each commit's unified diff (truncated) when the span is
+    small — the 'name the exact commit, file, and line' half of
+    code-to-incident correlation."""
+    headers = _gitea_headers()
+    if headers is None:
+        return {"error": _GITEA_HELP}
+    if not base.strip() or not head.strip():
+        return {"error": "base and head are required (branch, tag, or sha)"}
+    try:
+        resp = await _http().get(
+            f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/compare/"
+            f"{base.strip()}...{head.strip()}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Gitea's compare has no top-level file list — files + stats hang off
+        # each commit; aggregate the union for the summary.
+        commits = []
+        touched: dict[str, str] = {}
+        for c in data.get("commits", []):
+            commit_files = [f.get("filename") for f in (c.get("files") or []) if f.get("filename")]
+            for f in c.get("files") or []:
+                if f.get("filename"):
+                    touched[f["filename"]] = f.get("status") or "changed"
+            stats = c.get("stats") or {}
+            entry = {
+                "sha": (c.get("sha") or "")[:10],
+                "message": (c.get("commit", {}).get("message") or "").strip()[:200],
+                "author": c.get("commit", {}).get("author", {}).get("name"),
+                "date": c.get("commit", {}).get("author", {}).get("date"),
+                "additions": stats.get("additions"), "deletions": stats.get("deletions"),
+                "files": commit_files[:20],
+            }
+            if include_diff and len(data.get("commits", [])) <= 5:
+                try:
+                    dresp = await _http().get(
+                        f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/git/commits/"
+                        f"{c.get('sha')}.diff",
+                        headers=headers,
+                    )
+                    dresp.raise_for_status()
+                    entry["diff"] = dresp.text[:4000]
+                except Exception:  # noqa: BLE001 — diff is best-effort
+                    pass
+            commits.append(entry)
+        return {
+            "repo": config.gitea_repo, "base": base, "head": head,
+            "total_commits": data.get("total_commits", len(commits)),
+            "commits": commits,
+            "files": [{"filename": k, "status": v} for k, v in sorted(touched.items())][:50],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"gitea compare failed: {exc}"}
+
+
+async def gitea_open_pr(head: str, base: str = "main", title: str = "", body: str = "") -> dict:
+    """Open a PR on the forge from an already-pushed branch (POST /pulls with
+    the scoped token). Also the API half gh_open_pr delegates to when the
+    workspace origin is Gitea."""
+    headers = _gitea_headers()
+    if headers is None:
+        return {"error": _GITEA_HELP}
+    if not head.strip() or not title.strip():
+        return {"error": "head branch and title are required"}
+    try:
+        resp = await _http().post(
+            f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/pulls",
+            headers=headers,
+            json={"head": head.strip(), "base": base.strip() or "main",
+                  "title": title, "body": body},
+        )
+        if resp.status_code == 409:
+            return {"error": f"a PR for {head} already exists (or no diff against {base})"}
+        resp.raise_for_status()
+        pr = resp.json()
+        return {"status": "opened", "pr_url": pr.get("html_url"),
+                "number": pr.get("number"), "head": head, "base": base}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"gitea PR creation failed: {exc}"}
+
+
+# ---- Grafana annotations (deploy markers) ------------------------------------
+
+
+async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) -> dict:
+    """Deploy (and other) annotations in a window, oldest-first. The
+    correlation primitive: 'what changed right before this alert?'"""
+    start, end = parse_range(range)
+    try:
+        params: list[tuple[str, str]] = [
+            ("from", str(int(start.timestamp() * 1000))),
+            ("to", str(int(end.timestamp() * 1000))),
+            ("limit", "100"),
+        ]
+        for tag in tags or ["deployment"]:
+            if tag.strip():
+                params.append(("tags", tag.strip()))
+        resp = await _http().get(f"{config.grafana_url}/api/annotations", params=params)
+        resp.raise_for_status()
+        annotations = [
+            {
+                "time": datetime.fromtimestamp((a.get("time") or 0) / 1000).isoformat(),
+                "tags": a.get("tags", []),
+                "text": (a.get("text") or "")[:300],
+            }
+            for a in resp.json()
+        ]
+        annotations.sort(key=lambda a: a["time"])
+        return {"range": range, "tags": tags or ["deployment"],
+                "count": len(annotations), "annotations": annotations}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"grafana annotations query failed: {exc}"}

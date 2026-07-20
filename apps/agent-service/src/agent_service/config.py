@@ -73,6 +73,13 @@ class Config:
     # (PLAN-2 P7). None = endpoints stay closed and report how to fix it.
     obs_token: str | None
 
+    # The local forge (PLAN-2 P9): Gitea on the VM. Tokened API access for the
+    # delivery-history tools + real PRs from the auto-fixer; repo is the
+    # owner/name of the subject source. Empty token = tools report how to fix.
+    gitea_url: str
+    gitea_token: str
+    gitea_repo: str
+
     # The agents' read-only cluster window (PLAN-2 P8): agent-ro kubeconfig
     # minted by `obs k8s agent-kubeconfig`, the kubernetes-mcp-server launch
     # command (version-pinned npx), and its TOML (denies Secret reads). The
@@ -108,6 +115,9 @@ def load_config() -> Config:
         ),
         dev_tenant=_env("DEV_TENANT", "acme"),
         obs_token=os.environ.get("OBS_TOKEN", "").strip() or None,
+        gitea_url=_env("GITEA_URL", "http://obs-vm:3005").rstrip("/"),
+        gitea_token=os.environ.get("GITEA_TOKEN", "").strip(),
+        gitea_repo=_env("GITEA_REPO", "obs/obs-lab"),
         # KUBECONFIG is what `obs agents` already exports when the minted file
         # exists; K8S_KUBECONFIG wins if both are set.
         k8s_kubeconfig=_anchored(

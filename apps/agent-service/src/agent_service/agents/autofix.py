@@ -3,13 +3,15 @@
 Entrypoint: POST /auto-fix. Given an error pattern, it works inside a contained
 clone of the repo (never the live tree), finds the bug with Glob/Read, fixes it
 with Edit, and — only after an approval the web UI honors — opens a PR via
-gh_open_pr. The clone's origin is a local bare repo, so the "PR" is a dry-run
-push (a real PR would need a GitHub host). Tools: Read/Edit/Glob/Bash +
-gh_open_pr + request_approval.
+gh_open_pr. With the local forge configured (P9), the clone's origin is the
+real Gitea obs-lab repo and the PR is real; otherwise origin is a local bare
+repo and the "PR" is a dry-run push. Tools: Read/Edit/Glob/Bash + gh_open_pr +
+gitea_open_pr + request_approval.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import stat
@@ -27,8 +29,11 @@ def _git(args: list[str], cwd: str, stdin: str | None = None) -> subprocess.Comp
 
 
 def prepare_workspace(run_id: str) -> tuple[str | None, str]:
-    """Create a contained clone of the lab repo whose 'origin' is a local bare
-    repo (the dry-run remote). Returns (repo_dir, 'ok') or (None, reason)."""
+    """Create a contained clone of the lab repo. With the local forge
+    configured (PLAN-2 P9), 'origin' is the REAL Gitea obs-lab repo — fix
+    branches push there and gh_open_pr opens a real PR via the Gitea API.
+    Without it, origin is a local bare repo (the Act-I dry-run path).
+    Returns (repo_dir, 'ok') or (None, reason)."""
     # Absolute always: relative paths here get resolved against three different
     # cwds below (process cwd, base, repo) and silently diverge.
     base = os.path.abspath(os.path.join(config.artifacts_dir, "autofix", run_id))
@@ -36,17 +41,25 @@ def prepare_workspace(run_id: str) -> tuple[str | None, str]:
     repo = os.path.join(base, "repo")
     try:
         os.makedirs(base, exist_ok=True)
-        init = _git(["init", "--bare", bare], cwd=os.getcwd())
-        if init.returncode != 0:
-            return None, f"bare init failed: {init.stderr.strip()}"
         clone = _git(["clone", "--local", "--no-hardlinks", config.lab_root, repo], cwd=base)
         if clone.returncode != 0:
             return None, f"clone failed: {clone.stderr.strip()}"
         base_branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo).stdout.strip() or "main"
-        _git(["remote", "set-url", "origin", os.path.abspath(bare)], cwd=repo)
-        seed = _git(["push", "origin", f"HEAD:{base_branch}"], cwd=repo)
-        if seed.returncode != 0:
-            return None, f"seed push failed: {seed.stderr.strip()}"
+        if config.gitea_url and config.gitea_token:
+            _git(["remote", "set-url", "origin",
+                  f"{config.gitea_url}/{config.gitea_repo}.git"], cwd=repo)
+            # Clone-scoped auth header; never touches the operator's global config.
+            b64 = base64.b64encode(f"obs:{config.gitea_token}".encode()).decode()
+            _git(["config", f"http.{config.gitea_url}/.extraheader",
+                  f"Authorization: Basic {b64}"], cwd=repo)
+        else:
+            init = _git(["init", "--bare", bare], cwd=os.getcwd())
+            if init.returncode != 0:
+                return None, f"bare init failed: {init.stderr.strip()}"
+            _git(["remote", "set-url", "origin", os.path.abspath(bare)], cwd=repo)
+            seed = _git(["push", "origin", f"HEAD:{base_branch}"], cwd=repo)
+            if seed.returncode != 0:
+                return None, f"seed push failed: {seed.stderr.strip()}"
         _git(["config", "user.email", "autofixer@obs-lab.local"], cwd=repo)
         _git(["config", "user.name", "Auto-Fixer"], cwd=repo)
         return repo, "ok"

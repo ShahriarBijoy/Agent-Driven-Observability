@@ -69,3 +69,18 @@ datasources:
     uid: pyroscope
     access: proxy
     url: http://pyroscope:4040
+
+  # Lab Postgres (P9) — read path for the DORA MTTR panel (incidents table).
+  # Postgres joined obs-lab-obs in compose.yml for exactly this datasource.
+  - name: Lab Postgres
+    type: grafana-postgresql-datasource
+    uid: labpg
+    access: proxy
+    url: postgres:5432
+    user: lab
+    jsonData:
+      database: observability_lab
+      sslmode: disable
+      maxOpenConns: 2
+    secureJsonData:
+      password: lab

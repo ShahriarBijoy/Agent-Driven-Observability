@@ -51,6 +51,10 @@
                              deploy, smoke, node-stop <name>, node-start <name>,
                              monitoring (install/upgrade the k8s-monitoring chart from
                              infra/k8s/monitoring/values.yaml - P8 telemetry).
+    obs ci <sub>             CI layer on the VM (Profile A): Gitea + Actions runner +
+                             ci-shim (P9). Subcommands: up (ship source, compose up,
+                             bootstrap admin/token/runner), down, logs [svc],
+                             token (API token for agent-service), status.
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -236,6 +240,7 @@ $FailScenarios = [ordered]@{
     imagepull  = 'k8s only: gateway image -> tag that never existed -> ImagePullBackOff     (~7 min)'
     crashloop  = 'k8s only: retriever DATABASE_URL -> garbage -> CrashLoopBackOff at boot   (~7 min)'
     'readiness-break' = 'k8s only: gateway probe -> wrong path -> Running but never Ready   (~7 min)'
+    'bad-deploy' = 'k8s+ci: bad commit merges -> CI deploys 2s latency into model-proxy -> p95 page; agent walks alert -> deploy annotation -> CI run -> diff (~18 min)'
 }
 
 Push-Location $Repo
@@ -411,6 +416,65 @@ try {
                 kubectl --kubeconfig $kubeconfig -n subject rollout undo $target
                 kubectl --kubeconfig $kubeconfig -n subject rollout status $target --timeout=180s
                 Write-Step 'reverted and rolled out. The postmortem should name the exact spec change - check the inbox.'
+                break
+            }
+
+            if ($scenario -eq 'bad-deploy') {
+                # P9's flagship: the failure ships through the DELIVERY PIPELINE
+                # itself. A plausible-looking commit lands on gitea main; CI
+                # tests it (they pass - the sleep is parallel-safe), builds it,
+                # deploys it; p95 breaches the 2s page alert; the agent walks
+                # alert -> deploy annotation -> CI run -> compare diff to the
+                # exact commit and line. Auto-reverts via a second commit, so
+                # the fix ALSO ships through the pipeline.
+                if ($Mode -ne 'k8s') { Write-Warning "bad-deploy needs k8s mode (obs k8s up)"; break }
+                $vm = $Ports.OBS_VM_HOST
+                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
+                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
+                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
+
+                $dur = '1500'
+                Write-Step "bad-deploy: ${dur}s baseline load @ $qps qps; bad commit pushes now, CI deploys it (~4 min), revert commit at ~t+12m"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+
+                # Fresh shallow clone of gitea main - never the working tree.
+                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
+                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
+                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
+                $auth = "http.${giteaBase}/.extraheader"
+                $tmp = Join-Path $env:TEMP 'obs-bad-deploy'
+                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+                git -c "$auth=Authorization: Basic $b64" clone -q --depth 5 --branch main "$giteaBase/obs/obs-lab.git" $tmp
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of gitea main failed'; break }
+                git -C $tmp config $auth "Authorization: Basic $b64"
+                git -C $tmp config user.email 'dev@obs-lab.local'
+                git -C $tmp config user.name 'Lab Dev'
+
+                # The bad change: an innocent-looking "warm-up" that serialises
+                # 2s into every completion. (.gitattributes normalises the CRLF
+                # this write introduces, so the diff is just the inserted lines.)
+                $svcFile = Join-Path $tmp 'apps\model-proxy\src\slices\complete\service.ts'
+                $anchor = '      return generateCompletion(req);'
+                $replacement = "      // Pre-warm the completion path so first-token latency stays flat`r`n" +
+                               "      // under bursty load (upstream provider's recommended warm-up).`r`n" +
+                               "      await sleep(2000);`r`n`r`n" +
+                               "      return generateCompletion(req);"
+                $content = Get-Content $svcFile -Raw
+                if ($content -notmatch [regex]::Escape($anchor)) { Write-Warning "anchor line not found in service.ts - source drifted"; break }
+                $content.Replace($anchor, $replacement) | Set-Content -Encoding ascii $svcFile
+                git -C $tmp commit -qam "model-proxy: pre-warm the completion path before generating"
+                git -C $tmp push -q origin main
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to gitea main failed'; break }
+                $badSha = (git -C $tmp rev-parse --short HEAD).Trim()
+                Write-Step "bad commit $badSha is on main. Watch: CI $giteaBase/obs/obs-lab/actions | Grafana $GrafanaUrl (Gateway RED + CI/CD Delivery)"
+                Write-Step 'timeline: deploy ~t+4m, p95 page alert ~t+11m, incident inbox gets the postmortem; revert commit at t+12m, fix deployed ~t+16m'
+
+                Start-Sleep -Seconds 720
+                Write-Step 'auto-revert: reverting the bad commit (the fix ships through CI too)'
+                git -C $tmp revert --no-edit HEAD | Out-Null
+                git -C $tmp push -q origin main
+                Write-Step "revert pushed. Ask the RCA agent: 'p95 latency paged just now - what shipped in the last hour, and which exact change is responsible?'"
                 break
             }
 
@@ -641,6 +705,12 @@ current-context: agent-ro@obs-lab
                 }
                 default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|node-stop|node-start)" }
             }
+        }
+
+        'ci' {
+            # Delivery control plane on the VM (P9) - see scripts/ci.ps1.
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            & (Join-Path $PSScriptRoot 'ci.ps1') $sub @($Rest | Select-Object -Skip 1)
         }
 
         'preflight' {

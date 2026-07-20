@@ -365,3 +365,84 @@ groups:
           tenant: acme
         annotations:
           summary: Mimir is discarding samples because a per-tenant series limit was crossed (cardinality explosion)
+
+  # Pipeline alerts (PLAN-2 P9), on ci-shim's metrics (scraped from the VM).
+  # Routed like everything else: root policy -> agent-webhook -> incident
+  # reporter. pipeline-red = main is not shippable (page); queue-stall = jobs
+  # queue while nothing completes, i.e. the runner is dead (the pending gauges
+  # are the ONLY signal for that - a dead runner emits no completion events).
+  - orgId: 1
+    name: cicd
+    folder: Lab Alerts
+    interval: 1m
+    rules:
+      - uid: cicd-pipeline-red
+        title: CI pipeline red on main
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              expr: sum(increase(cicd_pipeline_runs_total{branch="main", result!~"success|skipped"}[15m]))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 0m
+        labels:
+          severity: page
+          tenant: acme
+        annotations:
+          summary: a pipeline run on main failed in the last 15m - main is not shippable (test, build, or deploy job red)
+      - uid: cicd-queue-stall
+        title: CI queue stalled (runner down?)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              # 1 iff a job has been queued > 3m AND nothing completed in 15m -
+              # the (short > bool T) * (long > bool T) encoding the burn alerts
+              # use. max() is load-bearing: it drops the scrape's instance/job
+              # labels so the product's operands both carry the empty label set
+              # - a bare gauge times a sum() NEVER matches and the alert would
+              # silently stay empty forever.
+              expr: "(max(cicd_pipeline_oldest_pending_seconds) > bool 180) * (sum(increase(cicd_pipeline_runs_total[15m])) == bool 0)"
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 2m
+        labels:
+          severity: warning
+          tenant: acme
+        annotations:
+          summary: CI jobs are queuing (oldest > 3m) with zero completions - the Actions runner is likely down or wedged

@@ -1,0 +1,33 @@
+# act_runner config (mounted by infra/compose.ci.yml). Reference:
+# https://gitea.com/gitea/act_runner/src/branch/main/internal/pkg/config/config.example.yaml
+log:
+  level: info
+
+runner:
+  file: /data/.runner
+  # One job at a time - the 8 GB VM shares RAM with the k3d cluster, and a
+  # docker build spike is +1.5-2.5 GB (PLAN-2 SS C).
+  capacity: 1
+  timeout: 30m
+  fetch_timeout: 5s
+  fetch_interval: 2s
+
+cache:
+  enabled: true
+  dir: /data/cache
+
+container:
+  # Attach job containers to the compose network so `gitea:3000` (checkout,
+  # api) resolves inside steps; add-host makes the human-facing obs-vm name
+  # work there too (host-gateway -> the VM's published ports).
+  network: obs-lab-ci
+  privileged: false
+  options: >-
+    --add-host=obs-vm:host-gateway
+    -v /var/run/docker.sock:/var/run/docker.sock
+  valid_volumes:
+    - /var/run/docker.sock
+  # Don't inject a DOCKER_HOST into jobs - the mounted socket is the
+  # interface, and docker CLI's default already points at it.
+  docker_host: "-"
+  force_pull: false
