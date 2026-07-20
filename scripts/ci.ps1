@@ -73,32 +73,11 @@ switch ($Action) {
         Invoke-Vm "$ComposeRemote up -d --wait gitea"
         if ($LASTEXITCODE -ne 0) { throw 'gitea did not come up healthy' }
 
-        # Bootstrap is a single idempotent bash script on the VM: admin user
-        # 'obs' (password kept in /root/obs-lab/.gitea-admin, never leaves the
-        # VM unprompted), an all-scope API token (/root/obs-lab/.gitea-token),
-        # and a fresh runner registration token (harmless when the runner
-        # identity already exists in its volume - act_runner ignores it).
-        Write-Step 'bootstrap: admin user + api token + runner registration'
-        $bootstrap = @'
-set -e
-cd /root/obs-lab
-if ! docker compose --env-file ports.env -f src/infra/compose.ci.yml exec -T -u 1000 gitea gitea admin user list | grep -q "\bobs\b"; then
-  pw=$(head -c 24 /dev/urandom | base64 | tr -d "+/=" | head -c 20)
-  docker compose --env-file ports.env -f src/infra/compose.ci.yml exec -T -u 1000 gitea \
-    gitea admin user create --admin --username obs --password "$pw" --email obs@obs-lab.local --must-change-password=false
-  echo "obs:$pw" > .gitea-admin && chmod 600 .gitea-admin
-  echo "created admin user obs (password in /root/obs-lab/.gitea-admin)"
-fi
-if [ ! -s .gitea-token ]; then
-  docker compose --env-file ports.env -f src/infra/compose.ci.yml exec -T -u 1000 gitea \
-    gitea admin user generate-access-token --username obs --token-name "obs-lab-$(date +%s)" --scopes all --raw > .gitea-token
-  chmod 600 .gitea-token
-  echo "minted api token (/root/obs-lab/.gitea-token)"
-fi
-export OBS_CI_RUNNER_TOKEN=$(docker compose --env-file ports.env -f src/infra/compose.ci.yml exec -T -u 1000 gitea gitea actions generate-runner-token | tr -d "[:space:]")
-docker compose --env-file ports.env -f src/infra/compose.ci.yml up -d --build --wait runner ci-shim
-'@ -replace "`r`n", "`n"
-        $bootstrap | ssh -o BatchMode=yes "root@$Vm" 'bash -s'
+        # The bootstrap logic lives in scripts/ci-bootstrap.sh and ships WITH
+        # the source tree - piping script text through PowerShell adds a BOM
+        # that bash reads as a command (learned the hard way).
+        Write-Step 'bootstrap: admin user + api token + runner registration (ci-bootstrap.sh)'
+        Invoke-Vm 'bash /root/obs-lab/src/scripts/ci-bootstrap.sh'
         if ($LASTEXITCODE -ne 0) { throw 'CI bootstrap failed' }
 
         Write-Step "CI layer is up on ${Vm}:"
