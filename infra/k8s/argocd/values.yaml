@@ -69,6 +69,14 @@ notifications:
         send: [agent-sync-failed]
         when: app.status.operationState != nil and app.status.operationState.phase in ['Error',
           'Failed']
+    trigger.on-out-of-sync: |
+      - description: Live state drifted from git. No oncePer - state clears when
+          the app syncs, so each OutOfSync EPISODE fires exactly once. The
+          operation guard skips the transient OutOfSync every deploy passes
+          through; the agent re-checks after 30s anyway before spawning.
+        send: [agent-out-of-sync]
+        when: app.status.sync.status == 'OutOfSync' and (app.status.operationState
+          == nil or app.status.operationState.phase not in ['Running'])
   templates:
     template.agent-deployed: |
       webhook:
@@ -91,6 +99,13 @@ notifications:
           path: /webhook/gitops
           body: |
             {"event":"on-sync-failed","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"{{.app.status.operationState.phase}}","health":"{{.app.status.health.status}}"}
+    template.agent-out-of-sync: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-out-of-sync","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"","health":"{{.app.status.health.status}}"}
     template.deploy-annotation: |
       webhook:
         grafana:
@@ -102,7 +117,7 @@ notifications:
   # parse as service "webhook" (which doesn't exist) + recipient "agent".
   subscriptions:
     - recipients: [agent]
-      triggers: [on-deployed, on-health-degraded, on-sync-failed]
+      triggers: [on-deployed, on-health-degraded, on-sync-failed, on-out-of-sync]
     - recipients: [grafana]
       triggers: [on-deployed]
 
