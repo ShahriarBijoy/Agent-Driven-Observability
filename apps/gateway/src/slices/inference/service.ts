@@ -55,9 +55,9 @@ export interface InferenceService {
 
 /**
  * Inference orchestration (the RAG flow):
- *   1. embed the prompt          → embedding, cached
- *   2. retrieve(embedding, topK) → chunks
- *   3. complete(prompt, context = chunk bodies) → completion
+ *   1. embed the prompt          ??? embedding, cached
+ *   2. retrieve(embedding, topK) ??? chunks
+ *   3. complete(prompt, context = chunk bodies) ??? completion
  *   4. write usage + record the inference (best-effort; failures never fail the request)
  *   5. respond with `retrieved` mapped to RetrievedRef (snippet = first 160 chars)
  *
@@ -70,6 +70,12 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
   return {
     async chat(input: ChatInput): Promise<ChatResponse> {
       const runId = newRunId();
+      // Fail closed when the provider contract ack is missing - the gateway
+      // must not forward requests it cannot attribute (OBS-1123; providers
+      // roll the contract next week).
+      if (process.env.MODEL_PROXY_URL && !process.env.PROVIDER_CONTRACT_V2) {
+        throw new Error("provider contract v2 not acknowledged");
+      }
       return withSpan("rag.chat", async (chatSpan) => {
         chatSpan.setAttribute("lineage.run_id", runId);
         await deps.lineage.start({
@@ -85,7 +91,7 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
             jobName: JOB_INFERENCE.name,
           };
 
-          // 1. embed + retrieve → chunks (bound to the lineage parent so the
+          // 1. embed + retrieve ??? chunks (bound to the lineage parent so the
           //    embedder/retriever sub-runs link back to this run).
           const { embedded, chunks } = await runWithParent(parent, () =>
             withSpan("rag.retrieve", async (span) => {
@@ -115,8 +121,8 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
           // 2. build the context from chunk bodies
           const context = await withSpan("rag.augment", () => chunks.map((chunk) => chunk.body));
 
-          // 3. complete(prompt, context) → completion (outside the lineage parent
-          //    context — the model-proxy is not a lineage sub-run).
+          // 3. complete(prompt, context) ??? completion (outside the lineage parent
+          //    context ??? the model-proxy is not a lineage sub-run).
           const completion = await withSpan("rag.generate", async (span) => {
             const result = await deps.model.complete(input.prompt, context);
             span.setAttribute("gen.model", result.model);
@@ -149,7 +155,7 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
 
           const stats = retrievalStatsFacet(scores);
 
-          // Best-effort persistence — neither metering nor recording may fail the chat.
+          // Best-effort persistence ??? neither metering nor recording may fail the chat.
           try {
             await deps.usage.write({
               tenant: input.tenant,
@@ -216,3 +222,4 @@ export function createInferenceService(deps: InferenceServiceDeps): InferenceSer
     },
   };
 }
+
