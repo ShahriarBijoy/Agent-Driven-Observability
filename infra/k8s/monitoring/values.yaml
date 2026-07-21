@@ -92,6 +92,16 @@ clusterMetrics:
         - process_resident_memory_bytes
         - go_goroutines
 
+# P10 delivery plane: scrape whatever SERVICE carries the
+# k8s.grafana.com/scrape annotation - today that is exactly two, the Argo CD
+# application-controller (argocd_app_info, sync/health state as metrics) and
+# the Argo Rollouts controller (rollout_info/rollout_phase, the rollout-stuck
+# alert's raw signal). Opt-in by annotation keeps this from becoming a
+# scrape-the-world backdoor around the P8 allowlists.
+annotationAutodiscovery:
+  enabled: true
+  collector: alloy-metrics
+
 clusterEvents:
   enabled: true
   collector: alloy-singleton

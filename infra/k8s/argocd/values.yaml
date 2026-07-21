@@ -128,6 +128,15 @@ configs:
 controller:
   resources:
     requests: { cpu: 100m, memory: 256Mi }
+  # Delivery observability (P10): argocd_app_info & friends, scraped by the
+  # k8s-monitoring chart's annotationAutodiscovery hook (only annotated
+  # services opt in - see infra/k8s/monitoring/values.yaml).
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        k8s.grafana.com/scrape: "true"
+        k8s.grafana.com/metrics.portName: http-metrics
 
 repoServer:
   resources:

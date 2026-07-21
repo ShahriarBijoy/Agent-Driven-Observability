@@ -10,7 +10,11 @@ controller:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
   metrics:
-    enabled: true # :8090/metrics, scraped by the k8s-monitoring extra hook
+    enabled: true # rollout_info/rollout_phase etc. for the rollout-stuck alert
+    service:
+      annotations:
+        k8s.grafana.com/scrape: "true"
+        k8s.grafana.com/metrics.portName: metrics
 
 dashboard:
   enabled: false # 'obs rollouts' runs it laptop-side on :3105
