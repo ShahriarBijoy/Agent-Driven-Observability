@@ -56,6 +56,13 @@ services:
     ports:
       - "${OBS_GITEA_PORT:-3005}:3000"
       - "${OBS_GITEA_SSH_PORT:-2222}:22"
+    # The obs-gitops push webhook (P10) targets Argo CD THROUGH the k3d load
+    # balancer: argocd.obs-vm resolves to the VM host here, lands on the LB's
+    # :8080, and a Traefik Host rule routes it to argocd-server (a laptop
+    # port-forward would be unreachable from this container - the trap the
+    # first draft fell into).
+    extra_hosts:
+      - "argocd.obs-vm:host-gateway"
     volumes:
       - gitea-data:/data
     healthcheck:

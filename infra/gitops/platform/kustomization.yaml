@@ -1,0 +1,62 @@
+# Platform half of the desired state (PLAN-2 P10): everything that is not a
+# CI-deployed service - namespace, datastores, seed hook, ingress, and the
+# profile-bound generators (registry names, telemetry egress, credentials).
+# One Argo CD Application ("platform") syncs this directory.
+#
+# This tree's runtime home is the Gitea repo obs/obs-gitops (seeded from
+# infra/gitops by 'obs gitops init'); see infra/gitops/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: subject
+
+resources:
+  - namespace.yaml
+  - postgres/pvc.yaml
+  - postgres/deployment.yaml
+  - postgres/service.yaml
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - seed/job.yaml
+  - ingress/ingressroute.yaml
+
+configMapGenerator:
+  # Copies of infra/postgres/init/ (kustomize cannot reference files outside
+  # its root). If the canonical scripts change, re-copy them here.
+  - name: subject-pg-init
+    files:
+      - postgres/init/01-init.sql
+      - postgres/init/02-data-observability.sql
+      - postgres/init/03-agents.sql
+    options:
+      disableNameSuffixHash: true
+  # Cluster egress (Profile A): telemetry + lineage flow to the LAPTOP's
+  # Alloy/Marquez over the tailnet, by MagicDNS FQDN (single-label names
+  # don't survive the CoreDNS->systemd-resolved forwarding chain).
+  - name: subject-telemetry
+    literals:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://shahriar.tail813d2f.ts.net:4318
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=10000
+      - MARQUEZ_URL=http://shahriar.tail813d2f.ts.net:5000
+    options:
+      disableNameSuffixHash: true
+
+secretGenerator:
+  # Fixed name (no hash suffix): rotating this Secret WITHOUT restarting the
+  # deployments is exactly the stale-secret incident the failure matrix wants.
+  - name: subject-db-credentials
+    literals:
+      - POSTGRES_USER=lab
+      - POSTGRES_PASSWORD=lab
+      - POSTGRES_DB=observability_lab
+      - DATABASE_URL=postgres://lab:lab@postgres:5432/observability_lab
+      - REDIS_URL=redis://redis:6379
+    options:
+      disableNameSuffixHash: true
+
+images:
+  # The seed hook rides the retriever image; :dev is whatever CI pushed last,
+  # which is exactly right for a data-seeding job.
+  - name: obs/retriever
+    newName: obs-registry:5010/retriever
+    newTag: dev

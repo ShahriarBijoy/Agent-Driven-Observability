@@ -4,8 +4,6 @@ metadata:
   name: load-generator
   labels:
     app: load-generator
-  annotations:
-    kubernetes.io/change-cause: "phase-7: in-cluster load-generator (scaled to zero)"
 spec:
   # Parked at zero - the compose `load` profile equivalent. Scale to 1 for
   # in-cluster load; targets go via cluster DNS, never host ports.

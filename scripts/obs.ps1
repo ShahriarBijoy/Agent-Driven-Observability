@@ -57,6 +57,9 @@
                              ci-shim (P9). Subcommands: up (ship source, compose up,
                              bootstrap admin/token/runner), down, logs [svc],
                              token (API token for agent-service), status.
+    obs gitops <sub>         Desired-state repo obs/obs-gitops (P10): init (seed from
+                             infra/gitops), push [msg] (operator override force-sync),
+                             status (Applications sync/health table).
     obs argocd               Argo CD UI: port-forward :8443 -> argocd-server, print the
                              admin password, open the browser. Ctrl-C stops the forward.
     obs rollouts             Argo Rollouts dashboard on :3105, served locally by the
@@ -710,6 +713,24 @@ current-context: agent-ro@obs-lab
                     scp -q -o BatchMode=yes infra/k8s/rollouts/values.yaml "root@${vm}:/root/obs-lab/rollouts-values.yaml"
                     ssh -o BatchMode=yes "root@$vm" 'helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1; helm repo update argo >/dev/null 2>&1; helm upgrade --install argocd argo/argo-cd --version 10.1.4 -n argocd --create-namespace -f /root/obs-lab/argocd-values.yaml --wait --timeout 5m && helm upgrade --install argo-rollouts argo/argo-rollouts --version 2.41.1 -n argo-rollouts --create-namespace -f /root/obs-lab/rollouts-values.yaml --wait --timeout 3m'
                     if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
+                    # Credential for the private obs-gitops repo (same token the
+                    # laptop remote uses), then the webhook route + the six
+                    # Applications. All idempotent.
+                    $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token 2>/dev/null').Trim()
+                    if ($tok) {
+                        kubectl --kubeconfig $kubeconfig -n argocd create secret generic repo-obs-gitops `
+                            --from-literal=type=git `
+                            --from-literal=url="http://${vm}:$($Ports.OBS_GITEA_PORT)/obs/obs-gitops.git" `
+                            --from-literal=username=obs --from-literal=password=$tok `
+                            --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argocd label secret repo-obs-gitops `
+                            'argocd.argoproj.io/secret-type=repository' --overwrite | Out-Null
+                    } else {
+                        Write-Warning "no Gitea token on the VM yet (obs ci up) - repo credential NOT created"
+                    }
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/ingressroute.yaml | Out-Null
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/apps/ | Out-Null
                     kubectl --kubeconfig $kubeconfig -n argocd get pods
                     kubectl --kubeconfig $kubeconfig -n argo-rollouts get pods
                 }
@@ -776,6 +797,12 @@ current-context: agent-ro@obs-lab
             # Delivery control plane on the VM (P9) - see scripts/ci.ps1.
             $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
             & (Join-Path $PSScriptRoot 'ci.ps1') $sub @($Rest | Select-Object -Skip 1)
+        }
+
+        'gitops' {
+            # Desired-state repo lifecycle (P10) - see scripts/gitops.ps1.
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            & (Join-Path $PSScriptRoot 'gitops.ps1') $sub @($Rest | Select-Object -Skip 1)
         }
 
         'preflight' {

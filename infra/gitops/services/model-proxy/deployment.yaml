@@ -1,25 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: retriever
+  name: model-proxy
   labels:
-    app: retriever
-  annotations:
-    kubernetes.io/change-cause: "phase-7: retriever moves into the cluster"
+    app: model-proxy
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: retriever
+      app: model-proxy
   template:
     metadata:
       labels:
-        app: retriever
+        app: model-proxy
     spec:
       containers:
-        - name: retriever
-          image: obs/retriever
-          workingDir: /app/apps/retriever
+        - name: model-proxy
+          image: obs/model-proxy
+          workingDir: /app/apps/model-proxy
           command: ["bun", "run", "start"]
           env:
             # Per-pod metric identity (see gateway/deployment.yaml).
@@ -29,8 +27,8 @@ spec:
                   fieldPath: metadata.name
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME)"
-            - name: RETRIEVER_PORT
-              value: "8082"
+            - name: MODEL_PROXY_PORT
+              value: "8083"
           envFrom:
             - secretRef:
                 name: subject-db-credentials
@@ -38,7 +36,7 @@ spec:
                 name: subject-telemetry
           ports:
             - name: http
-              containerPort: 8082
+              containerPort: 8083
           readinessProbe:
             httpGet:
               path: /health
@@ -52,8 +50,12 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
           resources:
+            # Right-sized in P10 (steady state ~80Mi): four Rollout replicas
+            # must fit the 2Gi agents next to the platform + delivery planes,
+            # while the subject set as a whole still cannot fit ONE agent
+            # (the P7 scheduling-pressure contract).
             requests:
               cpu: 100m
-              memory: 384Mi
+              memory: 128Mi
             limits:
-              memory: 512Mi
+              memory: 384Mi

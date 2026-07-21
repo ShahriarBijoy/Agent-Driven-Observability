@@ -6,7 +6,7 @@
 # monitoring' (helm on the VM, namespace "monitoring", pinned chart version).
 #
 # Endpoints are the laptop's MagicDNS FQDN, same egress path the subject
-# system uses (overlays/lab): CoreDNS ts.net forward + the VM's NAT unit.
+# system uses (infra/gitops platform): CoreDNS ts.net forward + the VM's NAT unit.
 # Ports are OBS_MIMIR_PORT/OBS_LOKI_PORT/OBS_OTLP_HTTP_PORT from
 # infra/ports.env - a remap there means editing the three URLs here.
 #

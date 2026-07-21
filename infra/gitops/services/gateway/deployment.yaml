@@ -4,8 +4,6 @@ metadata:
   name: gateway
   labels:
     app: gateway
-  annotations:
-    kubernetes.io/change-cause: "phase-7: gateway moves into the cluster"
 spec:
   # Two replicas: a single pod-kill blips 5xx without a full outage, and a
   # drain has something to reschedule.
@@ -67,11 +65,12 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
           resources:
-            # Requests across the subject system are sized so the full set
-            # CANNOT fit on one 2g agent - cordon/drain must produce real
-            # FailedScheduling evidence (PLAN-2 P7).
+            # Right-sized in P10 (steady state ~80Mi): four Rollout replicas
+            # must fit the 2Gi agents next to the platform + delivery planes,
+            # while the subject set as a whole still cannot fit ONE agent
+            # (the P7 scheduling-pressure contract).
             requests:
               cpu: 100m
-              memory: 384Mi
+              memory: 128Mi
             limits:
-              memory: 512Mi
+              memory: 384Mi
