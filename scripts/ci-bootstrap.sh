@@ -72,10 +72,15 @@ if ! api "$API/repos/obs/obs-lab/hooks" | grep -q 'ci-shim:8095'; then
   echo ">> webhook wired: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
 fi
 
-# The deploy job needs cluster access: ship the operator kubeconfig into the
-# repo as an Actions secret. Overwritten on every up, so a recreated cluster
-# heals on the next `obs ci up`. (Server name obs-vm resolves in job
-# containers via the runner's --add-host=obs-vm:host-gateway.)
+# P10: the deploy job is a commit to obs-gitops, so CI needs the Gitea token
+# (not cluster access - Argo CD holds the only deploy credential now).
+api -X PUT "$API/repos/obs/obs-lab/actions/secrets/GITOPS_TOKEN" \
+  -d "{\"data\":\"$(cat .gitea-token)\"}" >/dev/null && echo ">> actions secret GITOPS_TOKEN refreshed"
+
+# The operator kubeconfig stays available to workflows (KUBECONFIG_B64) for
+# cluster-adjacent jobs, but the deploy path no longer uses it. Overwritten
+# on every up, so a recreated cluster heals on the next `obs ci up`. (Server
+# name obs-vm resolves in job containers via the runner's --add-host.)
 if k3d cluster list obs-lab >/dev/null 2>&1; then
   KUBE_B64=$(k3d kubeconfig get obs-lab | base64 -w0)
   api -X PUT "$API/repos/obs/obs-lab/actions/secrets/KUBECONFIG_B64" \
