@@ -64,9 +64,12 @@ The full lab is those three pieces: **containers + `obs agents` + `obs web`**. T
 | `obs load [qps] [secs]`  | Drive synthetic traffic (defaults 120 qps / 300s)                                                                                                                                                                                                       |
 | `obs demo [qps] [secs]`  | Full cycle: up --build → wait healthy → load → down                                                                                                                                                                                                     |
 | `obs web` / `obs agents` | Run a host process in the current terminal                                                                                                                                                                                                              |
-| `obs fail <scenario>`    | Failure drills with baseline traffic: 8 compose chaos scenarios, the k8s-native `pod-kill`, `oomkill`, `imagepull`, `crashloop`, `readiness-break`, and the pipeline-native `bad-deploy` (a plausible commit ships latency through CI; all auto-revert) |
-| `obs k8s <sub>`          | Act II cluster lifecycle on the VM: `up` `down` `status` `build` `deploy` `smoke` `monitoring` (install the k8s-monitoring chart) `agent-kubeconfig` `node-stop/start`                                                                                  |
+| `obs fail <scenario>`    | Failure drills with baseline traffic: 8 compose chaos scenarios, the k8s-native `pod-kill`, `oomkill`, `imagepull`, `crashloop`, `readiness-break`, and the delivery-native `bad-deploy`, `canary-bad-image`, `config-drift`, `sync-fail` (each declares `inject_mode: git\|live`; all auto-revert)                          |
+| `obs k8s <sub>`          | Act II cluster lifecycle on the VM: `up` `down` `status` `build` `deploy` `smoke` `monitoring` (k8s-monitoring chart) `argo` (Argo CD + Rollouts + Applications + webhook route) `agent-kubeconfig` `node-stop/start`                                    |
 | `obs ci <sub>`           | Act II CI layer on the VM: `up` (ship source, bootstrap Gitea admin/token/webhook/runner) `down` `logs` `token` `status`                                                                                                                                |
+| `obs gitops <sub>`       | Act II desired-state repo (`obs/obs-gitops`): `init` (seed from `infra/gitops`) `push` (operator override) `status` (Applications table) `smoke` (the canary-hash gate)                                                                                 |
+| `obs argocd`             | Argo CD UI on :8443 (port-forward + admin password + browser)                                                                                                                                                                                           |
+| `obs rollouts`           | Argo Rollouts dashboard on :3105 (laptop-side kubectl plugin)                                                                                                                                                                                           |
 | `obs names [install]`    | Register `https://obs-*.localhost` aliases for the human-facing endpoints                                                                                                                                                                               |
 | `obs preflight`          | Check required binaries and every port in `infra/ports.env`                                                                                                                                                                                             |
 | `obs smoke`              | Phase-1 end-to-end smoke test                                                                                                                                                                                                                           |
@@ -164,8 +167,10 @@ infra/
   compose.yml                  # subject system (Postgres, Redis, TS services, seed, load)
   compose.observability.yml    # Alloy + Loki/Tempo/Mimir + Grafana + Pyroscope
   compose.lineage.yml          # Marquez + dq-runner
-  k8s/                         # Act II: k3d config, kustomize base + lab overlay,
-                               #   cluster bootstrap, k8s-monitoring chart values
+  gitops/                      # Act II: desired-state seed (platform + per-service
+                               #   sync roots) - runtime truth is Gitea obs/obs-gitops
+  k8s/                         # Act II: k3d config, cluster bootstrap, k8s-monitoring
+                               #   values, Argo CD/Rollouts values + Application CRs
   vm/                          # obs-vm provisioning (cloud-init, tailnet NAT unit)
   grafana/mixins/              # kubernetes-mixin dashboard build (jsonnet, dockerized)
 slo/                # SLO specs (source of truth for recording rules + alerts)
