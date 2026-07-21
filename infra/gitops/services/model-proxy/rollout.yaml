@@ -1,0 +1,50 @@
+# Progressive delivery for the request path (PLAN-2 P10) - see
+# services/gateway/rollout.yaml for the full rationale. Retriever and
+# embedder stay plain Deployments: the canary demos only need the request
+# path, and the 2Gi-agent RAM budget is real.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: model-proxy
+  annotations:
+    # Rollouts' EVENT-driven notifications resolve subscriptions from these
+    # annotations (the configmap's global subscriptions list only serves the
+    # engine's api-eval path, which bare event triggers never satisfy -
+    # verified live: completion fired nothing until these existed).
+    notifications.argoproj.io/subscribe.on-rollout-completed.agent: ""
+    notifications.argoproj.io/subscribe.on-rollout-aborted.agent: ""
+    notifications.argoproj.io/subscribe.on-analysis-run-failed.agent: ""
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: model-proxy
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: model-proxy
+    scaleDown: onsuccess
+  strategy:
+    canary:
+      # maxSurge 0 / maxUnavailable 1: the canary reuses a stable pod's slot
+      # instead of adding a 5th, so total pods stay at 4 during a canary. On
+      # the 2Gi agents that headroom is the difference between a clean canary
+      # and a scheduling jam when gateway + model-proxy canary at once (a
+      # full-CI deploy bumps every service). One-in-four briefly unavailable
+      # is fine behind the Service.
+      maxSurge: 0
+      maxUnavailable: 1
+      steps:
+        - setWeight: 25
+        - analysis: &canary-analysis
+            templates:
+              - templateName: canary-analysis
+            args:
+              - name: job
+                value: model-proxy
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+        - setWeight: 50
+        - analysis: *canary-analysis

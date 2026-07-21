@@ -44,4 +44,6 @@ PROJECT_REVIEW.md
 .obs-mode
 # minted read-only cluster credentials (obs k8s agent-kubeconfig)
 apps/agent-service/.kube/
+# downloaded delivery toolbelt (obs argocd / obs rollouts fetch these)
+.tools/
 .foglamp/

@@ -1,0 +1,38 @@
+# Argo CD Application: gateway (request-path service). Cluster bootstrap, applied by
+# 'obs k8s argo' - NOT synced from obs-gitops itself (no app-of-apps; six
+# apps is small enough to keep the bootstrap flat and greppable).
+#
+# selfHeal stays OFF by design: live kubectl edits must flip the app to
+# OutOfSync and remain visible - the P10 drift demos depend on it. The exam
+# runner toggles it per-app around live-inject scenarios.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # Matches Gitea's ROOT_URL host (obs-vm resolves in-cluster via the
+    # CoreDNS tailnet forward) so push-webhook payload URLs map to this app.
+    repoURL: http://obs-vm:3005/obs/obs-gitops.git
+    targetRevision: main
+    path: services/gateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: subject
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - RespectIgnoreDifferences=true
+  # The Rollout (workloadRef, scaleDown: onsuccess) owns this Deployment's
+  # scale: git says the template, Rollouts says the replica count. Without
+  # this, every completed rollout reads as permanent drift.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: gateway
+      jsonPointers:
+        - /spec/replicas

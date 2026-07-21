@@ -316,6 +316,33 @@ async def record_incident(
     )
 
 
+async def find_open_incident(title_like: str, title_prefix: str = "") -> dict | None:
+    """Newest open incident whose title mentions the given target (P10: the
+    rollout-completed resolution flow matches on the app/rollout name).
+    title_prefix narrows to one incident family - the gitops flow passes
+    'on-' so a completed rollout can never auto-close an unrelated alert
+    incident that merely mentions the same service."""
+    row = await _require_pool().fetchrow(
+        """SELECT id, title, severity, summary FROM incidents
+           WHERE status = 'open' AND title ILIKE '%' || $1 || '%'
+             AND ($2 = '' OR title ILIKE $2 || '%')
+           ORDER BY opened_at DESC LIMIT 1""",
+        title_like, title_prefix,
+    )
+    return dict(row) if row else None
+
+
+async def resolve_incident(incident_id: str, note: str) -> None:
+    """Close an incident, appending the resolution note to its postmortem."""
+    await _require_pool().execute(
+        """UPDATE incidents
+           SET status = 'resolved', resolved_at = now(),
+               postmortem_md = COALESCE(postmortem_md, '') || E'\\n\\n---\\n\\n' || $2
+           WHERE id = $1""",
+        incident_id, note,
+    )
+
+
 async def run_select(sql: str, params: list, limit: int = 200) -> list[dict]:
     """Execute a read-only SELECT in a read-only transaction. Callers MUST have
     validated the SQL against the allow-list first (tools.validation)."""

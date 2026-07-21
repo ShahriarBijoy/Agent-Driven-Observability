@@ -10,12 +10,11 @@
 // laptop's Alloy over the tailnet; see src/metrics.ts for why scrape > push
 // for sparse CI events.
 import { Hono } from "hono";
-import { buildTrace, type JobInfo, postDeployAnnotations, postTrace, type RunInfo } from "./emit";
+import { buildTrace, type JobInfo, postTrace, type RunInfo } from "./emit";
 import { CallbackGauge, Counter, Histogram, Registry } from "./metrics";
 
 const port = Number(process.env.CI_SHIM_PORT ?? "8095");
 const otlpUrl = process.env.OTLP_URL ?? "http://localhost:4318";
-const grafanaUrl = process.env.GRAFANA_URL ?? "http://localhost:3001";
 const giteaUrl = process.env.GITEA_URL ?? "http://gitea:3000";
 const giteaToken = process.env.GITEA_TOKEN ?? "";
 const startedAt = Date.now();
@@ -208,13 +207,10 @@ async function handleWorkflowRun(action: string, body: Record<string, unknown>):
       const lead = (Date.parse(run.completedAt) - Date.parse(commitTs)) / 1000;
       if (lead >= 0) leadTime.observe({}, lead);
     }
-    try {
-      await postDeployAnnotations(grafanaUrl, DEPLOYED_SERVICES, run);
-      console.log(`[ci-shim] deploy annotations posted for :${run.sha.slice(0, 7)}`);
-    } catch (err) {
-      webhookErrors.inc({ stage: "annotation" });
-      console.error(`[ci-shim] annotation post failed for run ${run.id}:`, err);
-    }
+    // P10: the deploy annotation moved to Argo CD's on-deployed notification
+    // (posted at SYNC time, when the change actually reaches the cluster -
+    // the deploy job completing now only means "the gitops bump is pushed").
+    // DORA metrics stay here: the run is still the unit of delivery.
   }
 }
 
@@ -241,6 +237,6 @@ app.post("/webhook", async (c) => {
   return c.json({ accepted: true }, 202);
 });
 
-console.log(`[ci-shim] listening on :${port} (otlp=${otlpUrl}, grafana=${grafanaUrl})`);
+console.log(`[ci-shim] listening on :${port} (otlp=${otlpUrl})`);
 
 export default { port, fetch: app.fetch };

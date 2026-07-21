@@ -1,0 +1,167 @@
+# Argo CD for the lab (PLAN-2 P10) - chart argo/argo-cd 10.1.4 (Argo CD
+# v3.4.5), pinned in scripts/obs.ps1 ('obs k8s argo'). Installed on the VM's
+# k3d cluster, ns argocd.
+#
+# Sizing: the workload nodes are two 2Gi k3d agents shared with the subject
+# system, so every optional component is off and requests are honest-small
+# (no limits - the controller's working set spikes on refresh and an OOM
+# there wedges every sync).
+#
+# TLS: server.insecure - the UI is only ever reached via 'obs argocd'
+# (kubectl port-forward over the tailnet) and the Gitea webhook arrives via
+# Traefik on plain http. Nothing terminates TLS in this path on purpose.
+
+dex:
+  enabled: false # no SSO in the lab
+
+# (chart 10.x note: the ApplicationSet controller has no enable toggle any
+# more - it ships always-on and idles at ~30Mi. P10 uses plain Applications.)
+applicationSet:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+
+notifications:
+  enabled: true
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+  # argocd-notifications-secret is created by 'obs k8s argo' from the lab
+  # .env (OBS_TOKEN) - the shared secret never enters git. Argo notifications
+  # cannot HMAC-sign, so the static X-Obs-Token header is the auth story.
+  secret:
+    create: false
+  notifiers:
+    service.webhook.agent: |
+      url: http://shahriar.tail813d2f.ts.net:8093
+      headers:
+        - name: Content-Type
+          value: application/json
+        - name: X-Obs-Token
+          value: $obs-token
+    # Explicit Content-Type on both: the webhook notifier sends none by
+    # default and Grafana 400s a typeless annotation POST.
+    service.webhook.grafana: |
+      url: http://shahriar.tail813d2f.ts.net:3001
+      headers:
+        - name: Content-Type
+          value: application/json
+  # Trigger `when` clauses are verbatim from the v3.4.5 notifications
+  # catalog; send lists are ours, and oncePer drops the catalog's `?.`
+  # chaining - it hashed to a constant here, collapsing dedup across
+  # revisions (the when clause already guards the nil case). Free-text status messages stay
+  # OUT of the JSON bodies (quotes would break them) - the agent quotes
+  # CRs itself through its read tools.
+  triggers:
+    trigger.on-deployed: |
+      - description: Application is synced and healthy. Triggered once per commit.
+        oncePer: app.status.operationState.syncResult.revision
+        send: [agent-deployed, deploy-annotation]
+        when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded']
+          and app.status.health.status == 'Healthy' and (!time.Parse(app.status.health.lastTransitionTime).Add(1
+          * time.Minute).Before(time.Parse(app.status.operationState.finishedAt)) or time.Parse(app.status.health.lastTransitionTime).Before(time.Parse(app.status.operationState.startedAt)))
+    trigger.on-health-degraded: |
+      - description: Application has degraded
+        oncePer: app.status.sync.revision
+        send: [agent-degraded]
+        when: app.status.health.status == 'Degraded'
+    trigger.on-sync-failed: |
+      - description: Application syncing has failed
+        oncePer: app.status.sync.revision
+        send: [agent-sync-failed]
+        when: app.status.operationState != nil and app.status.operationState.phase in ['Error',
+          'Failed']
+    trigger.on-out-of-sync: |
+      - description: Live state drifted from git. No oncePer - state clears when
+          the app syncs, so each OutOfSync EPISODE fires exactly once. The
+          operation guard skips the transient OutOfSync every deploy passes
+          through; the agent re-checks after 30s anyway before spawning.
+        send: [agent-out-of-sync]
+        when: app.status.sync.status == 'OutOfSync' and (app.status.operationState
+          == nil or app.status.operationState.phase not in ['Running'])
+  templates:
+    template.agent-deployed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-deployed","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.operationState.syncResult.revision}}","phase":"{{.app.status.operationState.phase}}","health":"{{.app.status.health.status}}"}
+    template.agent-degraded: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-health-degraded","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"","health":"{{.app.status.health.status}}"}
+    template.agent-sync-failed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-sync-failed","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"{{.app.status.operationState.phase}}","health":"{{.app.status.health.status}}"}
+    template.agent-out-of-sync: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-out-of-sync","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"","health":"{{.app.status.health.status}}"}
+    template.deploy-annotation: |
+      webhook:
+        grafana:
+          method: POST
+          path: /api/annotations
+          body: |
+            {"tags":["deployment","{{.app.metadata.name}}","gitops"],"text":"deploy {{.app.metadata.name}} via gitops {{trunc 7 .app.status.operationState.syncResult.revision}} (argo sync)"}
+  # Webhook recipients are the bare service name - "webhook:agent" would
+  # parse as service "webhook" (which doesn't exist) + recipient "agent".
+  # on-out-of-sync is deliberately NOT global: a Rollout app is legitimately
+  # OutOfSync for the whole ~8min a canary runs (live pods != target manifest
+  # until it completes), so a global subscription would page on every normal
+  # canary AND let that false drift eat the per-target dedupe slot before a
+  # real abort lands. It rides a per-app annotation on the plain-Deployment
+  # apps only (platform/retriever/embedder/load-generator), where OutOfSync
+  # always means genuine out-of-band drift. See infra/k8s/argocd/apps/*.yaml.
+  subscriptions:
+    - recipients: [agent]
+      triggers: [on-deployed, on-health-degraded, on-sync-failed]
+    - recipients: [grafana]
+      triggers: [on-deployed]
+
+configs:
+  params:
+    server.insecure: true
+
+controller:
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+  # Delivery observability (P10): argocd_app_info & friends, scraped by the
+  # k8s-monitoring chart's annotationAutodiscovery hook (only annotated
+  # services opt in - see infra/k8s/monitoring/values.yaml).
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        k8s.grafana.com/scrape: "true"
+        k8s.grafana.com/metrics.portName: http-metrics
+
+repoServer:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+
+server:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+  # The Rollouts UI extension: canary steps/weights rendered inside the
+  # Argo CD app view (the standalone dashboard is 'obs rollouts' on :3105).
+  extensions:
+    enabled: true
+    extensionList:
+      - name: rollout-extension
+        env:
+          - name: EXTENSION_URL
+            value: https://github.com/argoproj-labs/rollout-extension/releases/download/v0.4.0/extension.tar
+
+redis:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }

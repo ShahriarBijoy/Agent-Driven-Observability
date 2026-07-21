@@ -1,0 +1,20 @@
+# Gitea -> Argo CD webhook path (PLAN-2 P10): the Gitea container cannot
+# reach a laptop port-forward, so the push webhook rides the k3d load
+# balancer instead - http://argocd.obs-vm:8080/api/webhook resolves to the
+# VM host inside the gitea container (extra_hosts: host-gateway in
+# compose.ci.yml), lands on the k3d LB :8080 -> Traefik :80, and this Host
+# rule peels it off before the subject catch-all (Traefik v3 priority = rule
+# length; Host(...) outranks PathPrefix(`/`)).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-webhook
+  namespace: argocd
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`argocd.obs-vm`)
+      kind: Rule
+      services:
+        - name: argocd-server
+          port: 80

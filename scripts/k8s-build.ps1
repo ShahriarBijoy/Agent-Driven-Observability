@@ -85,9 +85,17 @@ function Invoke-K8sDeploy {
     }
     # A completed Job is immutable; clear it so apply can recreate.
     kubectl --kubeconfig $Kubeconfig -n subject delete job seed --ignore-not-found | Out-Null
-    Write-Step "kubectl apply -k overlays/lab"
-    kubectl --kubeconfig $Kubeconfig apply -k (Join-Path $Repo 'infra\k8s\overlays\lab')
+    # P10: the manifests live in infra/gitops (per-service sync roots). This
+    # direct apply is the OUT-OF-BAND bootstrap path - with Argo CD running it
+    # flips every app OutOfSync (self-heal is off, so the pins below stick
+    # until the next gitops sync). Normal deploys go through CI -> obs-gitops.
+    Write-Step "kubectl apply -k infra/gitops/* (out-of-band - Argo will flag OutOfSync)"
+    kubectl --kubeconfig $Kubeconfig apply -k (Join-Path $Repo 'infra\gitops\platform')
     if ($LASTEXITCODE -ne 0) { throw "apply failed" }
+    foreach ($svc in $Services) {
+        kubectl --kubeconfig $Kubeconfig apply -k (Join-Path $Repo "infra\gitops\services\$svc")
+        if ($LASTEXITCODE -ne 0) { throw "apply of $svc failed" }
+    }
 
     Write-Step "pinning deployments to :$Sha (change-cause annotated)"
     foreach ($svc in $Services) {

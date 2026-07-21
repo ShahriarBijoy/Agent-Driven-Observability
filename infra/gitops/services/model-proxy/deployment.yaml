@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-proxy
+  labels:
+    app: model-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-proxy
+  template:
+    metadata:
+      labels:
+        app: model-proxy
+    spec:
+      containers:
+        - name: model-proxy
+          image: obs/model-proxy
+          workingDir: /app/apps/model-proxy
+          command: ["bun", "run", "start"]
+          env:
+            # Per-pod metric identity (see gateway/deployment.yaml).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The canary label, made real (P10): Rollouts stamps
+            # rollouts-pod-template-hash on the pods it owns; the downward
+            # API lifts it into the OTel resource, and Mimir promotes it to
+            # a metric label (promote_resource_attributes) so AnalysisRuns
+            # can split canary from stable in the app's own histograms.
+            # Empty (verified harmless) when a plain Deployment runs this
+            # template on a Rollouts-free bootstrap cluster.
+            - name: ROLLOUTS_HASH
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['rollouts-pod-template-hash']
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME),rollouts.pod.template.hash=$(ROLLOUTS_HASH)"
+            - name: MODEL_PROXY_PORT
+              value: "8083"
+          envFrom:
+            - secretRef:
+                name: subject-db-credentials
+            - configMapRef:
+                name: subject-telemetry
+          ports:
+            - name: http
+              containerPort: 8083
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            # Right-sized in P10 (steady state ~80Mi): four Rollout replicas
+            # must fit the 2Gi agents next to the platform + delivery planes,
+            # while the subject set as a whole still cannot fit ONE agent
+            # (the P7 scheduling-pressure contract).
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 384Mi

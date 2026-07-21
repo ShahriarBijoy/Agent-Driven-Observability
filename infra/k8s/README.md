@@ -7,15 +7,20 @@ moved: every byte of telemetry flows back to the laptop's compose LGTM stack
 over the tailnet, so Grafana keeps all history and survives anything the
 cluster does to itself.
 
-| Piece          | What it is                                                                                                                                                                                                                                                                       |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `k3d.yaml`     | Cluster as code: 1 tainted server + 2 killable agents, pinned API :6550, registry :5010, LB :8080→Traefik. Plain `${VAR}` refs — always source `infra/ports.env` first (obs k8s up does).                                                                                        |
-| `base/`        | Kustomize base: Deployments with probes + requests sized so the full set cannot fit one agent (real FailedScheduling under drain), DB creds via the `subject-db-credentials` Secret, per-pod `service.instance.id`, Traefik IngressRoute keeping `:8080` + `/chaos/*` contracts. |
-| `overlays/lab` | Profile A values: registry image refs, telemetry/lineage egress to the laptop's tailnet FQDN, the Secret and telemetry ConfigMap literals.                                                                                                                                       |
-| `cluster/`     | Bootstrap applied on every `obs k8s up`: CoreDNS ts.net→MagicDNS forward, `agent-ro` read-only ServiceAccount.                                                                                                                                                                   |
+| Piece         | What it is                                                                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `k3d.yaml`    | Cluster as code: 1 tainted server + 2 killable agents, pinned API :6550, registry :5010, LB :8080→Traefik. Plain `${VAR}` refs — always source `infra/ports.env` first (obs k8s up does).                                            |
+| `cluster/`    | Bootstrap applied on every `obs k8s up`: CoreDNS ts.net→MagicDNS forward, `agent-ro` read-only ServiceAccount.                                                                                                                       |
+| `argocd/`     | P10 delivery control plane: helm values for Argo CD (+ `rollouts/values.yaml` for Argo Rollouts), the six Application CRs (`apps/`), and the Traefik Host-rule that routes Gitea's push webhook to argocd-server through the k3d LB. |
+| `monitoring/` | P8 telemetry: grafana/k8s-monitoring chart values (see below).                                                                                                                                                                       |
 
-Daily flow: `obs k8s up` → `obs k8s build` → `obs k8s deploy` → `obs smoke`.
-GitOps replaces the build/deploy half in Phase 10. The VM side lives in
+The subject manifests themselves moved in Phase 10: the Kustomize tree lives
+in `infra/gitops/` (seed) and runs from the Gitea repo **obs/obs-gitops**
+(runtime truth, synced by Argo CD) — see `infra/gitops/README.md`.
+
+Daily flow: `obs k8s up` → `obs k8s argo` → push to Gitea `obs-lab:main` and
+let CI deploy via a gitops tag bump. (`obs k8s build`/`deploy` survive as the
+out-of-band bootstrap path; Argo flags them as drift.) The VM side lives in
 `infra/vm/` (cloud-init + NAT unit + provisioning guide).
 
 ## K8s observability (Phase 8)

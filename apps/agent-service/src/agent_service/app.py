@@ -29,6 +29,12 @@ from .agents.autofix import run_autofixer
 from .agents.base import AgentSessionError
 from .agents.dashboard import run_dashboard_generator
 from .agents.echo import run_echo
+from .agents.gitops import (
+    FAILURE_EVENTS as GITOPS_FAILURE_EVENTS,
+    run_gitops_reporter,
+    run_gitops_resolution,
+    subject_of,
+)
 from .agents.incident import run_incident_reporter, summarize_alert
 from .agents.rca import run_rca
 from .agents.runbook import run_runbook_executor
@@ -164,6 +170,74 @@ async def grafana_alert(request: Request) -> JSONResponse:
     await db.create_run(ctx.run, "grafana-alert")
     asyncio.create_task(_guard_run(ctx, run_incident_reporter(ctx, payload)))
     return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+
+
+# One failure investigation per target per window: an abort and its
+# analysis-run-failed arrive seconds apart and must not spawn twin runs.
+# (The real dedupe/debounce machinery is P11; this guard covers the obvious.)
+_GITOPS_DEDUPE_SECONDS = 600.0
+_recent_gitops_runs: dict[str, float] = {}
+
+
+@app.post("/webhook/gitops")
+async def gitops_webhook(request: Request) -> JSONResponse:
+    """Argo CD + Argo Rollouts notification webhooks (PLAN-2 P10). Both engines
+    send the static X-Obs-Token header (they cannot HMAC), so unlike the
+    Grafana hook this one is token-gated."""
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    event = str(payload.get("event", ""))
+    target = subject_of(payload)
+
+    if event in GITOPS_FAILURE_EVENTS:
+        loop_now = asyncio.get_running_loop().time()
+        last = _recent_gitops_runs.get(target)
+        if last is not None and loop_now - last < _GITOPS_DEDUPE_SECONDS:
+            return JSONResponse({"status": "suppressed",
+                                 "reason": f"investigation for {target} already running"})
+        if event == "on-out-of-sync":
+            # Routine deploys pass through OutOfSync for a few seconds before
+            # the automated sync lands; only sustained drift earns a run.
+            async def _watch_drift() -> None:
+                await asyncio.sleep(30)
+                state = await backends.argo_app(target)
+                if state.get("sync") != "OutOfSync":
+                    return
+                _recent_gitops_runs[target] = asyncio.get_running_loop().time()
+                ctx = new_run("gitops-reporter", config.dev_tenant, f"{event}: {target}")
+                await db.create_run(ctx.run, "gitops-webhook")
+                await _guard_run(ctx, run_gitops_reporter(ctx, payload))
+
+            asyncio.create_task(_watch_drift())
+            return JSONResponse({"status": "watching",
+                                 "reason": "spawns only if still OutOfSync in 30s"},
+                                status_code=202)
+        _recent_gitops_runs[target] = loop_now
+        ctx = new_run("gitops-reporter", config.dev_tenant, f"{event}: {target}")
+        await db.create_run(ctx.run, "gitops-webhook")
+        asyncio.create_task(_guard_run(ctx, run_gitops_reporter(ctx, payload)))
+        return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+
+    if event == "on-rollout-completed":
+        incident = await db.find_open_incident(target, title_prefix="on-")
+        if incident is not None:
+            ctx = new_run("gitops-reporter", config.dev_tenant,
+                          f"resolution: {target} ({incident['id']})")
+            await db.create_run(ctx.run, "gitops-webhook")
+            asyncio.create_task(_guard_run(ctx, run_gitops_resolution(ctx, payload, incident)))
+            return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+        return JSONResponse({"status": "recorded", "event": event, "target": target})
+
+    # on-deployed and anything unrecognised: acknowledged, no run. Deploy
+    # history is already durable (Grafana annotation + Application history).
+    return JSONResponse({"status": "recorded", "event": event, "target": target})
 
 
 @app.post("/runbooks/{name}/execute")

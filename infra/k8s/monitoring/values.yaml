@@ -6,7 +6,7 @@
 # monitoring' (helm on the VM, namespace "monitoring", pinned chart version).
 #
 # Endpoints are the laptop's MagicDNS FQDN, same egress path the subject
-# system uses (overlays/lab): CoreDNS ts.net forward + the VM's NAT unit.
+# system uses (infra/gitops platform): CoreDNS ts.net forward + the VM's NAT unit.
 # Ports are OBS_MIMIR_PORT/OBS_LOKI_PORT/OBS_OTLP_HTTP_PORT from
 # infra/ports.env - a remap there means editing the three URLs here.
 #
@@ -91,6 +91,16 @@ clusterMetrics:
         - process_cpu_seconds_total
         - process_resident_memory_bytes
         - go_goroutines
+
+# P10 delivery plane: scrape whatever SERVICE carries the
+# k8s.grafana.com/scrape annotation - today that is exactly two, the Argo CD
+# application-controller (argocd_app_info, sync/health state as metrics) and
+# the Argo Rollouts controller (rollout_info/rollout_phase, the rollout-stuck
+# alert's raw signal). Opt-in by annotation keeps this from becoming a
+# scrape-the-world backdoor around the P8 allowlists.
+annotationAutodiscovery:
+  enabled: true
+  collector: alloy-metrics
 
 clusterEvents:
   enabled: true

@@ -12,6 +12,7 @@ export const AgentKindSchema = z.enum([
   "echo", // Phase-4 placeholder; exercises the full streaming path
   "rca",
   "incident-reporter",
+  "gitops-reporter", // P10: Argo CD / Rollouts webhook-triggered delivery reporter
   "auto-fixer",
   "dashboard-generator",
   "runbook-executor",

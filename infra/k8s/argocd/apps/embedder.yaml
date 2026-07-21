@@ -1,0 +1,33 @@
+# Argo CD Application: embedder (supporting service). Cluster bootstrap, applied by
+# 'obs k8s argo' - NOT synced from obs-gitops itself (no app-of-apps; six
+# apps is small enough to keep the bootstrap flat and greppable).
+#
+# selfHeal stays OFF by design: live kubectl edits must flip the app to
+# OutOfSync and remain visible - the P10 drift demos depend on it. The exam
+# runner toggles it per-app around live-inject scenarios.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: embedder
+  namespace: argocd
+  annotations:
+    # Plain-Deployment app: OutOfSync always means genuine out-of-band drift
+    # (no canary to explain it), so THIS app subscribes to on-out-of-sync.
+    # The Rollout apps (gateway, model-proxy) deliberately do not - see
+    # infra/k8s/argocd/values.yaml.
+    notifications.argoproj.io/subscribe.on-out-of-sync.agent: ""
+spec:
+  project: default
+  source:
+    # Matches Gitea's ROOT_URL host (obs-vm resolves in-cluster via the
+    # CoreDNS tailnet forward) so push-webhook payload URLs map to this app.
+    repoURL: http://obs-vm:3005/obs/obs-gitops.git
+    targetRevision: main
+    path: services/embedder
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: subject
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false

@@ -1,0 +1,16 @@
+# One Application per service (PLAN-2 P10): this file is the deploy unit.
+# CI's "deploy" is a commit bumping newTag here; Argo CD does the rest.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: subject
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - rollout.yaml
+
+images:
+  - name: obs/gateway
+    newName: obs-registry:5010/gateway
+    newTag: "776114b"

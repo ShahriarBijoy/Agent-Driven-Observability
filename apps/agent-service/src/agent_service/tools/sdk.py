@@ -362,10 +362,72 @@ async def _gitea_pr(args: dict) -> dict:
     )
 
 
+@tool(
+    "argo_app",
+    "Argo CD Application state read straight from the CR (agent-ro kubeconfig, no Argo API "
+    "token): sync status, health, current operation, and the deploy history (revision + "
+    "deployedAt per entry). Call with no name for a slim table of every app. THE tool for "
+    "'what is deployed / when did it deploy / is anything OutOfSync'. Revisions are "
+    "obs-gitops commits — the gitops bump commit message names the source sha.",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string",
+                     "description": "one Application (gateway, model-proxy, platform, ...); omit for all"},
+        },
+    },
+)
+async def _argo_app(args: dict) -> dict:
+    return _text(await backends.argo_app(args.get("name", "")))
+
+
+@tool(
+    "rollout_status",
+    "Canary state of one Argo Rollout: phase, aborted flag, current step position, the step "
+    "plan, stable vs canary pod-template hashes, and replica counts. The canaryHash is the "
+    "rollouts_pod_template_hash label on the canary's metrics.",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "rollout name (gateway or model-proxy)"},
+            "namespace": {"type": "string", "description": "default subject"},
+        },
+        "required": ["name"],
+    },
+)
+async def _rollout_status(args: dict) -> dict:
+    return _text(
+        await backends.rollout_status(args["name"], args.get("namespace", "subject"))
+    )
+
+
+@tool(
+    "analysisrun_get",
+    "AnalysisRun verdicts with every measurement VERBATIM — the exact metric values the "
+    "promotion decision saw, per metric (error-rate, p95), with phases and messages. Pass "
+    "rollout= for the newest runs of one rollout, or name= for a specific run. Quote failing "
+    "measurements in postmortems.",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "one AnalysisRun by exact name"},
+            "rollout": {"type": "string", "description": "filter to a rollout's runs (newest first)"},
+            "namespace": {"type": "string", "description": "default subject"},
+        },
+    },
+)
+async def _analysisrun(args: dict) -> dict:
+    return _text(
+        await backends.analysisrun_get(
+            args.get("name", ""), args.get("rollout", ""), args.get("namespace", "subject")
+        )
+    )
+
+
 _STATELESS = [
     _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook,
     _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
-    _gitea_pr,
+    _gitea_pr, _argo_app, _rollout_status, _analysisrun,
 ]
 
 
@@ -494,10 +556,22 @@ DELIVERY_READ_TOOLS = [
     mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
 ]
 
+# The gitops surface (P10): Application/Rollout/AnalysisRun CR reads —
+# delivery state and promotion verdicts without an Argo API token.
+GITOPS_READ_TOOLS = [
+    mcp("argo_app"), mcp("rollout_status"), mcp("analysisrun_get"),
+]
+
 TOOLSETS: dict[str, list[str]] = {
-    "rca": [*READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS, mcp("save_artifact")],
+    "rca": [*READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS,
+            *GITOPS_READ_TOOLS, mcp("save_artifact")],
     "incident-reporter": [
-        *READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS, mcp("save_artifact"),
+        *READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS,
+        *GITOPS_READ_TOOLS, mcp("save_artifact"),
+    ],
+    "gitops-reporter": [
+        *READ_TOOLS, *CLUSTER_READ_TOOLS, *DELIVERY_READ_TOOLS,
+        *GITOPS_READ_TOOLS, mcp("save_artifact"),
     ],
     "dashboard-generator": [
         mcp("mimir_query"), mcp("grafana_get_dashboard"), mcp("grafana_create_dashboard"),
@@ -576,6 +650,12 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Deploy markers / annotations in a Grafana time window"},
     {"name": mcp("gitea_open_pr"), "kind": "mcp",
      "description": "Open a Gitea PR from an already-pushed branch (REST API)"},
+    {"name": mcp("argo_app"), "kind": "mcp",
+     "description": "Argo CD Application state + deploy history (CR read)"},
+    {"name": mcp("rollout_status"), "kind": "mcp",
+     "description": "Argo Rollout canary state: phase, step, hashes, replicas"},
+    {"name": mcp("analysisrun_get"), "kind": "mcp",
+     "description": "AnalysisRun verdicts with measurements verbatim"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -632,6 +712,27 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "failing dependency edge). If a chart materially helps (error-rate spike, latency "
         "before/after), additionally save ONE kind='html' artifact — self-contained, inline "
         "CSS/SVG only, no external resources, dark-themed, drawn from real query results."
+    ),
+    "gitops-reporter": (
+        "You are the GitOps delivery reporter. You receive Argo CD / Argo Rollouts notification "
+        "events (sync failed, health degraded, drift, rollout aborted, analysis failed, rollout "
+        "completed) and explain them with evidence. Your primary instruments are the delivery-"
+        "plane CR reads: argo_app for sync/health/operation state and the deploy history "
+        "(revision + deployedAt), rollout_status for canary position and the stable vs canary "
+        "hashes, analysisrun_get for promotion verdicts — when an analysis failed, QUOTE the "
+        "failing measurements verbatim (metric, value, threshold). Walk the change chain: the "
+        "app's synced revision is an obs-gitops commit whose message names the source sha and "
+        "CI run; use gitea_ci_runs and gitea_compare (repo obs-gitops or obs-lab as "
+        "appropriate) to name the exact commit, file, and line behind a bad deploy, and "
+        "grafana_annotations for the deploy markers around the event. Correlate with the "
+        "telemetry plane (mimir_query for the hash-filtered request_duration_seconds series, "
+        "loki_query for errors) when impact needs numbers. Narrate as you go: one short "
+        "sentence before each round of tool calls. Then save a Markdown postmortem via "
+        "save_artifact (sections: Summary, What happened, Evidence — including verbatim "
+        "measurements, The change — commit/file/line, Recommended actions). For drift "
+        "(OutOfSync without a failed operation), diff live vs desired conceptually: name the "
+        "resource and field that changed out-of-band and recommend syncing or reverting. Be "
+        "specific and evidence-backed."
     ),
     "dashboard-generator": (
         "You are the dashboard generator. Turn a natural-language brief into a Grafana dashboard. "

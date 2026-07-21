@@ -4,8 +4,7 @@ metadata:
   name: redis
   labels:
     app: redis
-  annotations:
-    kubernetes.io/change-cause: "phase-7: subject redis moves into the cluster"
+    lab.obs/plane: platform
 spec:
   replicas: 1
   selector:

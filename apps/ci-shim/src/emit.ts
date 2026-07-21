@@ -155,36 +155,3 @@ export async function postTrace(otlpBase: string, payload: unknown): Promise<voi
   });
   if (!res.ok) throw new Error(`OTLP push failed: ${res.status} ${await res.text()}`);
 }
-
-/**
- * Grafana deploy annotation - the correlation primitive ("what changed right
- * before this?"). One per deployed service, tagged deployment,<svc>,<sha>,
- * placed at the run's completion time. Grafana runs anonymous-Admin in this
- * lab, so no token is needed.
- */
-export async function postDeployAnnotations(
-  grafanaBase: string,
-  services: string[],
-  run: RunInfo,
-): Promise<void> {
-  const timeMs = Date.parse(run.completedAt);
-  const results = await Promise.all(
-    services.map((svc) =>
-      fetch(`${grafanaBase.replace(/\/$/, "")}/api/annotations`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          time: timeMs,
-          tags: ["deployment", svc, run.sha],
-          text: `deploy ${svc} :${run.sha.slice(0, 7)} (<a href="${run.htmlUrl}">${run.workflowName} #${run.runNumber}</a>)`,
-        }),
-      }).then((res) => ({ svc, ok: res.ok, status: res.status })),
-    ),
-  );
-  const failed = results.filter((r) => !r.ok);
-  if (failed.length > 0) {
-    throw new Error(
-      failed.map((f) => `annotation post failed for ${f.svc}: ${f.status}`).join("; "),
-    );
-  }
-}

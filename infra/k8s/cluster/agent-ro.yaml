@@ -25,3 +25,29 @@ subjects:
   - kind: ServiceAccount
     name: agent-ro
     namespace: kube-system
+---
+# P10: the delivery plane is CRDs, which ClusterRole `view` does not cover.
+# Read-only on exactly the argoproj.io kinds the shaped tools consume
+# (argo_app / rollout_status / analysisrun_get) - still no secrets, no
+# writes, no Argo API token anywhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-ro-argo
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications, rollouts, analysisruns, analysistemplates, experiments]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-ro-argo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-ro-argo
+subjects:
+  - kind: ServiceAccount
+    name: agent-ro
+    namespace: kube-system

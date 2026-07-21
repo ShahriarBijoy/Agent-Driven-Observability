@@ -522,6 +522,203 @@ async def kubectl_read(
     return result
 
 
+# ---- gitops delivery plane (P10): Argo CD / Rollouts CR reads ---------------
+# No Argo API, no argocd login: everything is a read of the CRs through the
+# same agent-ro kubeconfig kubectl_read uses (its ClusterRole gained
+# argoproj.io get/list in infra/k8s/cluster/agent-ro.yaml). Server-side
+# fixed argv, shaped output.
+
+
+async def _kubectl_json(args: list[str]) -> dict:
+    """One kubectl read returning parsed JSON (fixed argv, agent-ro identity)."""
+    kubeconfig = config.k8s_kubeconfig
+    if not os.path.exists(kubeconfig):
+        return {"error": "no cluster credentials: run `obs k8s agent-kubeconfig` first"}
+    argv = ["kubectl", "--kubeconfig", kubeconfig, *args, "-o", "json"]
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, argv, capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "kubectl timed out after 30s"}
+    except FileNotFoundError:
+        return {"error": "kubectl is not installed on the agent-service host"}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"kubectl failed: {exc}"}
+    if proc.returncode != 0:
+        return {"error": (proc.stderr or "").strip()[:500] or f"kubectl exited {proc.returncode}"}
+    try:
+        return {"data": json.loads(proc.stdout)}
+    except Exception:  # noqa: BLE001
+        return {"error": "kubectl returned unparseable JSON"}
+
+
+def _shape_application(app: dict) -> dict:
+    st = app.get("status") or {}
+    op = st.get("operationState") or {}
+    sync = st.get("sync") or {}
+    return {
+        "app": ((app.get("metadata") or {}).get("name")),
+        "sync": sync.get("status"),
+        "revision": (sync.get("revision") or "")[:12],
+        "health": (st.get("health") or {}).get("status"),
+        "operation": {
+            "phase": op.get("phase"),
+            "message": (op.get("message") or "")[:300],
+            "startedAt": op.get("startedAt"),
+            "finishedAt": op.get("finishedAt"),
+            "syncedRevision": ((op.get("syncResult") or {}).get("revision") or "")[:12],
+        },
+        # Deploy history, newest last: id + revision + deployedAt is exactly
+        # what "what shipped, when?" needs.
+        "history": [
+            {
+                "id": h.get("id"),
+                "revision": (h.get("revision") or "")[:12],
+                "deployedAt": h.get("deployedAt"),
+                "deployStartedAt": h.get("deployStartedAt"),
+            }
+            for h in (st.get("history") or [])[-5:]
+        ],
+        "conditions": [
+            {"type": c.get("type"), "message": (c.get("message") or "")[:200]}
+            for c in (st.get("conditions") or [])[:5]
+        ],
+    }
+
+
+async def argo_app(name: str = "") -> dict:
+    """One Argo CD Application (or the slim list of all of them) from the CR."""
+    if name and not _K8S_NAME_RE.match(name):
+        return {"error": f"invalid application name: {name!r}"}
+    args = ["get", "applications.argoproj.io", "-n", "argocd"]
+    if name:
+        args.insert(2, name)
+    raw = await _kubectl_json(args)
+    if "error" in raw:
+        return raw
+    data = raw["data"]
+    if name:
+        return _shape_application(data)
+    return {
+        "apps": [
+            {
+                "app": (a.get("metadata") or {}).get("name"),
+                "sync": ((a.get("status") or {}).get("sync") or {}).get("status"),
+                "health": (((a.get("status") or {}).get("health")) or {}).get("status"),
+                "revision": (((a.get("status") or {}).get("sync") or {}).get("revision") or "")[:12],
+            }
+            for a in data.get("items") or []
+        ]
+    }
+
+
+def _shape_step(step: dict) -> str:
+    if "setWeight" in step:
+        return f"setWeight {step['setWeight']}"
+    if "pause" in step:
+        dur = (step.get("pause") or {}).get("duration")
+        return f"pause {dur}" if dur else "pause (manual)"
+    if "analysis" in step:
+        names = [t.get("templateName") for t in (step["analysis"].get("templates") or [])]
+        return f"analysis {','.join(str(n) for n in names)}"
+    return next(iter(step.keys()), "step")
+
+
+async def rollout_status(name: str, namespace: str = "subject") -> dict:
+    """Canary state of one Rollout: phase, step position, hashes, replicas."""
+    if not _K8S_NAME_RE.match(name):
+        return {"error": f"invalid rollout name: {name!r}"}
+    if namespace and not _K8S_NAMESPACE_RE.match(namespace):
+        return {"error": f"invalid namespace: {namespace!r}"}
+    raw = await _kubectl_json(["get", "rollouts.argoproj.io", name, "-n", namespace or "subject"])
+    if "error" in raw:
+        return raw
+    ro = raw["data"]
+    st = ro.get("status") or {}
+    spec = ro.get("spec") or {}
+    steps = ((spec.get("strategy") or {}).get("canary") or {}).get("steps") or []
+    return {
+        "rollout": name,
+        "phase": st.get("phase"),
+        "message": (st.get("message") or "")[:300],
+        "aborted": bool(st.get("abort")),
+        "step": f"{st.get('currentStepIndex', '-')}/{len(steps)}",
+        "steps": [_shape_step(s) for s in steps],
+        "stableHash": st.get("stableRS"),
+        "canaryHash": st.get("currentPodHash"),
+        "replicas": {
+            "desired": spec.get("replicas"),
+            "updated": st.get("updatedReplicas"),
+            "ready": st.get("readyReplicas"),
+            "available": st.get("availableReplicas"),
+        },
+        "conditions": [
+            {"type": c.get("type"), "reason": c.get("reason"),
+             "message": (c.get("message") or "")[:200]}
+            for c in (st.get("conditions") or [])[-3:]
+        ],
+        "note": "canary metrics carry rollouts_pod_template_hash=<canaryHash>; "
+                "analysisrun_get quotes the per-measurement values",
+    }
+
+
+def _shape_analysisrun(run: dict) -> dict:
+    st = run.get("status") or {}
+    return {
+        "name": (run.get("metadata") or {}).get("name"),
+        "phase": st.get("phase"),
+        "message": (st.get("message") or "")[:300],
+        "startedAt": st.get("startedAt"),
+        "metrics": [
+            {
+                "name": mr.get("name"),
+                "phase": mr.get("phase"),
+                "successful": mr.get("successful"),
+                "failed": mr.get("failed"),
+                "inconclusive": mr.get("inconclusive"),
+                # Verbatim: the exact values the promotion decision saw.
+                "measurements": [
+                    {
+                        "phase": m.get("phase"),
+                        "value": m.get("value"),
+                        "startedAt": m.get("startedAt"),
+                        **({"message": (m.get("message") or "")[:200]} if m.get("message") else {}),
+                    }
+                    for m in (mr.get("measurements") or [])
+                ],
+            }
+            for mr in (st.get("metricResults") or [])
+        ],
+    }
+
+
+async def analysisrun_get(name: str = "", rollout: str = "", namespace: str = "subject") -> dict:
+    """AnalysisRun verdicts with measurements verbatim. By name, or the newest
+    runs for one rollout (or the whole namespace)."""
+    for label, value in (("name", name), ("rollout", rollout)):
+        if value and not _K8S_NAME_RE.match(value):
+            return {"error": f"invalid {label}: {value!r}"}
+    if namespace and not _K8S_NAMESPACE_RE.match(namespace):
+        return {"error": f"invalid namespace: {namespace!r}"}
+    ns = namespace or "subject"
+    if name:
+        raw = await _kubectl_json(["get", "analysisruns.argoproj.io", name, "-n", ns])
+        if "error" in raw:
+            return raw
+        return _shape_analysisrun(raw["data"])
+    raw = await _kubectl_json(["get", "analysisruns.argoproj.io", "-n", ns])
+    if "error" in raw:
+        return raw
+    items = raw["data"].get("items") or []
+    if rollout:
+        items = [i for i in items
+                 if ((i.get("metadata") or {}).get("name") or "").startswith(rollout + "-")]
+    items.sort(key=lambda i: (i.get("metadata") or {}).get("creationTimestamp") or "", reverse=True)
+    return {"runs": [_shape_analysisrun(i) for i in items[:3]],
+            "note": "newest first (3 max); pass name= for one specific run"}
+
+
 # ---- gh (open PR) -----------------------------------------------------------
 
 

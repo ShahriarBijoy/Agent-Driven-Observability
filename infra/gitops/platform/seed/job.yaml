@@ -4,6 +4,13 @@ metadata:
   name: seed
   labels:
     app: seed
+  annotations:
+    # Argo CD hook, not desired state (P10): a completed Job is immutable and
+    # TTL-cleanup would read as permanent drift. As a PostSync hook it reruns
+    # on every platform sync - safe because the seeder upserts
+    # (onConflictDoNothing) - and is recreated fresh each time.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   # Auto-cleanup lets a later `kubectl apply -k` recreate the Job instead of
   # colliding with the completed (immutable) one. The deploy script also
@@ -27,6 +34,6 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 128Mi
             limits:
-              memory: 512Mi
+              memory: 384Mi

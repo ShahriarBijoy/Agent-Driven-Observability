@@ -4,8 +4,6 @@ metadata:
   name: retriever
   labels:
     app: retriever
-  annotations:
-    kubernetes.io/change-cause: "phase-7: retriever moves into the cluster"
 spec:
   replicas: 1
   selector:
@@ -52,8 +50,10 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
           resources:
+            # Right-sized in P10 (steady state ~80Mi); the oomkill scenario
+            # patches limits live, so nothing here depends on 384Mi.
             requests:
               cpu: 100m
-              memory: 384Mi
+              memory: 192Mi
             limits:
               memory: 512Mi

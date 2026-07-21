@@ -24,8 +24,9 @@
     obs load  abuse [secs]   Abuser-tenant-heavy mix -> per-tenant 429 storm. The agent
                              should call it rate limiting, NOT a service fault. Default 300s.
     obs fail  [scenario] [qps]     Inject a failure while driving baseline traffic (default
-                             40 qps). Scenarios: latency errors timeout outage brownout
-                             flaky throttle full. No argument lists them with details.
+                             40 qps). Runtime chaos, k8s-native faults, and the git-mode
+                             delivery scenarios (bad-deploy, canary-bad-image, sync-fail,
+                             config-drift). No argument lists them all with inject_mode.
     obs chaos [clear]        Show (or clear) the /admin/chaos state on model-proxy + retriever.
     obs fixes [clean]        List auto-fixer workspaces (.artifacts/autofix) with sizes and fix
                              branches; `clean` deletes them all. The working clone is already
@@ -50,11 +51,20 @@
                              delete, status (nodes/pods + WSL clock-drift check), build,
                              deploy, smoke, node-stop <name>, node-start <name>,
                              monitoring (install/upgrade the k8s-monitoring chart from
-                             infra/k8s/monitoring/values.yaml - P8 telemetry).
+                             infra/k8s/monitoring/values.yaml - P8 telemetry),
+                             argo (install/upgrade Argo CD + Argo Rollouts from
+                             infra/k8s/{argocd,rollouts}/values.yaml - P10 delivery).
     obs ci <sub>             CI layer on the VM (Profile A): Gitea + Actions runner +
                              ci-shim (P9). Subcommands: up (ship source, compose up,
                              bootstrap admin/token/runner), down, logs [svc],
                              token (API token for agent-service), status.
+    obs gitops <sub>         Desired-state repo obs/obs-gitops (P10): init (seed from
+                             infra/gitops), push [msg] (operator override force-sync),
+                             status (Applications sync/health table).
+    obs argocd               Argo CD UI: port-forward :8443 -> argocd-server, print the
+                             admin password, open the browser. Ctrl-C stops the forward.
+    obs rollouts             Argo Rollouts dashboard on :3105, served locally by the
+                             kubectl-argo-rollouts plugin (auto-downloaded to .tools\).
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -150,6 +160,37 @@ function Wait-Gateway {
     return $false
 }
 
+function Get-ArgoTool {
+    # The delivery toolbelt (P10): argocd.exe + kubectl-argo-rollouts.exe,
+    # pinned to the installed chart app-versions and fetched once into the
+    # git-ignored .tools\. Returns the exe path.
+    param([ValidateSet('argocd', 'kubectl-argo-rollouts')][string]$Name)
+    $urls = @{
+        'argocd'                = 'https://github.com/argoproj/argo-cd/releases/download/v3.4.5/argocd-windows-amd64.exe'
+        'kubectl-argo-rollouts' = 'https://github.com/argoproj/argo-rollouts/releases/download/v1.9.1/kubectl-argo-rollouts-windows-amd64'
+    }
+    $dir = Join-Path $Repo '.tools'
+    $exe = Join-Path $dir "$Name.exe"
+    if (-not (Test-Path $exe)) {
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        Write-Step "downloading $Name.exe -> .tools\ (once)"
+        Invoke-WebRequest -Uri $urls[$Name] -OutFile $exe -UseBasicParsing
+    }
+    return $exe
+}
+
+function Disable-AutoSync {
+    # Live-inject guard (P10): drop `automated` from one Application so an
+    # injected fault shows as OutOfSync WITHOUT being healed. selfHeal=false
+    # is not sufficient - v3 auto-sync retriggers on drift whenever the
+    # target revision is newer than the last attempted sync. Restore by
+    # re-applying infra/k8s/argocd/apps/<app>.yaml (the revert paths do).
+    param([string]$App, [string]$Kubeconfig)
+    $f = Join-Path $env:TEMP 'obs-autosync-off.json'
+    Set-Content -Encoding ascii -Path $f -Value '{"spec":{"syncPolicy":{"automated":null}}}'
+    kubectl --kubeconfig $Kubeconfig -n argocd patch application $App --type merge --patch-file $f 2>$null | Out-Null
+}
+
 function Get-ObsToken {
     # Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
     # Canonical home: the repo-root .env; the agent-service .env is honored
@@ -241,6 +282,24 @@ $FailScenarios = [ordered]@{
     crashloop  = 'k8s only: retriever DATABASE_URL -> garbage -> CrashLoopBackOff at boot   (~7 min)'
     'readiness-break' = 'k8s only: gateway probe -> wrong path -> Running but never Ready   (~7 min)'
     'bad-deploy' = 'k8s+ci: bad commit merges -> CI deploys 2s latency into model-proxy -> p95 page; agent walks alert -> deploy annotation -> CI run -> diff (~18 min)'
+    'canary-bad-image' = 'k8s+ci+gitops: commit makes gateway 500 -> CI ships it -> canary takes 25% -> error-rate AnalysisRun FAILS vs Mimir -> auto-abort + webhook; agent quotes the measurements (~15 min)'
+    'config-drift' = 'k8s+gitops: live kubectl edit of the subject-telemetry ConfigMap -> platform OutOfSync + on-out-of-sync webhook; agent names the drifted key (~6 min)'
+    'sync-fail' = 'gitops: broken manifest lands on obs-gitops main -> the sync FAILS + on-sync-failed webhook; agent quotes the apply error and the commit (~8 min)'
+}
+
+# inject_mode (P10): how each scenario enters the system. git = through the
+# pipeline / gitops repos, so Argo stays Synced (the change IS the desired
+# state); live = out-of-band mutation - every live inject that patches a
+# TRACKED RESOURCE adds "Argo flags the app OutOfSync" to its expected
+# signature (runtime /admin/chaos and pod deletion touch no spec, so they
+# stay invisible to Argo by design).
+$FailInjectMode = [ordered]@{
+    latency = 'live'; errors = 'live'; timeout = 'live'; outage = 'live'
+    brownout = 'live'; flaky = 'live'; throttle = 'live'; full = 'live'
+    'pod-kill' = 'live'; oomkill = 'live'; imagepull = 'live'
+    crashloop = 'live'; 'readiness-break' = 'live'
+    'bad-deploy' = 'git'; 'canary-bad-image' = 'git'
+    'config-drift' = 'live'; 'sync-fail' = 'git'
 }
 
 Push-Location $Repo
@@ -344,8 +403,11 @@ try {
                 Write-Host "usage: obs fail <scenario> [baseline-qps]   (baseline default: 40 qps)"
                 Write-Host ""
                 foreach ($name in $FailScenarios.Keys) {
-                    Write-Host ("  {0,-15} {1}" -f $name, $FailScenarios[$name])
+                    Write-Host ("  {0,-17} {1,-4} {2}" -f $name, $FailInjectMode[$name], $FailScenarios[$name])
                 }
+                Write-Host ""
+                Write-Host "inject_mode: git = ships through CI/gitops (Argo stays Synced); live ="
+                Write-Host "out-of-band - patched resources show OutOfSync in Argo (part of the signature)."
                 Write-Host ""
                 Write-Host "Each drives baseline traffic the whole time; chaos is applied/cleared on a"
                 Write-Host "clock and always reset on exit. Watch Grafana (:$($Ports.OBS_GRAFANA_PORT)) and the incident inbox"
@@ -380,9 +442,21 @@ try {
                 if ($Mode -ne 'k8s') { Write-Warning "$scenario needs k8s mode (obs k8s up) - the compose subject has no pod specs to break"; break }
                 $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
                 $target = if ($scenario -in 'oomkill', 'crashloop') { 'deployment/retriever' } else { 'deployment/gateway' }
+                $app = ($target -split '/')[1]
                 $dur = '420'
                 Write-Step "${scenario}: ${dur}s baseline load @ $qps qps; fault at t=45s, auto-revert ~t=360s"
                 Write-Host "  manual revert any time: kubectl --kubeconfig `"$kubeconfig`" -n subject rollout undo $target"
+                # P10 re-baseline: these are LIVE injects against a tracked
+                # Deployment - Argo flags the app OutOfSync (expected in the
+                # signature) and must NOT heal it. selfHeal=false alone is not
+                # enough on Argo CD v3: auto-sync fires for any drift while
+                # the target revision is newer than the last attempted one
+                # (caught live), so the guard removes `automated` entirely for
+                # the inject window; revert re-applies the committed CR.
+                Disable-AutoSync $app $kubeconfig
+                if ($app -eq 'gateway') {
+                    Write-Host "  NOTE gateway is a Rollout now: the patch starts a CANARY that wedges (stable pods keep serving); expect rollout-stuck + app OutOfSync, not a full outage."
+                }
                 $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
                 Start-Sleep -Seconds 45
@@ -415,6 +489,10 @@ try {
                 Write-Step "auto-revert: rollout undo $target"
                 kubectl --kubeconfig $kubeconfig -n subject rollout undo $target
                 kubectl --kubeconfig $kubeconfig -n subject rollout status $target --timeout=180s
+                # Restore the committed Application policy (undoes the
+                # self-heal patch above; a rollback-to-stable template also
+                # clears the OutOfSync the inject caused).
+                kubectl --kubeconfig $kubeconfig apply -f (Join-Path $Repo "infra\k8s\argocd\apps\$app.yaml") | Out-Null
                 Write-Step 'reverted and rolled out. The postmortem should name the exact spec change - check the inbox.'
                 break
             }
@@ -475,6 +553,135 @@ try {
                 git -C $tmp revert --no-edit HEAD | Out-Null
                 git -C $tmp push -q origin main
                 Write-Step "revert pushed. Ask the RCA agent: 'p95 latency paged just now - what shipped in the last hour, and which exact change is responsible?'"
+                break
+            }
+
+            if ($scenario -eq 'canary-bad-image') {
+                # P10's flagship: the failure ships through the FULL delivery
+                # chain - commit -> CI build -> gitops bump -> Argo sync ->
+                # canary - and the lab's own SLIs kill it: the canary pod 500s
+                # on /v1/chat, the error-rate AnalysisRun fails against Mimir,
+                # Rollouts auto-aborts (stable keeps serving), and
+                # on-rollout-aborted spawns the gitops-reporter with the
+                # failing measurements. The revert also ships through CI, and
+                # its completed rollout triggers the resolution note.
+                if ($Mode -ne 'k8s') { Write-Warning "canary-bad-image needs k8s mode (obs k8s up)"; break }
+                $vm = $Ports.OBS_VM_HOST
+                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
+                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
+                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
+
+                $dur = '1500'
+                Write-Step "canary-bad-image: ${dur}s baseline load @ $qps qps; bad commit pushes now; CI ~4m -> canary ~t+6m -> AUTO-ABORT ~t+9m; revert at t+12m"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+
+                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
+                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
+                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
+                $auth = "http.${giteaBase}/.extraheader"
+                $tmp = Join-Path $env:TEMP 'obs-canary-bad-image'
+                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+                git -c "$auth=Authorization: Basic $b64" clone -q --depth 5 --branch main "$giteaBase/obs/obs-lab.git" $tmp
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of gitea main failed'; break }
+                git -C $tmp config $auth "Authorization: Basic $b64"
+                git -C $tmp config user.email 'dev@obs-lab.local'
+                git -C $tmp config user.name 'Lab Dev'
+
+                # The bad change: a plausible "fail closed" guard that only
+                # bites where MODEL_PROXY_URL is set as an env var - the k8s
+                # pods. CI's unit tests (config-default env) stay green.
+                $svcFile = Join-Path $tmp 'apps\gateway\src\slices\inference\service.ts'
+                $anchor = '      const runId = newRunId();'
+                $replacement = "      const runId = newRunId();`r`n" +
+                               "      // Fail closed when the provider contract ack is missing - the gateway`r`n" +
+                               "      // must not forward requests it cannot attribute (OBS-1123; providers`r`n" +
+                               "      // roll the contract next week).`r`n" +
+                               "      if (process.env.MODEL_PROXY_URL && !process.env.PROVIDER_CONTRACT_V2) {`r`n" +
+                               "        throw new Error(`"provider contract v2 not acknowledged`");`r`n" +
+                               "      }"
+                $content = Get-Content $svcFile -Raw
+                if ($content -notmatch [regex]::Escape($anchor)) { Write-Warning 'anchor line not found in service.ts - source drifted'; break }
+                $content.Replace($anchor, $replacement) | Set-Content -Encoding ascii $svcFile
+                git -C $tmp commit -qam "gateway: fail closed when the provider contract ack is missing"
+                git -C $tmp push -q origin main
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to gitea main failed'; break }
+                $badSha = (git -C $tmp rev-parse --short HEAD).Trim()
+                Write-Step "bad commit $badSha is on main. Watch: rollouts UI (obs rollouts), argo UI (obs argocd), CI $giteaBase/obs/obs-lab/actions"
+                Write-Step 'expected: canary takes 25%, ~25% of /v1/chat 500s for ~2 min, error-rate AnalysisRun fails, canary scales to ZERO, stable keeps serving; incident inbox gets the abort postmortem'
+
+                Start-Sleep -Seconds 720
+                Write-Step 'auto-revert: reverting the bad commit (the fix ships through CI + a fresh healthy canary)'
+                git -C $tmp revert --no-edit HEAD | Out-Null
+                git -C $tmp push -q origin main
+                Write-Step "revert pushed. When its rollout completes, the agent posts the resolution note on the open incident."
+                break
+            }
+
+            if ($scenario -eq 'config-drift') {
+                # P10: out-of-band change to a TRACKED resource. Argo compares
+                # live vs git, flips platform OutOfSync, the on-out-of-sync
+                # notification hits /webhook/gitops, and (after the agent's
+                # deliberate 30s still-drifted re-check) the gitops-reporter
+                # names the drifted key. Self-heal is off, so nothing reverts
+                # it but us.
+                if ($Mode -ne 'k8s') { Write-Warning "config-drift needs k8s mode (obs k8s up)"; break }
+                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+                $orig = (kubectl --kubeconfig $kubeconfig -n subject get configmap subject-telemetry -o jsonpath='{.data.OTEL_EXPORTER_OTLP_ENDPOINT}')
+                if (-not $orig) { Write-Warning 'subject-telemetry ConfigMap not found - is the platform app synced?'; break }
+                Disable-AutoSync 'platform' $kubeconfig
+                Write-Step "config-drift: OTEL_EXPORTER_OTLP_ENDPOINT -> http://drifted.invalid:4318 (was $orig)"
+                # --patch-file, not -p: PS 5.1 native-arg quoting strips the
+                # embedded double quotes out of inline JSON.
+                $patchFile = Join-Path $env:TEMP 'obs-config-drift.json'
+                Set-Content -Encoding ascii -Path $patchFile -Value '{"data":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://drifted.invalid:4318"}}'
+                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $patchFile | Out-Null
+                Write-Step 'platform flips OutOfSync in ~30s; the webhook + 30s re-check spawn the gitops-reporter in ~2 min'
+                Write-Host "  the sting: NOTHING breaks yet - pods only read this at startup. The next rollout would ship blind telemetry. That stale-config story is the point."
+                Start-Sleep -Seconds 300
+                Write-Step 'auto-revert: restoring the committed value'
+                $restoreFile = Join-Path $env:TEMP 'obs-config-drift-restore.json'
+                @{ data = @{ OTEL_EXPORTER_OTLP_ENDPOINT = $orig } } | ConvertTo-Json -Compress |
+                    Set-Content -Encoding ascii -Path $restoreFile
+                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $restoreFile | Out-Null
+                kubectl --kubeconfig $kubeconfig apply -f (Join-Path $Repo 'infra\k8s\argocd\apps\platform.yaml') | Out-Null
+                Write-Step 'live matches git again (auto-sync restored) - platform returns Synced on the next refresh. Check the incident inbox for the drift report.'
+                break
+            }
+
+            if ($scenario -eq 'sync-fail') {
+                # P10: the desired state ITSELF is broken. A schema-plausible
+                # but API-invalid manifest lands on obs-gitops main; the
+                # webhook-triggered auto-sync FAILS (live objects untouched),
+                # on-sync-failed hits the agent, and the postmortem quotes the
+                # apply error plus the guilty commit. Reverted through git,
+                # like everything in this phase.
+                $vm = $Ports.OBS_VM_HOST
+                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
+                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
+                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
+                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
+                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
+                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
+                $auth = "http.${giteaBase}/.extraheader"
+                $tmp = Join-Path $env:TEMP 'obs-sync-fail'
+                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+                git -c "$auth=Authorization: Basic $b64" clone -q --branch main "$giteaBase/obs/obs-gitops.git" $tmp
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of obs-gitops failed'; break }
+                git -C $tmp config $auth "Authorization: Basic $b64"
+                git -C $tmp config user.email 'dev@obs-lab.local'
+                git -C $tmp config user.name 'Lab Dev'
+                $depFile = Join-Path $tmp 'services\retriever\deployment.yaml'
+                (Get-Content $depFile -Raw).Replace('  replicas: 1', '  replicas: -1') | Set-Content -Encoding ascii $depFile
+                git -C $tmp commit -qam 'retriever: scale tuning for the new memory envelope'
+                git -C $tmp push -q origin main
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to obs-gitops failed'; break }
+                Write-Step "broken manifest pushed ($( (git -C $tmp rev-parse --short HEAD).Trim() )). Auto-sync fails in ~30s; on-sync-failed spawns the agent. Live retriever keeps running untouched."
+                Start-Sleep -Seconds 300
+                Write-Step 'auto-revert: git revert (the fix is a commit, like the break)'
+                git -C $tmp revert --no-edit HEAD | Out-Null
+                git -C $tmp push -q origin main
+                Write-Step 'revert pushed - the next sync goes green. Check the incident inbox.'
                 break
             }
 
@@ -676,6 +883,53 @@ current-context: agent-ro@obs-lab
                     if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
                     kubectl --kubeconfig $kubeconfig -n monitoring get pods
                 }
+                'argo' {
+                    # P10: Argo CD (gitops engine) + Argo Rollouts (canaries).
+                    # Chart pins live here; values in infra/k8s/{argocd,rollouts}.
+                    # Idempotent - rerun after editing either values file.
+                    Write-Step "argo-cd 10.1.4 + argo-rollouts 2.41.1 on ${vm} (helm)"
+                    scp -q -o BatchMode=yes infra/k8s/argocd/values.yaml "root@${vm}:/root/obs-lab/argocd-values.yaml"
+                    scp -q -o BatchMode=yes infra/k8s/rollouts/values.yaml "root@${vm}:/root/obs-lab/rollouts-values.yaml"
+                    ssh -o BatchMode=yes "root@$vm" 'helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1; helm repo update argo >/dev/null 2>&1; helm upgrade --install argocd argo/argo-cd --version 10.1.4 -n argocd --create-namespace -f /root/obs-lab/argocd-values.yaml --wait --timeout 5m && helm upgrade --install argo-rollouts argo/argo-rollouts --version 2.41.1 -n argo-rollouts --create-namespace -f /root/obs-lab/rollouts-values.yaml --wait --timeout 3m'
+                    if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
+                    # Credential for the private obs-gitops repo (same token the
+                    # laptop remote uses), then the webhook route + the six
+                    # Applications. All idempotent.
+                    $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token 2>/dev/null').Trim()
+                    if ($tok) {
+                        kubectl --kubeconfig $kubeconfig -n argocd create secret generic repo-obs-gitops `
+                            --from-literal=type=git `
+                            --from-literal=url="http://${vm}:$($Ports.OBS_GITEA_PORT)/obs/obs-gitops.git" `
+                            --from-literal=username=obs --from-literal=password=$tok `
+                            --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argocd label secret repo-obs-gitops `
+                            'argocd.argoproj.io/secret-type=repository' --overwrite | Out-Null
+                    } else {
+                        Write-Warning "no Gitea token on the VM yet (obs ci up) - repo credential NOT created"
+                    }
+                    # Notification secrets for BOTH engines (X-Obs-Token header
+                    # on every webhook to the agent) - value from the lab .env,
+                    # never from git. Rollouts requires the component label or
+                    # its controller won't watch the secret.
+                    $obsTok = Get-ObsToken
+                    if ($obsTok) {
+                        kubectl --kubeconfig $kubeconfig -n argocd create secret generic argocd-notifications-secret `
+                            --from-literal=obs-token=$obsTok --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argo-rollouts create secret generic argo-rollouts-notification-secret `
+                            --from-literal=obs-token=$obsTok --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argo-rollouts label secret argo-rollouts-notification-secret `
+                            'app.kubernetes.io/component=rollouts-controller' --overwrite | Out-Null
+                    } else {
+                        Write-Warning "no OBS_TOKEN in .env - notification secrets NOT created (webhooks to the agent will 403)"
+                    }
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/ingressroute.yaml | Out-Null
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/apps/ | Out-Null
+                    kubectl --kubeconfig $kubeconfig -n argocd get pods
+                    kubectl --kubeconfig $kubeconfig -n argo-rollouts get pods
+                }
                 'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
                 'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
                 'smoke'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') smoke }
@@ -703,14 +957,48 @@ current-context: agent-ro@obs-lab
                     Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
                     Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
                 }
-                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|node-stop|node-start)" }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|argo|node-stop|node-start)" }
             }
+        }
+
+        'argocd' {
+            # Argo CD UI over the tailnet: no ingress, no exposed port - just a
+            # port-forward for the duration of this terminal (PLAN-2 P10).
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            $pw = (kubectl --kubeconfig $kubeconfig -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>$null)
+            if ($pw) {
+                $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pw))
+                Write-Step "login: admin / $decoded"
+            } else {
+                Write-Warning "no argocd-initial-admin-secret - is Argo CD installed (obs k8s argo)?"
+            }
+            $null = Get-ArgoTool -Name argocd   # keep the CLI in the toolbelt current
+            Write-Step "http://localhost:$($Ports.OBS_ARGOCD_PORT)  (Ctrl-C stops the forward)"
+            Start-Process "http://localhost:$($Ports.OBS_ARGOCD_PORT)"
+            kubectl --kubeconfig $kubeconfig -n argocd port-forward svc/argocd-server "$($Ports.OBS_ARGOCD_PORT):80"
+        }
+
+        'rollouts' {
+            # The Rollouts dashboard runs laptop-side (RAM on the agents is
+            # spoken for): the kubectl plugin serves :3105 against the cluster.
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            $exe = Get-ArgoTool -Name kubectl-argo-rollouts
+            $env:KUBECONFIG = $kubeconfig
+            Write-Step "http://localhost:$($Ports.OBS_ROLLOUTS_PORT)/rollouts/subject  (Ctrl-C stops it)"
+            Start-Process "http://localhost:$($Ports.OBS_ROLLOUTS_PORT)/rollouts/subject"
+            & $exe dashboard --port $Ports.OBS_ROLLOUTS_PORT --namespace subject
         }
 
         'ci' {
             # Delivery control plane on the VM (P9) - see scripts/ci.ps1.
             $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
             & (Join-Path $PSScriptRoot 'ci.ps1') $sub @($Rest | Select-Object -Skip 1)
+        }
+
+        'gitops' {
+            # Desired-state repo lifecycle (P10) - see scripts/gitops.ps1.
+            $sub = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { 'status' }
+            & (Join-Path $PSScriptRoot 'gitops.ps1') $sub @($Rest | Select-Object -Skip 1)
         }
 
         'preflight' {

@@ -446,3 +446,78 @@ groups:
           tenant: acme
         annotations:
           summary: CI jobs are queuing (oldest > 3m) with zero completions - the Actions runner is likely down or wedged
+  - orgId: 1
+    name: delivery
+    folder: Lab Alerts
+    interval: 1m
+    rules:
+      - uid: argocd-app-degraded
+        title: Argo CD application degraded
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              # health state as a metric: one series per app, 1 iff Degraded.
+              expr: sum by (name) (argocd_app_info{health_status="Degraded"})
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 3m
+        labels:
+          severity: warning
+          tenant: acme
+        annotations:
+          summary: Argo CD reports application {{ $labels.name }} Degraded for 3m - live state is unhealthy relative to the synced revision (kubectl/argo_app the app; check the last sync + rollout state)
+      - uid: rollout-stuck
+        title: Rollout stuck (progressing too long / replicas short)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: mimir
+            model:
+              refId: A
+              # Fires when a rollout is still Progressing past the 12m `for`
+              # (a healthy 2-analysis canary completes in ~8m) OR its available
+              # replicas run short of desired. The readiness-probe scenario
+              # burns NO SLO - pods never Ready take no traffic - so this
+              # cause alert is the only thing that will page for it.
+              expr: (max by (name) (rollout_phase{phase="Progressing"})) + (abs(max by (name) (rollout_info_replicas_desired) - max by (name) (rollout_info_replicas_available)))
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: OK
+        for: 12m
+        labels:
+          severity: warning
+          tenant: acme
+        annotations:
+          summary: rollout {{ $labels.name }} has been Progressing >12m or is short on ready replicas - likely a wedged canary (never-Ready pods, stuck analysis, or image that cannot start); rollout_status + analysisrun_get have the detail

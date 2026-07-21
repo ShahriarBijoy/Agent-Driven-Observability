@@ -47,32 +47,32 @@ jobs:
           done
 
   deploy:
-    # Trunk-based: only main reaches the cluster. Until Phase 10 swaps this
-    # job for a gitops-repo bump, deploy is kubectl straight at the overlay -
-    # the same flow scripts/k8s-build.ps1 drives by hand.
+    # Trunk-based: only main reaches the cluster. P10: "deploy" is one commit
+    # bumping the pinned tags in obs/obs-gitops - Argo CD notices (push
+    # webhook through the k3d LB), syncs, and the Rollouts take it from
+    # there. CI never touches the cluster; kubectl left the building.
+    # The bump names the source sha + run so the agent can walk
+    # annotation -> gitops commit -> source commit without guessing.
     needs: build-push
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: install kubectl
+      - name: bump image tags in obs-gitops
         run: |
-          curl -fsSLo /usr/local/bin/kubectl \
-            "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x /usr/local/bin/kubectl
-      - name: deploy :sha to the cluster
-        run: |
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > /tmp/kubeconfig
-          export KUBECONFIG=/tmp/kubeconfig
-          sha=$(git rev-parse --short HEAD)
-          # A completed Job is immutable; clear it so apply can recreate.
-          kubectl -n subject delete job seed --ignore-not-found
-          kubectl apply -k infra/k8s/overlays/lab
+          sha=$(echo "${{ github.sha }}" | cut -c1-7)
+          git clone "http://obs:${{ secrets.GITOPS_TOKEN }}@gitea:3000/obs/obs-gitops.git" /tmp/gitops
+          cd /tmp/gitops
           for svc in gateway embedder retriever model-proxy load-generator; do
-            kubectl -n subject set image deployment/$svc $svc=obs-registry:5010/$svc:$sha
-            kubectl -n subject annotate deployment/$svc \
-              "kubernetes.io/change-cause=deploy :$sha via gitea ci" --overwrite
+            sed -i "s/newTag: .*/newTag: \"$sha\"/" services/$svc/kustomization.yaml
           done
-          for d in gateway embedder retriever model-proxy; do
-            kubectl -n subject rollout status deployment/$d --timeout=180s
-          done
+          git config user.name obs-ci
+          git config user.email ci@obs-lab.local
+          git add -A
+          if git diff --cached --quiet; then
+            echo "tags already at :$sha - nothing to deploy"; exit 0
+          fi
+          git commit -m "deploy: :$sha via ci run ${{ github.run_number }}" \
+                     -m "source: ${{ github.repository }}@${{ github.sha }}"
+          # One rebase-retry absorbs a racing run's bump; a real conflict
+          # (same lines) should fail loudly, not silently self-merge.
+          git push origin main || { git pull --rebase origin main && git push origin main; }
