@@ -8,6 +8,7 @@ namespace: subject
 resources:
   - deployment.yaml
   - service.yaml
+  - rollout.yaml
 
 images:
   - name: obs/model-proxy

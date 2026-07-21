@@ -1,0 +1,26 @@
+# Progressive delivery for the request path (PLAN-2 P10) - see
+# services/gateway/rollout.yaml for the full rationale. Retriever and
+# embedder stay plain Deployments: the canary demos only need the request
+# path, and the 2Gi-agent RAM budget is real.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: model-proxy
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: model-proxy
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: model-proxy
+    scaleDown: onsuccess
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause: { duration: 3m }
+        - setWeight: 50
+        - pause: { duration: 3m }

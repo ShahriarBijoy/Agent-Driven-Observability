@@ -25,3 +25,14 @@ spec:
     automated:
       prune: true
       selfHeal: false
+    syncOptions:
+      - RespectIgnoreDifferences=true
+  # The Rollout (workloadRef, scaleDown: onsuccess) owns this Deployment's
+  # scale: git says the template, Rollouts says the replica count. Without
+  # this, every completed rollout reads as permanent drift.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: model-proxy
+      jsonPointers:
+        - /spec/replicas
