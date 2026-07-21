@@ -52,6 +52,12 @@ limits:
   out_of_order_time_window: 1h
   # Apply Prometheus-style suffixes (_total, _seconds) to OTLP metrics.
   otel_metric_suffixes_enabled: true
+  # P10: lift the canary identity out of the OTel resource and onto every
+  # metric series (label rollouts_pod_template_hash) - AnalysisRuns filter
+  # canary vs stable on it. Cardinality cost is bounded: at most two hash
+  # values exist at once per service, and only during a rollout.
+  # (CSV string, not a YAML list - the flag type is a comma-separated slice)
+  promote_otel_resource_attributes: rollouts.pod.template.hash
   # Phase 6 — cardinality budget. Cap the active series a single tenant may hold.
   # The lab's healthy footprint is a few thousand series, so this is generous
   # headroom; a label-cardinality explosion (e.g. an un-scrubbed user_id) trips

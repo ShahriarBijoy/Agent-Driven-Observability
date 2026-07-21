@@ -13,6 +13,10 @@
              (operator override for structural changes; overwrites CI's tag
              bumps with whatever infra/gitops pins)
     status   Applications table (sync + health) straight from the CRs
+    smoke    the P10 gating assertion: canary-hash-labelled series exist in
+             Mimir (request_duration_seconds_bucket{rollouts_pod_template_hash!=""})
+             - proves downward-API env + Mimir promotion end to end. Needs
+             traffic through gateway/model-proxy pods born under a Rollout.
 
   Routine deploys never use this script: CI commits tag bumps directly to
   obs-gitops (see .gitea/workflows/ci.yaml).
@@ -20,7 +24,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'push', 'status')]
+    [ValidateSet('init', 'push', 'status', 'smoke')]
     [string]$Action = 'status',
 
     [switch]$Force,
@@ -96,5 +100,19 @@ switch ($Action) {
         kubectl --kubeconfig $Kubeconfig get applications.argoproj.io -n argocd `
             -o custom-columns='APP:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision' 2>$null
         if ($LASTEXITCODE -ne 0) { Write-Warning "cannot list Applications - is Argo CD installed (obs k8s argo)?" }
+    }
+    'smoke' {
+        # The P10 gate: without this label the whole analysis layer is
+        # decorative. Laptop-side Mimir, same query the AnalysisTemplates run.
+        $q = 'count by (job) (request_duration_seconds_bucket{rollouts_pod_template_hash!=""})'
+        $resp = Invoke-RestMethod -Uri "http://localhost:$($Ports.OBS_MIMIR_PORT)/prometheus/api/v1/query" `
+            -Headers @{ 'X-Scope-OrgID' = 'anonymous' } -Body @{ query = $q } -Method Post -TimeoutSec 10
+        $rows = @($resp.data.result)
+        if ($rows.Count -eq 0) {
+            Write-Warning 'FAIL: no hash-labelled series. Checklist: pods restarted since the env change? traffic flowing? Mimir promote_otel_resource_attributes loaded (restart)?'
+            exit 1
+        }
+        foreach ($r in $rows) { Write-Host ("  ok  {0,-14} {1} hash-labelled series" -f $r.metric.job, $r.value[1]) }
+        Write-Step 'canary-hash smoke PASSED'
     }
 }

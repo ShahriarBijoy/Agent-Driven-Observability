@@ -25,8 +25,19 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # The canary label, made real (P10): Rollouts stamps
+            # rollouts-pod-template-hash on the pods it owns; the downward
+            # API lifts it into the OTel resource, and Mimir promotes it to
+            # a metric label (promote_resource_attributes) so AnalysisRuns
+            # can split canary from stable in the app's own histograms.
+            # Empty (verified harmless) when a plain Deployment runs this
+            # template on a Rollouts-free bootstrap cluster.
+            - name: ROLLOUTS_HASH
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['rollouts-pod-template-hash']
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME)"
+              value: "service.instance.id=$(POD_NAME),k8s.pod.name=$(POD_NAME),rollouts.pod.template.hash=$(ROLLOUTS_HASH)"
             - name: MODEL_PROXY_PORT
               value: "8083"
           envFrom:
