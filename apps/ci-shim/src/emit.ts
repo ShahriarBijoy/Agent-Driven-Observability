@@ -155,4 +155,3 @@ export async function postTrace(otlpBase: string, payload: unknown): Promise<voi
   });
   if (!res.ok) throw new Error(`OTLP push failed: ${res.status} ${await res.text()}`);
 }
-

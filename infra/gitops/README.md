@@ -15,14 +15,14 @@ services/<name>/          one Application per service; kustomization.yaml
 
 ## Where the truth lives
 
-| Copy                        | Role                                                     |
-| --------------------------- | -------------------------------------------------------- |
-| Gitea `obs/obs-gitops`      | **Runtime truth.** Argo CD syncs the cluster from it.    |
-| `infra/gitops` (this tree)  | Seed + review copy. `obs gitops init` pushes it once;    |
-|                             | `obs gitops push` force-syncs it over the runtime repo   |
-|                             | (operator override — use for structural changes, never   |
-|                             | for routine deploys; it will overwrite CI's tag bumps    |
-|                             | with whatever is pinned here).                           |
+| Copy                       | Role                                                   |
+| -------------------------- | ------------------------------------------------------ |
+| Gitea `obs/obs-gitops`     | **Runtime truth.** Argo CD syncs the cluster from it.  |
+| `infra/gitops` (this tree) | Seed + review copy. `obs gitops init` pushes it once;  |
+|                            | `obs gitops push` force-syncs it over the runtime repo |
+|                            | (operator override — use for structural changes, never |
+|                            | for routine deploys; it will overwrite CI's tag bumps  |
+|                            | with whatever is pinned here).                         |
 
 The Application CRs themselves are **not** in this tree — they are cluster
 bootstrap, applied by `obs k8s argo` from `infra/k8s/argocd/apps/`.
@@ -30,8 +30,8 @@ bootstrap, applied by `obs k8s argo` from `infra/k8s/argocd/apps/`.
 ## Sync policy (why drift stays visible)
 
 Applications sync automatically with **self-heal off**: a `kubectl edit` or
-`kubectl patch` against a live object flips the app to OutOfSync and *stays
-visible* — that is the Phase 10 drift-demo contract. The exam runner enables
+`kubectl patch` against a live object flips the app to OutOfSync and _stays
+visible_ — that is the Phase 10 drift-demo contract. The exam runner enables
 self-heal per-app only while a live-inject scenario is running.
 
 Prune is on: deleting a manifest from obs-gitops deletes the object.

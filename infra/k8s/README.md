@@ -7,12 +7,12 @@ moved: every byte of telemetry flows back to the laptop's compose LGTM stack
 over the tailnet, so Grafana keeps all history and survives anything the
 cluster does to itself.
 
-| Piece          | What it is                                                                                                                                                                                                                                                                       |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `k3d.yaml`     | Cluster as code: 1 tainted server + 2 killable agents, pinned API :6550, registry :5010, LB :8080→Traefik. Plain `${VAR}` refs — always source `infra/ports.env` first (obs k8s up does).                                                                                        |
-| `cluster/`     | Bootstrap applied on every `obs k8s up`: CoreDNS ts.net→MagicDNS forward, `agent-ro` read-only ServiceAccount.                                                                                                                                                                   |
-| `argocd/`      | P10 delivery control plane: helm values for Argo CD (+ `rollouts/values.yaml` for Argo Rollouts), the six Application CRs (`apps/`), and the Traefik Host-rule that routes Gitea's push webhook to argocd-server through the k3d LB.                                              |
-| `monitoring/`  | P8 telemetry: grafana/k8s-monitoring chart values (see below).                                                                                                                                                                                                                   |
+| Piece         | What it is                                                                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `k3d.yaml`    | Cluster as code: 1 tainted server + 2 killable agents, pinned API :6550, registry :5010, LB :8080→Traefik. Plain `${VAR}` refs — always source `infra/ports.env` first (obs k8s up does).                                            |
+| `cluster/`    | Bootstrap applied on every `obs k8s up`: CoreDNS ts.net→MagicDNS forward, `agent-ro` read-only ServiceAccount.                                                                                                                       |
+| `argocd/`     | P10 delivery control plane: helm values for Argo CD (+ `rollouts/values.yaml` for Argo Rollouts), the six Application CRs (`apps/`), and the Traefik Host-rule that routes Gitea's push webhook to argocd-server through the k3d LB. |
+| `monitoring/` | P8 telemetry: grafana/k8s-monitoring chart values (see below).                                                                                                                                                                       |
 
 The subject manifests themselves moved in Phase 10: the Kustomize tree lives
 in `infra/gitops/` (seed) and runs from the Gitea repo **obs/obs-gitops**
