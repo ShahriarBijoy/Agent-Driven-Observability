@@ -19,6 +19,7 @@ resources:
   - redis/service.yaml
   - seed/job.yaml
   - ingress/ingressroute.yaml
+  - analysis/canary-analysis.yaml
 
 configMapGenerator:
   # Copies of infra/postgres/init/ (kustomize cannot reference files outside

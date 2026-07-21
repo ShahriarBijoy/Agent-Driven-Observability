@@ -5,8 +5,9 @@
 #
 # No trafficRouting: canary weight = replica arithmetic behind the plain
 # gateway Service (4 replicas -> setWeight 25 is exactly one canary pod).
-# The pauses become AnalysisTemplate steps once the hash-label smoke passes
-# (P10 task order: the label must exist before anything analyzes on it).
+# Each analysis step blocks ~3.5min on platform/analysis/canary-analysis.yaml
+# judging THIS canary's hash against Mimir; failure aborts and scales the
+# canary to zero with the failing measurements retained.
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -26,6 +27,14 @@ spec:
     canary:
       steps:
         - setWeight: 25
-        - pause: { duration: 3m }
+        - analysis: &canary-analysis
+            templates:
+              - templateName: canary-analysis
+            args:
+              - name: job
+                value: gateway
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
         - setWeight: 50
-        - pause: { duration: 3m }
+        - analysis: *canary-analysis

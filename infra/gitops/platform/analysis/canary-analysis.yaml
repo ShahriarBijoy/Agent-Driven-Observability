@@ -1,0 +1,72 @@
+# The promotion judge (PLAN-2 P10): AnalysisRuns query the lab's OWN Mimir
+# SLIs - the same unsampled request_duration_seconds histograms the SLO burn
+# alerts watch - filtered to canary pods by rollouts_pod_template_hash (made
+# real by the downward-API env + Mimir promotion; 'obs gitops smoke' gates
+# on it).
+#
+# Address is the laptop's MagicDNS FQDN (Profile A: Mimir lives on the
+# laptop, NOT the VM - host.k3d.internal would dead-end), with Mimir's
+# tenant header. The `or on() vector(...)` fallbacks pin empty vectors to a
+# passing value: a traffic gap reads as "no evidence of harm", not as an
+# inconclusive rollout wedged mid-canary.
+#
+# Failure math: interval 30s x count 7 = ~3.5min per analysis step;
+# failureLimit 1 tolerates a single flaky measurement, the second aborts
+# the rollout (canary scaled to zero, measurements retained verbatim).
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-analysis
+spec:
+  args:
+    - name: job # metric label, = the service name
+    - name: canary-hash # injected by the Rollout (podTemplateHashValue: Latest)
+    - name: max-error-rate
+      value: "0.05"
+    - name: max-p95-seconds
+      value: "1.5" # the latency SLO the tail-sampler keys on
+  metrics:
+    - name: canary-error-rate
+      initialDelay: 30s # one metric-export interval + rate() warmup
+      interval: 30s
+      count: 7
+      failureLimit: 1
+      successCondition: result[0] <= {{args.max-error-rate}}
+      provider:
+        prometheus:
+          address: http://shahriar.tail813d2f.ts.net:9009/prometheus
+          headers:
+            - key: X-Scope-OrgID
+              value: anonymous
+          query: >
+            (
+              sum(rate(request_duration_seconds_count{job="{{args.job}}",
+                rollouts_pod_template_hash="{{args.canary-hash}}",
+                http_status_code=~"5.."}[2m]))
+              or on() vector(0)
+            )
+            /
+            (
+              sum(rate(request_duration_seconds_count{job="{{args.job}}",
+                rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
+              or on() vector(1)
+            )
+    - name: canary-p95
+      initialDelay: 30s
+      interval: 30s
+      count: 7
+      failureLimit: 1
+      successCondition: result[0] <= {{args.max-p95-seconds}}
+      provider:
+        prometheus:
+          address: http://shahriar.tail813d2f.ts.net:9009/prometheus
+          headers:
+            - key: X-Scope-OrgID
+              value: anonymous
+          query: >
+            (
+              histogram_quantile(0.95, sum by (le) (
+                rate(request_duration_seconds_bucket{job="{{args.job}}",
+                  rollouts_pod_template_hash="{{args.canary-hash}}"}[2m])))
+              or on() vector(0)
+            )
