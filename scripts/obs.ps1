@@ -50,11 +50,17 @@
                              delete, status (nodes/pods + WSL clock-drift check), build,
                              deploy, smoke, node-stop <name>, node-start <name>,
                              monitoring (install/upgrade the k8s-monitoring chart from
-                             infra/k8s/monitoring/values.yaml - P8 telemetry).
+                             infra/k8s/monitoring/values.yaml - P8 telemetry),
+                             argo (install/upgrade Argo CD + Argo Rollouts from
+                             infra/k8s/{argocd,rollouts}/values.yaml - P10 delivery).
     obs ci <sub>             CI layer on the VM (Profile A): Gitea + Actions runner +
                              ci-shim (P9). Subcommands: up (ship source, compose up,
                              bootstrap admin/token/runner), down, logs [svc],
                              token (API token for agent-service), status.
+    obs argocd               Argo CD UI: port-forward :8443 -> argocd-server, print the
+                             admin password, open the browser. Ctrl-C stops the forward.
+    obs rollouts             Argo Rollouts dashboard on :3105, served locally by the
+                             kubectl-argo-rollouts plugin (auto-downloaded to .tools\).
     obs hosts                Print the host-process commands (agent-service + web).
     obs help                 This help.
 
@@ -148,6 +154,25 @@ function Wait-Gateway {
     }
     Write-Warning "gateway did not become healthy within ${TimeoutSec}s"
     return $false
+}
+
+function Get-ArgoTool {
+    # The delivery toolbelt (P10): argocd.exe + kubectl-argo-rollouts.exe,
+    # pinned to the installed chart app-versions and fetched once into the
+    # git-ignored .tools\. Returns the exe path.
+    param([ValidateSet('argocd', 'kubectl-argo-rollouts')][string]$Name)
+    $urls = @{
+        'argocd'                = 'https://github.com/argoproj/argo-cd/releases/download/v3.4.5/argocd-windows-amd64.exe'
+        'kubectl-argo-rollouts' = 'https://github.com/argoproj/argo-rollouts/releases/download/v1.9.1/kubectl-argo-rollouts-windows-amd64'
+    }
+    $dir = Join-Path $Repo '.tools'
+    $exe = Join-Path $dir "$Name.exe"
+    if (-not (Test-Path $exe)) {
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        Write-Step "downloading $Name.exe -> .tools\ (once)"
+        Invoke-WebRequest -Uri $urls[$Name] -OutFile $exe -UseBasicParsing
+    }
+    return $exe
 }
 
 function Get-ObsToken {
@@ -676,6 +701,18 @@ current-context: agent-ro@obs-lab
                     if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
                     kubectl --kubeconfig $kubeconfig -n monitoring get pods
                 }
+                'argo' {
+                    # P10: Argo CD (gitops engine) + Argo Rollouts (canaries).
+                    # Chart pins live here; values in infra/k8s/{argocd,rollouts}.
+                    # Idempotent - rerun after editing either values file.
+                    Write-Step "argo-cd 10.1.4 + argo-rollouts 2.41.1 on ${vm} (helm)"
+                    scp -q -o BatchMode=yes infra/k8s/argocd/values.yaml "root@${vm}:/root/obs-lab/argocd-values.yaml"
+                    scp -q -o BatchMode=yes infra/k8s/rollouts/values.yaml "root@${vm}:/root/obs-lab/rollouts-values.yaml"
+                    ssh -o BatchMode=yes "root@$vm" 'helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1; helm repo update argo >/dev/null 2>&1; helm upgrade --install argocd argo/argo-cd --version 10.1.4 -n argocd --create-namespace -f /root/obs-lab/argocd-values.yaml --wait --timeout 5m && helm upgrade --install argo-rollouts argo/argo-rollouts --version 2.41.1 -n argo-rollouts --create-namespace -f /root/obs-lab/rollouts-values.yaml --wait --timeout 3m'
+                    if ($LASTEXITCODE -ne 0) { throw 'helm upgrade failed' }
+                    kubectl --kubeconfig $kubeconfig -n argocd get pods
+                    kubectl --kubeconfig $kubeconfig -n argo-rollouts get pods
+                }
                 'build'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') build }
                 'deploy' { & (Join-Path $PSScriptRoot 'k8s-build.ps1') deploy }
                 'smoke'  { & (Join-Path $PSScriptRoot 'k8s-build.ps1') smoke }
@@ -703,8 +740,36 @@ current-context: agent-ro@obs-lab
                     Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
                     Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
                 }
-                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|node-stop|node-start)" }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|argo|node-stop|node-start)" }
             }
+        }
+
+        'argocd' {
+            # Argo CD UI over the tailnet: no ingress, no exposed port - just a
+            # port-forward for the duration of this terminal (PLAN-2 P10).
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            $pw = (kubectl --kubeconfig $kubeconfig -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>$null)
+            if ($pw) {
+                $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pw))
+                Write-Step "login: admin / $decoded"
+            } else {
+                Write-Warning "no argocd-initial-admin-secret - is Argo CD installed (obs k8s argo)?"
+            }
+            $null = Get-ArgoTool -Name argocd   # keep the CLI in the toolbelt current
+            Write-Step "http://localhost:$($Ports.OBS_ARGOCD_PORT)  (Ctrl-C stops the forward)"
+            Start-Process "http://localhost:$($Ports.OBS_ARGOCD_PORT)"
+            kubectl --kubeconfig $kubeconfig -n argocd port-forward svc/argocd-server "$($Ports.OBS_ARGOCD_PORT):80"
+        }
+
+        'rollouts' {
+            # The Rollouts dashboard runs laptop-side (RAM on the agents is
+            # spoken for): the kubectl plugin serves :3105 against the cluster.
+            $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
+            $exe = Get-ArgoTool -Name kubectl-argo-rollouts
+            $env:KUBECONFIG = $kubeconfig
+            Write-Step "http://localhost:$($Ports.OBS_ROLLOUTS_PORT)/rollouts/subject  (Ctrl-C stops it)"
+            Start-Process "http://localhost:$($Ports.OBS_ROLLOUTS_PORT)/rollouts/subject"
+            & $exe dashboard --port $Ports.OBS_ROLLOUTS_PORT --namespace subject
         }
 
         'ci' {

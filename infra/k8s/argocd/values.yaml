@@ -1,0 +1,55 @@
+# Argo CD for the lab (PLAN-2 P10) - chart argo/argo-cd 10.1.4 (Argo CD
+# v3.4.5), pinned in scripts/obs.ps1 ('obs k8s argo'). Installed on the VM's
+# k3d cluster, ns argocd.
+#
+# Sizing: the workload nodes are two 2Gi k3d agents shared with the subject
+# system, so every optional component is off and requests are honest-small
+# (no limits - the controller's working set spikes on refresh and an OOM
+# there wedges every sync).
+#
+# TLS: server.insecure - the UI is only ever reached via 'obs argocd'
+# (kubectl port-forward over the tailnet) and the Gitea webhook arrives via
+# Traefik on plain http. Nothing terminates TLS in this path on purpose.
+
+dex:
+  enabled: false # no SSO in the lab
+
+# (chart 10.x note: the ApplicationSet controller has no enable toggle any
+# more - it ships always-on and idles at ~30Mi. P10 uses plain Applications.)
+applicationSet:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+
+notifications:
+  enabled: true # webhook engine -> agent-service (config: notifications.yaml)
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+
+configs:
+  params:
+    server.insecure: true
+
+controller:
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+
+repoServer:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+
+server:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+  # The Rollouts UI extension: canary steps/weights rendered inside the
+  # Argo CD app view (the standalone dashboard is 'obs rollouts' on :3105).
+  extensions:
+    enabled: true
+    extensionList:
+      - name: rollout-extension
+        env:
+          - name: EXTENSION_URL
+            value: https://github.com/argoproj-labs/rollout-extension/releases/download/v0.4.0/extension.tar
+
+redis:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }

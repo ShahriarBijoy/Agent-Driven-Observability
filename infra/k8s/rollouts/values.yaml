@@ -1,0 +1,22 @@
+# Argo Rollouts for the lab (PLAN-2 P10) - chart argo/argo-rollouts 2.41.1
+# (v1.9.1), pinned in scripts/obs.ps1 ('obs k8s argo'). Ns argo-rollouts.
+#
+# The dashboard is NOT installed in-cluster: 'obs rollouts' serves it locally
+# on :3105 via the kubectl-argo-rollouts plugin (RAM on the 2Gi agents is
+# spoken for). Controller metrics stay on for the delivery dashboards.
+
+controller:
+  replicas: 1 # chart default is 2 (leader-elected HA) - one 2Gi-agent lab needs one
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+  metrics:
+    enabled: true # :8090/metrics, scraped by the k8s-monitoring extra hook
+
+dashboard:
+  enabled: false # 'obs rollouts' runs it laptop-side on :3105
+
+notifications:
+  # Same notifications machinery as Argo CD (P10 task 6): the controller
+  # reads argo-rollouts-notification-configmap, provisioned with the release.
+  configmap:
+    create: true
