@@ -27,6 +27,14 @@ spec:
     scaleDown: onsuccess
   strategy:
     canary:
+      # maxSurge 0 / maxUnavailable 1: the canary reuses a stable pod's slot
+      # instead of adding a 5th, so total pods stay at 4 during a canary. On
+      # the 2Gi agents that headroom is the difference between a clean canary
+      # and a scheduling jam when gateway + model-proxy canary at once (a
+      # full-CI deploy bumps every service). One-in-four briefly unavailable
+      # is fine behind the Service.
+      maxSurge: 0
+      maxUnavailable: 1
       steps:
         - setWeight: 25
         - analysis: &canary-analysis

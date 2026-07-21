@@ -115,9 +115,16 @@ notifications:
             {"tags":["deployment","{{.app.metadata.name}}","gitops"],"text":"deploy {{.app.metadata.name}} via gitops {{trunc 7 .app.status.operationState.syncResult.revision}} (argo sync)"}
   # Webhook recipients are the bare service name - "webhook:agent" would
   # parse as service "webhook" (which doesn't exist) + recipient "agent".
+  # on-out-of-sync is deliberately NOT global: a Rollout app is legitimately
+  # OutOfSync for the whole ~8min a canary runs (live pods != target manifest
+  # until it completes), so a global subscription would page on every normal
+  # canary AND let that false drift eat the per-target dedupe slot before a
+  # real abort lands. It rides a per-app annotation on the plain-Deployment
+  # apps only (platform/retriever/embedder/load-generator), where OutOfSync
+  # always means genuine out-of-band drift. See infra/k8s/argocd/apps/*.yaml.
   subscriptions:
     - recipients: [agent]
-      triggers: [on-deployed, on-health-degraded, on-sync-failed, on-out-of-sync]
+      triggers: [on-deployed, on-health-degraded, on-sync-failed]
     - recipients: [grafana]
       triggers: [on-deployed]
 

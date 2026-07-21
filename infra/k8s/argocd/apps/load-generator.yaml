@@ -10,6 +10,12 @@ kind: Application
 metadata:
   name: load-generator
   namespace: argocd
+  annotations:
+    # Plain-Deployment app: OutOfSync always means genuine out-of-band drift
+    # (no canary to explain it), so THIS app subscribes to on-out-of-sync.
+    # The Rollout apps (gateway, model-proxy) deliberately do not - see
+    # infra/k8s/argocd/values.yaml.
+    notifications.argoproj.io/subscribe.on-out-of-sync.agent: ""
 spec:
   project: default
   source:
