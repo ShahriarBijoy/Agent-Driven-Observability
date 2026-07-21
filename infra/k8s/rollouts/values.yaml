@@ -16,7 +16,53 @@ dashboard:
   enabled: false # 'obs rollouts' runs it laptop-side on :3105
 
 notifications:
-  # Same notifications machinery as Argo CD (P10 task 6): the controller
-  # reads argo-rollouts-notification-configmap, provisioned with the release.
+  # Same notifications machinery as Argo CD: the controller reads
+  # argo-rollouts-notification-configmap (chart-rendered from these values)
+  # and argo-rollouts-notification-secret, which 'obs k8s argo' creates from
+  # the lab .env OBS_TOKEN (label app.kubernetes.io/component required).
   configmap:
     create: true
+  secret:
+    create: false
+  notifiers:
+    service.webhook.agent: |
+      url: http://shahriar.tail813d2f.ts.net:8093
+      headers:
+        - name: Content-Type
+          value: application/json
+        - name: X-Obs-Token
+          value: $obs-token
+  # Rollouts triggers are event-driven (no when clause - the controller
+  # fires them); the bodies stay free-text-free like the Argo CD ones.
+  triggers:
+    trigger.on-rollout-aborted: |
+      - send: [agent-rollout-aborted]
+    trigger.on-rollout-completed: |
+      - send: [agent-rollout-completed]
+    trigger.on-analysis-run-failed: |
+      - send: [agent-analysis-run-failed]
+  templates:
+    template.agent-rollout-aborted: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-rollout-aborted","source":"rollouts","rollout":"{{.rollout.metadata.name}}","namespace":"{{.rollout.metadata.namespace}}","revision":"{{.rollout.status.currentPodHash}}"}
+    template.agent-rollout-completed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-rollout-completed","source":"rollouts","rollout":"{{.rollout.metadata.name}}","namespace":"{{.rollout.metadata.namespace}}","revision":"{{.rollout.status.currentPodHash}}"}
+    template.agent-analysis-run-failed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-analysis-run-failed","source":"rollouts","rollout":"{{.rollout.metadata.name}}","namespace":"{{.rollout.metadata.namespace}}","revision":"{{.rollout.status.currentPodHash}}"}
+  subscriptions:
+    - recipients: [agent] # bare webhook-service name (see argocd values)
+      triggers: [on-rollout-aborted, on-rollout-completed, on-analysis-run-failed]

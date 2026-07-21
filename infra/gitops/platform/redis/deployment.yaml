@@ -4,6 +4,7 @@ metadata:
   name: redis
   labels:
     app: redis
+    lab.obs/plane: platform
 spec:
   replicas: 1
   selector:

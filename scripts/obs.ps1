@@ -729,6 +729,23 @@ current-context: agent-ro@obs-lab
                     } else {
                         Write-Warning "no Gitea token on the VM yet (obs ci up) - repo credential NOT created"
                     }
+                    # Notification secrets for BOTH engines (X-Obs-Token header
+                    # on every webhook to the agent) - value from the lab .env,
+                    # never from git. Rollouts requires the component label or
+                    # its controller won't watch the secret.
+                    $obsTok = Get-ObsToken
+                    if ($obsTok) {
+                        kubectl --kubeconfig $kubeconfig -n argocd create secret generic argocd-notifications-secret `
+                            --from-literal=obs-token=$obsTok --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argo-rollouts create secret generic argo-rollouts-notification-secret `
+                            --from-literal=obs-token=$obsTok --dry-run=client -o yaml |
+                            kubectl --kubeconfig $kubeconfig apply -f - | Out-Null
+                        kubectl --kubeconfig $kubeconfig -n argo-rollouts label secret argo-rollouts-notification-secret `
+                            'app.kubernetes.io/component=rollouts-controller' --overwrite | Out-Null
+                    } else {
+                        Write-Warning "no OBS_TOKEN in .env - notification secrets NOT created (webhooks to the agent will 403)"
+                    }
                     kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/ingressroute.yaml | Out-Null
                     kubectl --kubeconfig $kubeconfig apply -f infra/k8s/argocd/apps/ | Out-Null
                     kubectl --kubeconfig $kubeconfig -n argocd get pods

@@ -21,9 +21,90 @@ applicationSet:
     requests: { cpu: 10m, memory: 32Mi }
 
 notifications:
-  enabled: true # webhook engine -> agent-service (config: notifications.yaml)
+  enabled: true
   resources:
     requests: { cpu: 10m, memory: 32Mi }
+  # argocd-notifications-secret is created by 'obs k8s argo' from the lab
+  # .env (OBS_TOKEN) - the shared secret never enters git. Argo notifications
+  # cannot HMAC-sign, so the static X-Obs-Token header is the auth story.
+  secret:
+    create: false
+  notifiers:
+    service.webhook.agent: |
+      url: http://shahriar.tail813d2f.ts.net:8093
+      headers:
+        - name: Content-Type
+          value: application/json
+        - name: X-Obs-Token
+          value: $obs-token
+    # Explicit Content-Type on both: the webhook notifier sends none by
+    # default and Grafana 400s a typeless annotation POST.
+    service.webhook.grafana: |
+      url: http://shahriar.tail813d2f.ts.net:3001
+      headers:
+        - name: Content-Type
+          value: application/json
+  # Trigger `when` clauses are verbatim from the v3.4.5 notifications
+  # catalog; send lists are ours, and oncePer drops the catalog's `?.`
+  # chaining - it hashed to a constant here, collapsing dedup across
+  # revisions (the when clause already guards the nil case). Free-text status messages stay
+  # OUT of the JSON bodies (quotes would break them) - the agent quotes
+  # CRs itself through its read tools.
+  triggers:
+    trigger.on-deployed: |
+      - description: Application is synced and healthy. Triggered once per commit.
+        oncePer: app.status.operationState.syncResult.revision
+        send: [agent-deployed, deploy-annotation]
+        when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded']
+          and app.status.health.status == 'Healthy' and (!time.Parse(app.status.health.lastTransitionTime).Add(1
+          * time.Minute).Before(time.Parse(app.status.operationState.finishedAt)) or time.Parse(app.status.health.lastTransitionTime).Before(time.Parse(app.status.operationState.startedAt)))
+    trigger.on-health-degraded: |
+      - description: Application has degraded
+        oncePer: app.status.sync.revision
+        send: [agent-degraded]
+        when: app.status.health.status == 'Degraded'
+    trigger.on-sync-failed: |
+      - description: Application syncing has failed
+        oncePer: app.status.sync.revision
+        send: [agent-sync-failed]
+        when: app.status.operationState != nil and app.status.operationState.phase in ['Error',
+          'Failed']
+  templates:
+    template.agent-deployed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-deployed","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.operationState.syncResult.revision}}","phase":"{{.app.status.operationState.phase}}","health":"{{.app.status.health.status}}"}
+    template.agent-degraded: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-health-degraded","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"","health":"{{.app.status.health.status}}"}
+    template.agent-sync-failed: |
+      webhook:
+        agent:
+          method: POST
+          path: /webhook/gitops
+          body: |
+            {"event":"on-sync-failed","source":"argocd","app":"{{.app.metadata.name}}","revision":"{{.app.status.sync.revision}}","phase":"{{.app.status.operationState.phase}}","health":"{{.app.status.health.status}}"}
+    template.deploy-annotation: |
+      webhook:
+        grafana:
+          method: POST
+          path: /api/annotations
+          body: |
+            {"tags":["deployment","{{.app.metadata.name}}","gitops"],"text":"deploy {{.app.metadata.name}} via gitops {{trunc 7 .app.status.operationState.syncResult.revision}} (argo sync)"}
+  # Webhook recipients are the bare service name - "webhook:agent" would
+  # parse as service "webhook" (which doesn't exist) + recipient "agent".
+  subscriptions:
+    - recipients: [agent]
+      triggers: [on-deployed, on-health-degraded, on-sync-failed]
+    - recipients: [grafana]
+      triggers: [on-deployed]
 
 configs:
   params:
