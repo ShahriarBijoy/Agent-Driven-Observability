@@ -6,6 +6,14 @@ apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: model-proxy
+  annotations:
+    # Rollouts' EVENT-driven notifications resolve subscriptions from these
+    # annotations (the configmap's global subscriptions list only serves the
+    # engine's api-eval path, which bare event triggers never satisfy -
+    # verified live: completion fired nothing until these existed).
+    notifications.argoproj.io/subscribe.on-rollout-completed.agent: ""
+    notifications.argoproj.io/subscribe.on-rollout-aborted.agent: ""
+    notifications.argoproj.io/subscribe.on-analysis-run-failed.agent: ""
 spec:
   replicas: 4
   revisionHistoryLimit: 3

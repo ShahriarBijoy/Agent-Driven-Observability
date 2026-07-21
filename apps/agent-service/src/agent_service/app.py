@@ -226,7 +226,7 @@ async def gitops_webhook(request: Request) -> JSONResponse:
         return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
 
     if event == "on-rollout-completed":
-        incident = await db.find_open_incident(target)
+        incident = await db.find_open_incident(target, title_prefix="on-")
         if incident is not None:
             ctx = new_run("gitops-reporter", config.dev_tenant,
                           f"resolution: {target} ({incident['id']})")

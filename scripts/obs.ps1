@@ -179,6 +179,18 @@ function Get-ArgoTool {
     return $exe
 }
 
+function Disable-AutoSync {
+    # Live-inject guard (P10): drop `automated` from one Application so an
+    # injected fault shows as OutOfSync WITHOUT being healed. selfHeal=false
+    # is not sufficient - v3 auto-sync retriggers on drift whenever the
+    # target revision is newer than the last attempted sync. Restore by
+    # re-applying infra/k8s/argocd/apps/<app>.yaml (the revert paths do).
+    param([string]$App, [string]$Kubeconfig)
+    $f = Join-Path $env:TEMP 'obs-autosync-off.json'
+    Set-Content -Encoding ascii -Path $f -Value '{"spec":{"syncPolicy":{"automated":null}}}'
+    kubectl --kubeconfig $Kubeconfig -n argocd patch application $App --type merge --patch-file $f 2>$null | Out-Null
+}
+
 function Get-ObsToken {
     # Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
     # Canonical home: the repo-root .env; the agent-service .env is honored
@@ -436,11 +448,12 @@ try {
                 Write-Host "  manual revert any time: kubectl --kubeconfig `"$kubeconfig`" -n subject rollout undo $target"
                 # P10 re-baseline: these are LIVE injects against a tracked
                 # Deployment - Argo flags the app OutOfSync (expected in the
-                # signature), and self-heal MUST be off for the fault to
-                # stick. It is off by default; the exam contract is to force
-                # it off here anyway and restore the committed CR on revert.
-                kubectl --kubeconfig $kubeconfig -n argocd patch application $app --type merge `
-                    -p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}' 2>$null | Out-Null
+                # signature) and must NOT heal it. selfHeal=false alone is not
+                # enough on Argo CD v3: auto-sync fires for any drift while
+                # the target revision is newer than the last attempted one
+                # (caught live), so the guard removes `automated` entirely for
+                # the inject window; revert re-applies the committed CR.
+                Disable-AutoSync $app $kubeconfig
                 if ($app -eq 'gateway') {
                     Write-Host "  NOTE gateway is a Rollout now: the patch starts a CANARY that wedges (stable pods keep serving); expect rollout-stuck + app OutOfSync, not a full outage."
                 }
@@ -616,16 +629,23 @@ try {
                 $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
                 $orig = (kubectl --kubeconfig $kubeconfig -n subject get configmap subject-telemetry -o jsonpath='{.data.OTEL_EXPORTER_OTLP_ENDPOINT}')
                 if (-not $orig) { Write-Warning 'subject-telemetry ConfigMap not found - is the platform app synced?'; break }
+                Disable-AutoSync 'platform' $kubeconfig
                 Write-Step "config-drift: OTEL_EXPORTER_OTLP_ENDPOINT -> http://drifted.invalid:4318 (was $orig)"
-                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge `
-                    -p '{"data":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://drifted.invalid:4318"}}' | Out-Null
+                # --patch-file, not -p: PS 5.1 native-arg quoting strips the
+                # embedded double quotes out of inline JSON.
+                $patchFile = Join-Path $env:TEMP 'obs-config-drift.json'
+                Set-Content -Encoding ascii -Path $patchFile -Value '{"data":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://drifted.invalid:4318"}}'
+                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $patchFile | Out-Null
                 Write-Step 'platform flips OutOfSync in ~30s; the webhook + 30s re-check spawn the gitops-reporter in ~2 min'
                 Write-Host "  the sting: NOTHING breaks yet - pods only read this at startup. The next rollout would ship blind telemetry. That stale-config story is the point."
                 Start-Sleep -Seconds 300
                 Write-Step 'auto-revert: restoring the committed value'
-                $restore = @{ data = @{ OTEL_EXPORTER_OTLP_ENDPOINT = $orig } } | ConvertTo-Json -Compress
-                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge -p $restore | Out-Null
-                Write-Step 'live matches git again - platform returns Synced on the next refresh. Check the incident inbox for the drift report.'
+                $restoreFile = Join-Path $env:TEMP 'obs-config-drift-restore.json'
+                @{ data = @{ OTEL_EXPORTER_OTLP_ENDPOINT = $orig } } | ConvertTo-Json -Compress |
+                    Set-Content -Encoding ascii -Path $restoreFile
+                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $restoreFile | Out-Null
+                kubectl --kubeconfig $kubeconfig apply -f (Join-Path $Repo 'infra\k8s\argocd\apps\platform.yaml') | Out-Null
+                Write-Step 'live matches git again (auto-sync restored) - platform returns Synced on the next refresh. Check the incident inbox for the drift report.'
                 break
             }
 

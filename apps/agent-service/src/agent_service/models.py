@@ -18,6 +18,7 @@ AgentKind = Literal[
     "echo",
     "rca",
     "incident-reporter",
+    "gitops-reporter",
     "auto-fixer",
     "dashboard-generator",
     "runbook-executor",
