@@ -1177,7 +1177,14 @@ async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) 
         resp.raise_for_status()
         annotations = [
             {
-                "time": datetime.fromtimestamp((a.get("time") or 0) / 1000).isoformat(),
+                # tz=timezone.utc is load-bearing: without it this is a naive
+                # LOCAL-clock datetime (host UTC offset baked silently into
+                # the string) that merge_history would then parse as if it
+                # were already UTC, shifting every annotation entry's ts by
+                # the host's offset.
+                "time": datetime.fromtimestamp(
+                    (a.get("time") or 0) / 1000, tz=timezone.utc
+                ).isoformat(),
                 "tags": a.get("tags", []),
                 "text": (a.get("text") or "")[:300],
             }
@@ -1198,9 +1205,61 @@ async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) 
 # workload identity (app/rollout name) and are filtered against `workload`
 # when given. Individual source outages are skipped and named in
 # deploy_history's "sources_unavailable" — merge_history itself is pure.
+#
+# Every historical source (annotation/ci/argo) is windowed HERE against
+# `now - window_minutes`, not just upstream (Grafana is pre-windowed by its
+# own `range` query, but that's a separate mechanism the other three sources
+# don't get) — a source that hands back entries older than the window must
+# not leak them into the merged timeline. Rollout entries are a current-state
+# snapshot, not history, so they aren't subject to the window (see
+# rollout_status's docstring / the `now` stamp in deploy_history below).
+#
+# Timestamps arrive in three different shapes (rollout `+00:00`-suffixed,
+# CI/Argo `Z`-suffixed, annotation naive-but-UTC) and are normalized by
+# `_parse_entry_ts` into tz-aware UTC datetimes for both the window cutoff
+# and the sort key, then re-serialized by `_entry`/`_format_ts` into one
+# canonical `YYYY-MM-DDTHH:MM:SSZ` form on the way out — callers never see
+# the mixed input formats.
 
 _DEPLOY_HISTORY_ROLLOUTS = ("gateway", "model-proxy")
 _DEPLOY_HISTORY_CAP = 40
+
+
+def _parse_entry_ts(value: Any) -> datetime | None:
+    """Normalize one deploy_history source's ts into a tz-aware UTC datetime.
+
+    Handles the three formats in play: rollout's `+00:00` suffix, CI/Argo's
+    `Z` suffix, and annotations' naive-but-already-UTC string (naive input is
+    ASSUMED to be UTC, never the host's local time — grafana_annotations
+    builds it with `tz=timezone.utc` explicitly for exactly this reason).
+    Returns None for anything missing/unparseable so the caller can skip a
+    malformed entry instead of the whole merge blowing up on one bad ts.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_ts(dt: datetime) -> str:
+    """Canonical serialization for every merge_history entry ts, regardless
+    of which of the three input formats it started as."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _entry(ts: datetime, source: str, summary: str, ref: str) -> dict[str, Any]:
+    """Shared constructor for merge_history's four source loops: canonical
+    UTC ts serialization + the 200-char summary cap every entry must respect,
+    in one place instead of copy-pasted four times."""
+    return {"ts": _format_ts(ts), "source": source, "summary": summary[:200], "ref": ref}
 
 
 def merge_history(
@@ -1210,77 +1269,84 @@ def merge_history(
     rollouts: list,
     window_minutes: int,
     workload: str | None,
+    now: datetime | None = None,
 ) -> dict:
     """Pure merge of the four source shapes into one timeline, sorted
-    newest-first and capped at 40 entries. Each entry: ts, source
-    (annotation|ci|argo|rollout), summary (<=200 chars), ref."""
+    newest-first and capped at 40 entries. Each entry: ts (canonical
+    `YYYY-MM-DDTHH:MM:SSZ` UTC), source (annotation|ci|argo|rollout), summary
+    (<=200 chars), ref.
+
+    `now` is injectable (defaults to the real current time) purely so this
+    stays a pure, deterministically testable function — deploy_history
+    computes one `now` and passes it in. Historical sources (annotation/ci/
+    argo) older than `now - window_minutes` are excluded; rollout entries are
+    a current-state snapshot and are exempt from the window (their summary is
+    prefixed to say so instead)."""
     needle = workload.strip().lower() if workload and workload.strip() else None
-    entries: list[dict[str, Any]] = []
+    now = now if now is not None else datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+    scored: list[tuple[datetime, dict[str, Any]]] = []
 
     for ann in annotations or []:
-        ts = ann.get("time")
-        if not ts:
+        parsed = _parse_entry_ts(ann.get("time"))
+        if parsed is None or parsed < cutoff:
             continue
         text = (ann.get("text") or "").strip() or "deploy annotation"
         tags = ann.get("tags") or []
-        entries.append({
-            "ts": ts,
-            "source": "annotation",
-            "summary": text[:200],
-            "ref": ",".join(str(t) for t in tags),
-        })
+        scored.append((parsed, _entry(
+            parsed, "annotation", text, ",".join(str(t) for t in tags)
+        )))
 
     for run in ci_runs or []:
-        ts = run.get("started_at")
-        if not ts:
+        parsed = _parse_entry_ts(run.get("started_at"))
+        if parsed is None or parsed < cutoff:
             continue
         status = run.get("conclusion") or run.get("status") or "unknown"
         branch = run.get("branch") or ""
         title = (run.get("title") or "").strip()
         head = f"CI run #{run.get('run_number')} {status} on {branch}".strip()
         summary = f"{head}: {title}" if title else head
-        entries.append({
-            "ts": ts,
-            "source": "ci",
-            "summary": summary[:200],
-            "ref": run.get("sha") or run.get("url") or "",
-        })
+        scored.append((parsed, _entry(
+            parsed, "ci", summary, run.get("sha") or run.get("url") or ""
+        )))
 
     for app in argo_apps or []:
         app_name = str(app.get("app") or "")
         if needle and needle not in app_name.lower():
             continue
         for h in (app.get("history") or []):
-            ts = h.get("deployedAt") or h.get("deployStartedAt")
-            if not ts:
+            parsed = _parse_entry_ts(h.get("deployedAt") or h.get("deployStartedAt"))
+            if parsed is None or parsed < cutoff:
                 continue
             revision = h.get("revision") or ""
-            entries.append({
-                "ts": ts,
-                "source": "argo",
-                "summary": f"{app_name} synced to {revision}"[:200],
-                "ref": revision,
-            })
+            scored.append((parsed, _entry(
+                parsed, "argo", f"{app_name} synced to {revision}", revision
+            )))
 
     for ro in rollouts or []:
         name = str(ro.get("rollout") or "")
         if needle and needle not in name.lower():
             continue
-        ts = ro.get("ts")
-        if not ts:
+        parsed = _parse_entry_ts(ro.get("ts"))
+        if parsed is None:
             continue
         phase = ro.get("phase") or "unknown"
         step = ro.get("step") or ""
         aborted = " ABORTED" if ro.get("aborted") else ""
-        entries.append({
-            "ts": ts,
-            "source": "rollout",
-            "summary": f"{name} rollout {phase} (step {step}){aborted}".strip()[:200],
-            "ref": ro.get("canaryHash") or ro.get("stableHash") or "",
-        })
+        # No window check: rollout_status has no per-revision history, only
+        # current phase/step, so its ts is query-time, not event-time — the
+        # "current state (as of query)" prefix below is the marker postmortem
+        # timeline consumers need to NOT treat source=="rollout" as an event.
+        summary = (
+            f"current state (as of query): {name} rollout {phase} "
+            f"(step {step}){aborted}"
+        ).strip()
+        scored.append((parsed, _entry(
+            parsed, "rollout", summary, ro.get("canaryHash") or ro.get("stableHash") or ""
+        )))
 
-    entries.sort(key=lambda e: e["ts"], reverse=True)
-    entries = entries[:_DEPLOY_HISTORY_CAP]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    entries = [entry for _, entry in scored[:_DEPLOY_HISTORY_CAP]]
     return {"window_minutes": window_minutes, "entries": entries, "count": len(entries)}
 
 
@@ -1329,7 +1395,17 @@ async def deploy_history(window_minutes: int = 180, workload: str | None = None)
         sources_unavailable.append("argo")
 
     rollouts: list = []
-    now_iso = datetime.now(timezone.utc).isoformat()
+    # One `now`, used both to stamp rollout entries below AND as merge_history's
+    # window-cutoff anchor (passed through), so a snapshot taken mid-request
+    # can't drift against the cutoff it's being windowed against.
+    # rollout_status has no per-revision timestamp — the Rollout CR only
+    # exposes current phase/step, not a deploy history — so query-time is the
+    # best available approximation of "when". merge_history marks every
+    # rollout summary "current state (as of query): " precisely so a
+    # postmortem timeline consumer treats source=="rollout" as observed
+    # state, not an event time.
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     rollout_results = await asyncio.gather(
         *[_try(rollout_status(n)) for n in _DEPLOY_HISTORY_ROLLOUTS]
     )
@@ -1339,7 +1415,9 @@ async def deploy_history(window_minutes: int = 180, workload: str | None = None)
     if not rollouts:
         sources_unavailable.append("rollout")
 
-    merged = merge_history(annotations, ci_runs, argo_apps, rollouts, window_minutes, workload)
+    merged = merge_history(
+        annotations, ci_runs, argo_apps, rollouts, window_minutes, workload, now=now
+    )
     if sources_unavailable:
         merged["sources_unavailable"] = sources_unavailable
     return merged
