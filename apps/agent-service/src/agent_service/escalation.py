@@ -55,6 +55,21 @@ def escalation_due(incident: dict, state: dict, now: datetime) -> bool:
     return True
 
 
+def closing_decision(remediated: bool, alert_active: bool) -> str:
+    """Pure closing-step decision matrix (PLAN-2 P11 Task 10) — incidents only
+    close on OBSERVED recovery, decided here, never by the model's own report:
+
+      not remediated + inactive -> "resolve"     alert stopped on its own / was transient
+      not remediated + active   -> "leave-open"  diagnosed but not fixed; deadline stands
+      remediated     + inactive -> "verify"      verified recovery: mark_verified
+      remediated     + active   -> "deadline"    fix didn't take yet: verify_deadline stands,
+                                                  the watcher re-escalates
+    """
+    if remediated:
+        return "deadline" if alert_active else "verify"
+    return "leave-open" if alert_active else "resolve"
+
+
 def _rebuild_event(payload: dict) -> ingress.AlertEvent | None:
     """Re-normalize an incident's stored alert `payload` JSONB back into an
     AlertEvent. A gitops row's payload IS the full event payload verbatim

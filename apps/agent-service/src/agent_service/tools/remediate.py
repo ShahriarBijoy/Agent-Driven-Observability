@@ -40,15 +40,19 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .. import db
 from ..config import config
 from ..context import RunContext
 from . import backends
+
+logger = logging.getLogger(__name__)
 
 # ---- hard-deny surface -------------------------------------------------------
 
@@ -148,12 +152,47 @@ def _pop_dryrun(run_id: str, action_id: str) -> dict | None:
     return run_stash.pop(action_id, None)
 
 
-def _consume_dryrun(ctx: RunContext, action_id: str, result: dict) -> dict:
-    """Pop the dry-run stash entry only when the mutation succeeded. If result
-    contains an "error" key, the stash entry is retained so a retry with the
-    same approval can proceed. Returns result unchanged."""
+async def _record_remediation(ctx: RunContext, entry: dict | None) -> None:
+    """Machine-record a successful remediation against its incident (PLAN-2
+    P11 Task 10): a timeline entry naming the action + target + run, and a
+    fresh verify_deadline so the escalation watcher (or the closing step at
+    the end of THIS run) knows when to re-check. `entry` is the popped
+    dry-run stash (action/target) — None means this run's stash had nothing
+    for this action_id (shouldn't happen on the success path, but is handled
+    rather than assumed away).
+
+    Failure-safe by design: incident_for_run/add_timeline/set_verify_deadline
+    are Postgres calls that can fail independently of the kubectl mutation
+    that already succeeded — a DB hiccup here must degrade to a log line, not
+    fail the tool result the model already has in hand."""
+    if entry is None:
+        return
+    try:
+        incident_id = await db.incident_for_run(ctx.run_id)
+        if incident_id is None:
+            return
+        now = datetime.now(timezone.utc)
+        label = f"{entry['action']} {entry['target']} executed (run {ctx.run_id})"
+        await db.add_timeline(incident_id, [(now, "remediation", label)])
+        await db.set_verify_deadline(
+            incident_id, now + timedelta(minutes=config.oncall_verify_minutes)
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail the tool result over a DB hiccup
+        logger.warning(
+            "failed to record remediation for run %s action_id %s: %s",
+            ctx.run_id, entry.get("action") if entry else "?", exc,
+        )
+
+
+async def _consume_dryrun(ctx: RunContext, action_id: str, result: dict) -> dict:
+    """Pop the dry-run stash entry only when the mutation succeeded, and
+    machine-record the remediation against its incident (see
+    `_record_remediation`). If result contains an "error" key, the stash
+    entry is retained so a retry with the same approval can proceed. Returns
+    result unchanged."""
     if "error" not in result:
-        _pop_dryrun(ctx.run_id, action_id)
+        entry = _pop_dryrun(ctx.run_id, action_id)
+        await _record_remediation(ctx, entry)
     return result
 
 
@@ -341,7 +380,7 @@ async def rollout_undo(ctx: RunContext, workload: str, dry_run: bool = True,
         return gate
     res = await _kubectl(["rollout", "undo", f"deployment/{workload}", "-n", "subject"])
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)
 
 
 async def rollout_abort(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -370,7 +409,7 @@ async def rollout_abort(ctx: RunContext, workload: str, dry_run: bool = True,
          "--type", "merge", "-p", patch]
     )
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)
 
 
 async def rollout_promote(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -402,15 +441,15 @@ async def rollout_promote(ctx: RunContext, workload: str, dry_run: bool = True,
         ["patch", "rollout", workload, "-n", "subject", "--type", "merge", "-p", spec_patch]
     )
     if "error" in spec_res:
-        return _consume_dryrun(ctx, aid, spec_res)
+        return await _consume_dryrun(ctx, aid, spec_res)
     status_res = await _kubectl(
         ["patch", "rollout", workload, "-n", "subject", "--subresource=status",
          "--type", "merge", "-p", status_patch]
     )
     if "error" in status_res:
-        return _consume_dryrun(ctx, aid, status_res)
+        return await _consume_dryrun(ctx, aid, status_res)
     combined = "\n".join(t for t in (spec_res.get("output", ""), status_res.get("output", "")) if t)
-    return _consume_dryrun(ctx, aid, _executed_result(action, workload, combined))
+    return await _consume_dryrun(ctx, aid, _executed_result(action, workload, combined))
 
 
 async def scale_deployment(ctx: RunContext, workload: str, replicas: int, dry_run: bool = True,
@@ -433,7 +472,7 @@ async def scale_deployment(ctx: RunContext, workload: str, replicas: int, dry_ru
         ["scale", f"deployment/{workload}", f"--replicas={replicas}", "-n", "subject"]
     )
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)
 
 
 async def patch_memory_limit(ctx: RunContext, workload: str, memory_mi: int, dry_run: bool = True,
@@ -460,7 +499,7 @@ async def patch_memory_limit(ctx: RunContext, workload: str, memory_mi: int, dry
     })
     res = await _kubectl(["patch", "deployment", workload, "-n", "subject", "--type", "merge", "-p", patch])
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)
 
 
 async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -485,7 +524,7 @@ async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
         return gate
     res = await _kubectl(["rollout", "restart", f"deployment/{workload}", "-n", "subject"])
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)
 
 
 # ---- update_db_secret: sync the K8s Secret from the lab vault ---------------
@@ -599,9 +638,9 @@ async def update_db_secret(ctx: RunContext, dry_run: bool = True,
         ["patch", "secret", _DB_SECRET_NAME, "-n", "subject", "--type", "merge", "-p", patch]
     )
     if "error" in res:
-        return _consume_dryrun(ctx, aid, res)
+        return await _consume_dryrun(ctx, aid, res)
     final_result = _executed_result(
         action, target,
         "secret patched; restart dependent workloads (gateway, retriever) to pick it up",
     )
-    return _consume_dryrun(ctx, aid, final_result)
+    return await _consume_dryrun(ctx, aid, final_result)

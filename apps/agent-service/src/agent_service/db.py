@@ -458,6 +458,32 @@ async def link_run(incident_id: str, run_id: str, kind: str = "investigation") -
     )
 
 
+async def incident_for_run(run_id: str) -> str | None:
+    """The incident a given agent run is linked to (via incident_runs), if
+    any — how tools.remediate resolves incident_id from just the RunContext
+    it's given, so a successful remediation's timeline/verify-deadline side
+    effects land on the right incident. Newest link wins on the (unexpected)
+    case of a run linked to more than one incident."""
+    row = await _require_pool().fetchrow(
+        """SELECT incident_id FROM incident_runs
+           WHERE run_id = $1 ORDER BY created_at DESC LIMIT 1""",
+        run_id,
+    )
+    return row["incident_id"] if row else None
+
+
+async def incident_was_remediated(incident_id: str) -> bool:
+    """True iff this incident's machine timeline carries at least one
+    source='remediation' entry — the closing step's evidence that a
+    remediation actually executed (vs. the model merely narrating one)."""
+    row = await _require_pool().fetchrow(
+        """SELECT 1 FROM incident_timeline
+           WHERE incident_id = $1 AND source = 'remediation' LIMIT 1""",
+        incident_id,
+    )
+    return row is not None
+
+
 async def incident_runs_for(incident_id: str) -> list[dict]:
     rows = await _require_pool().fetch(
         """SELECT run_id, kind, created_at FROM incident_runs
@@ -483,6 +509,19 @@ async def alert_state(incident_id: str) -> dict:
 async def set_verify_deadline(incident_id: str, deadline: datetime) -> None:
     await _require_pool().execute(
         "UPDATE incidents SET verify_deadline = $2 WHERE id = $1", incident_id, deadline,
+    )
+
+
+async def ensure_verify_deadline(incident_id: str, deadline: datetime) -> None:
+    """Set verify_deadline only if it's currently NULL — used by the closing
+    step's "deadline"/"leave-open" branches, which must not stomp a deadline a
+    remediation just armed (or push it further out on a re-check), but MUST
+    make sure a not-yet-remediated incident still gets one: without it,
+    due_incidents' `verify_deadline < now` comparison would never match a
+    NULL and the escalation watcher would never re-check it."""
+    await _require_pool().execute(
+        "UPDATE incidents SET verify_deadline = COALESCE(verify_deadline, $2) WHERE id = $1",
+        incident_id, deadline,
     )
 
 

@@ -295,6 +295,46 @@ async def grafana_get_dashboard(query: str) -> dict:
         return {"error": f"grafana read failed: {exc}"}
 
 
+async def grafana_active_alerts(alertname: str) -> dict:
+    """Is `alertname` currently firing, per Alertmanager (through Grafana's
+    embedded Alertmanager API)? This is the machine-observed signal the
+    on-call closing step (`agents.oncall.run_oncall`) uses to decide whether
+    an incident may close — never the model's own say-so. Returns
+    {"alertname", "active": bool, "count", "since": iso|None}; "active" is
+    true iff at least one alert with this exact alertname label is in the
+    Alertmanager v2 "active" state (not resolved/suppressed); "since" is the
+    earliest startsAt among those active instances, else None. Never raises —
+    a query failure returns {"error": ...}, and callers MUST treat that as
+    "unknown, so behave as if still active" (conservative: never close an
+    incident on a backend hiccup)."""
+    name = (alertname or "").strip()
+    if not name:
+        return {"error": "alertname is required"}
+    try:
+        resp = await _http().get(
+            f"{config.grafana_url}/api/alertmanager/grafana/api/v2/alerts",
+            params={"filter": f"alertname={name}"},
+        )
+        resp.raise_for_status()
+        alerts = resp.json()
+        if not isinstance(alerts, list):
+            alerts = []
+        matching = [a for a in alerts if (a.get("labels") or {}).get("alertname") == name]
+        active_alerts = [a for a in matching if (a.get("status") or {}).get("state") == "active"]
+        since = None
+        starts = sorted(a.get("startsAt") for a in active_alerts if a.get("startsAt"))
+        if starts:
+            since = starts[0]
+        return {
+            "alertname": name,
+            "active": bool(active_alerts),
+            "count": len(active_alerts),
+            "since": since,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"grafana alert status query failed: {exc}", "alertname": name}
+
+
 def sync_provisioned_dashboard(model: dict, prov_dir: str) -> str | None:
     """If `model`'s uid belongs to a file-provisioned dashboard, write the new
     model back into its provisioning JSON and return the file name.

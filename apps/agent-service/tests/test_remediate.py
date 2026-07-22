@@ -308,6 +308,116 @@ async def test_scale_failed_execute_retains_stash_for_retry(fake_kubectl, approv
     assert remediate.server_verified_block(ctx.run_id, aid) is None
 
 
+# ---- machine-recorded remediation (PLAN-2 P11 Task 10) ----------------------
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    """Stub db.incident_for_run/add_timeline/set_verify_deadline with an
+    in-memory recorder the test can assert against."""
+    calls = {"incident_for_run": [], "add_timeline": [], "set_verify_deadline": []}
+    incident_id_box = {"value": "inc_1"}
+
+    async def _incident_for_run(run_id):
+        calls["incident_for_run"].append(run_id)
+        return incident_id_box["value"]
+
+    async def _add_timeline(incident_id, entries):
+        calls["add_timeline"].append((incident_id, entries))
+
+    async def _set_verify_deadline(incident_id, deadline):
+        calls["set_verify_deadline"].append((incident_id, deadline))
+
+    monkeypatch.setattr(remediate.db, "incident_for_run", _incident_for_run)
+    monkeypatch.setattr(remediate.db, "add_timeline", _add_timeline)
+    monkeypatch.setattr(remediate.db, "set_verify_deadline", _set_verify_deadline)
+    calls["incident_id_box"] = incident_id_box
+    return calls
+
+
+async def test_successful_execute_records_timeline_and_deadline(fake_kubectl, approvals, recorder):
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+    result = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert result.get("executed") is True
+
+    assert recorder["incident_for_run"] == ["run-1"]
+    assert len(recorder["add_timeline"]) == 1
+    incident_id, entries = recorder["add_timeline"][0]
+    assert incident_id == "inc_1"
+    assert len(entries) == 1
+    _ts, source, label = entries[0]
+    assert source == "remediation"
+    assert "scale_deployment gateway executed (run run-1)" == label
+    assert len(recorder["set_verify_deadline"]) == 1
+    assert recorder["set_verify_deadline"][0][0] == "inc_1"
+
+
+async def test_failed_execute_does_not_record_remediation(fake_kubectl, approvals, recorder, monkeypatch):
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+
+    def _run_fails(argv, capture_output, text, timeout):
+        return SimpleNamespace(returncode=1, stdout="", stderr="kubectl error")
+
+    monkeypatch.setattr(remediate.subprocess, "run", _run_fails)
+    result = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert "error" in result
+    assert recorder["incident_for_run"] == []
+    assert recorder["add_timeline"] == []
+    assert recorder["set_verify_deadline"] == []
+
+
+async def test_no_linked_incident_skips_timeline_and_deadline(fake_kubectl, approvals, recorder):
+    recorder["incident_id_box"]["value"] = None
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+    result = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert result.get("executed") is True
+    assert recorder["incident_for_run"] == ["run-1"]
+    assert recorder["add_timeline"] == []
+    assert recorder["set_verify_deadline"] == []
+
+
+async def test_db_failure_during_recording_does_not_fail_the_tool_result(
+    fake_kubectl, approvals, monkeypatch
+):
+    """A DB hiccup while machine-recording the remediation must degrade to a
+    log line, not surface as an error on the already-successful tool result."""
+    async def _boom(*a, **k):
+        raise RuntimeError("db pool not initialised")
+
+    monkeypatch.setattr(remediate.db, "incident_for_run", _boom)
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+    result = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert result.get("executed") is True
+
+
 async def test_request_approval_action_id_without_stash_errors():
     """What sdk.py's request_approval tool does when the model passes an
     action_id that was never dry-run for this run: server_verified_block

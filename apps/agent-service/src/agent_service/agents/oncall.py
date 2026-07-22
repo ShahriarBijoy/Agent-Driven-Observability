@@ -36,13 +36,18 @@ means no narrowing: the full baseline stays in play.
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .. import precheck
+from .. import db, precheck
+from ..config import config
 from ..context import RunContext
 from ..tools import backends
 from ..tools import sdk as toolsdk
 from .base import run_agent_session
+
+logger = logging.getLogger(__name__)
 
 # Display-name stripping (mcp__obslab__x -> x) is shared with agents/base.py
 # via toolsdk.display_name (toolsdk is a leaf module both already import; it
@@ -159,6 +164,55 @@ def _runbook_artifact(match: dict, allowed_override: list[str] | None) -> str:
     )
 
 
+async def _close_incident(ctx: RunContext, incident_id: str, alert: Any) -> None:
+    """The verify-then-close step (PLAN-2 P11 Task 10): runs AFTER the model's
+    session ends, BEFORE ctx.end — incidents close on OBSERVED recovery only,
+    decided by `closing_decision` (code), never by the model's own report.
+
+    `remediated` comes from the machine timeline (a source='remediation' row
+    only tools.remediate's success path writes); `active` comes from
+    Alertmanager via `backends.grafana_active_alerts` — an error dict is
+    treated as active=True (conservative: never close on an unknown state).
+    Wrapped end-to-end so any exception here degrades to leaving the incident
+    open rather than crashing the run's close-out.
+    """
+    # Local import: escalation.py imports agents.oncall at module level (for
+    # run_oncall), so importing escalation back at oncall's module level
+    # would be a circular import; deferring it to call time breaks the cycle.
+    from ..escalation import closing_decision
+
+    try:
+        remediated = await db.incident_was_remediated(incident_id)
+        status = await backends.grafana_active_alerts(alert.alertname)
+        active = True if "error" in status else bool(status.get("active"))
+        decision = closing_decision(remediated, active)
+        now = datetime.now(timezone.utc)
+        if decision == "verify":
+            await db.mark_verified(incident_id, now)
+            await db.add_timeline(
+                incident_id,
+                [(now, "verification", f"recovery verified: {alert.alertname} no longer firing")],
+            )
+        elif decision == "resolve":
+            await db.mark_verified(
+                incident_id, now, summary="alert cleared without remediation"
+            )
+        else:  # "deadline" or "leave-open" — recovery not (yet) confirmed
+            # ensure_verify_deadline (not set_verify_deadline): must not stomp
+            # a deadline the remediation recording already armed, but a
+            # never-remediated ("leave-open") incident still needs one so the
+            # escalation watcher's due_incidents query can find it.
+            await db.ensure_verify_deadline(
+                incident_id, now + timedelta(minutes=config.oncall_verify_minutes)
+            )
+            await db.add_timeline(
+                incident_id,
+                [(now, "verification", "recovery NOT verified — deadline armed")],
+            )
+    except Exception as exc:  # noqa: BLE001 — never crash the run's close-out
+        logger.warning("closing step failed for incident %s: %s", incident_id, exc)
+
+
 async def run_oncall(
     ctx: RunContext, incident_id: str, alert: Any, *, escalation: dict | None = None
 ) -> None:
@@ -197,6 +251,9 @@ async def run_oncall(
 
     prompt = _build_prompt(alert, incident_id, escalation, precheck_report=report, runbook_match=match)
     await run_agent_session(ctx, "oncall", prompt, max_turns=40, allowed_override=allowed_override)
+    # Verify-then-close (Task 10): decided by code from an OBSERVED signal —
+    # never by the model's own narration of success.
+    await _close_incident(ctx, incident_id, alert)
     await ctx.end("completed", summary=f"{incident_id}: {alert.alertname}")
 
 

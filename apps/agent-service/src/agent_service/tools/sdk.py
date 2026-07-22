@@ -312,6 +312,18 @@ async def _kubectl(args: dict) -> dict:
 
 
 @tool(
+    "alert_status",
+    "Is this alert currently firing, per Alertmanager? Returns {alertname, active, count, "
+    "since}. Re-query this AFTER executing a remediation to see whether the fix took effect — "
+    "but note that whether the incident actually CLOSES is decided server-side from this same "
+    "signal, not by anything you report.",
+    {"type": "object", "properties": {"alertname": {"type": "string"}}, "required": ["alertname"]},
+)
+async def _alert_status(args: dict) -> dict:
+    return _text("alert_status", await backends.grafana_active_alerts(args["alertname"]))
+
+
+@tool(
     "gitea_ci_runs",
     "Recent CI pipeline runs from the local Gitea forge (obs/obs-lab), newest-first, with "
     "per-job status and timing. Use for 'what shipped / what ran in CI recently' questions; "
@@ -498,7 +510,7 @@ async def _analysisrun(args: dict) -> dict:
 _STATELESS = [
     _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook, _runbook_lookup,
     _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
-    _gitea_pr, _argo_app, _rollout_status, _analysisrun, _deploy_history,
+    _gitea_pr, _argo_app, _rollout_status, _analysisrun, _deploy_history, _alert_status,
 ]
 
 
@@ -931,6 +943,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "AnalysisRun verdicts with measurements verbatim"},
     {"name": mcp("deploy_history"), "kind": "mcp",
      "description": "Merged chronological deploy/change timeline (annotations+CI+Argo+rollouts)"},
+    {"name": mcp("alert_status"), "kind": "mcp",
+     "description": "Is this alert currently firing per Alertmanager (active/count/since)"},
     {"name": mcp("rollout_undo"), "kind": "mcp",
      "description": "Roll a deployment back to its previous revision (dry-run first, approval-gated)"},
     {"name": mcp("rollout_abort"), "kind": "mcp",
@@ -1088,7 +1102,9 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "dry-run again first. "
         "After executing the real remediation, re-query alert_status repeatedly until it reports "
         "recovery, or until you can no longer justify continuing — in which case report the "
-        "failure to recover explicitly; never assume success without re-querying. "
+        "failure to recover explicitly; never assume success without re-querying. Report the "
+        "outcome you observe, but closure of the incident is decided server-side from the same "
+        "alert_status signal, not by your report. "
         "Finish every incident, resolved or not, by calling open_postmortem_pr with a narrative: "
         "what fired, what you found and how, what you changed (or tried), and the current state. "
         "Narrate as you go: one short sentence before each round of tool calls saying what you're "
