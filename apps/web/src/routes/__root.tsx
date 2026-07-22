@@ -1,5 +1,6 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { ApprovalToaster } from "~/components/approval-toaster";
 import { NavRail } from "~/components/nav-rail";
 import { TopBar } from "~/components/top-bar";
 import { TooltipProvider } from "~/components/ui/tooltip";
@@ -26,6 +27,7 @@ function RootComponent() {
   return (
     <RootDocument>
       <TooltipProvider>
+        <ApprovalToaster />
         <div className="flex h-dvh flex-col">
           <TopBar />
           <div className="flex min-h-0 flex-1">
