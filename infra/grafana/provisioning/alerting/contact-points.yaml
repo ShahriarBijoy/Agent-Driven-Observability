@@ -1,9 +1,15 @@
 # Grafana unified-alerting contact points (apiVersion 1).
-# "agent-webhook" delivers firing/resolved alerts to the Phase-5 agent-service,
-# which spawns the incident reporter. agent-service runs on the host (it needs
-# the local Claude Code session for live auth), so Grafana — running in compose —
-# reaches it via host.docker.internal. A firing alert produces a postmortem in
-# the incident inbox within ~2 minutes.
+# "agent-webhook" delivers firing/resolved alerts to the unified alert ingress
+# (PLAN-2 P11, agent-service /webhook/alerts), which dedupes per alertname+
+# workload and spawns exactly one `oncall` investigation per incident.
+# agent-service runs on the host (it needs the local Claude Code session for
+# live auth), so Grafana — running in compose — reaches it via
+# host.docker.internal. hmacConfig signs the payload (HMAC-SHA256 of the raw
+# body, hex-encoded, in the X-Grafana-Alerting-Signature header per Grafana
+# 13's webhook-notifier docs) so the endpoint can tell real Grafana traffic
+# from anything else that can reach the host port. Secret matches
+# ALERT_WEBHOOK_SECRET in apps/agent-service/.env(.example) — lab default,
+# committed by convention (like lab/lab).
 apiVersion: 1
 
 contactPoints:
@@ -13,6 +19,9 @@ contactPoints:
       - uid: agent-webhook
         type: webhook
         settings:
-          url: http://host.docker.internal:8093/webhook/grafana-alert
+          url: http://host.docker.internal:8093/webhook/alerts
           httpMethod: POST
+          hmacConfig:
+            secret: obs-lab-alert-hmac
+            header: X-Grafana-Alerting-Signature
         disableResolveMessage: false
