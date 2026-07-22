@@ -672,6 +672,24 @@ def build_mcp_server(ctx: RunContext):
         ))
 
     @tool(
+        "update_db_secret",
+        "Sync secret/subject-db-credentials from the lab vault after `obs fail stale-secret` "
+        "rotates the in-cluster Postgres password without updating the Secret. No workload "
+        "param — the target is always this one Secret. dry_run (default true) reports a masked "
+        "diff (POSTGRES_PASSWORD: ****<old-sha8> -> ****<new-sha8>); the real password is never "
+        "shown. Errors if the vault has no rotated credential to sync.",
+        {
+            "type": "object",
+            "properties": {**_REMEDIATE_COMMON},
+            "required": [],
+        },
+    )
+    async def _update_db_secret(args: dict) -> dict:
+        return _text("update_db_secret", await remediate.update_db_secret(
+            ctx, bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
         "gh_open_pr",
         "Open a pull request from the contained workspace clone. Edit files directly with Edit "
         "first, then call this (patch optional). Requires a prior approval — call request_approval "
@@ -741,6 +759,7 @@ def build_mcp_server(ctx: RunContext):
             *_STATELESS, _gh, _approval, _artifact,
             _rollout_undo, _rollout_abort, _rollout_promote,
             _scale_deployment, _patch_memory_limit, _restart_workload,
+            _update_db_secret,
         ],
     )
 
@@ -924,6 +943,9 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Patch a deployment's container memory limit, 64..2048Mi (dry-run first, approval-gated)"},
     {"name": mcp("restart_workload"), "kind": "mcp",
      "description": "Rolling-restart a deployment (dry-run first, approval-gated)"},
+    {"name": mcp("update_db_secret"), "kind": "mcp",
+     "description": "Sync the DB Secret from the lab vault after a stale-secret rotation "
+                     "(dry-run first, approval-gated, password never shown)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",

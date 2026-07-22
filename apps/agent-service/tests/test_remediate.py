@@ -10,6 +10,7 @@ argv)."""
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 from types import SimpleNamespace
@@ -465,3 +466,114 @@ async def test_memory_execute_sends_merge_patch_with_container_name_and_limit(
             {"name": "gateway", "resources": {"limits": {"memory": "512Mi"}}}
         ]}}}
     }
+
+
+# ---- update_db_secret: reads the lab vault, never leaks the password -------
+
+
+async def test_update_db_secret_vault_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        remediate, "config",
+        dataclasses.replace(remediate.config, vault_file=str(tmp_path / "no-such-vault.txt")),
+    )
+    result = await remediate.update_db_secret(_FakeCtx(), dry_run=True)
+    assert result == {"error": "no rotated credential found in the vault — nothing to sync"}
+
+
+@pytest.fixture
+def fake_kubectl_secret(monkeypatch, tmp_path):
+    """A kubeconfig that exists (so `_kubectl` proceeds) plus a stubbed
+    `kubectl get secret ... -o json` response with a known OLD password, and
+    a vault file holding a known NEW (rotated) password — neither of which
+    may ever appear in a returned dict or stash entry."""
+    kubeconfig = tmp_path / "agent-remediate.yaml"
+    kubeconfig.write_text("apiVersion: v1\nkind: Config\n", encoding="utf-8")
+    vault = tmp_path / "db-vault.txt"
+    new_password = "rotated-secretpw123"
+    vault.write_text(f"{new_password}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        remediate, "config",
+        dataclasses.replace(
+            remediate.config,
+            k8s_remediate_kubeconfig=str(kubeconfig),
+            vault_file=str(vault),
+        ),
+    )
+    old_password = "old-plaintextpw"
+    secret_json = {
+        "data": {
+            "POSTGRES_PASSWORD": base64.b64encode(old_password.encode()).decode(),
+            "DATABASE_URL": base64.b64encode(
+                f"postgres://lab:{old_password}@postgres:5432/observability_lab".encode()
+            ).decode(),
+        }
+    }
+    calls: list[list[str]] = []
+
+    def _run(argv, capture_output, text, timeout):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(secret_json), stderr="")
+
+    monkeypatch.setattr(remediate.subprocess, "run", _run)
+    return calls, old_password, new_password
+
+
+async def test_update_db_secret_dry_run_masks_password_everywhere(fake_kubectl_secret):
+    calls, old_password, new_password = fake_kubectl_secret
+    result = await remediate.update_db_secret(_FakeCtx(), dry_run=True)
+    assert result["dry_run"] is True
+    assert result["vault_checked"] is True
+    assert result["target"] == "secret/subject-db-credentials"
+    assert "action_id" in result and len(result["action_id"]) == 16
+    assert "POSTGRES_PASSWORD: ****" in result["diff"]
+    assert "DATABASE_URL: (rebuilt with rotated password)" in result["diff"]
+
+    dumped = json.dumps(result)
+    assert new_password not in dumped
+    assert old_password not in dumped
+
+    # the server-side stash (what request_approval quotes back) must be clean too
+    stash_entry = remediate._DRYRUN_STASH["run-1"][result["action_id"]]
+    stash_dumped = json.dumps(stash_entry)
+    assert new_password not in stash_dumped
+    assert old_password not in stash_dumped
+
+    assert calls[0][3:] == [
+        "get", "secret", "subject-db-credentials", "-n", "subject", "-o", "json",
+    ]
+
+
+async def test_update_db_secret_execute_patches_secret_with_base64_data(
+    fake_kubectl_secret, approvals
+):
+    calls, _old_password, new_password = fake_kubectl_secret
+    ctx = _FakeCtx()
+    dry = await remediate.update_db_secret(ctx, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"sync db secret from vault{block}"}
+    result = await remediate.update_db_secret(ctx, dry_run=False, approval_id="apr-1")
+    assert result.get("executed") is True
+    assert "restart" in result["result"]
+    assert "gateway" in result["result"] and "retriever" in result["result"]
+
+    dumped = json.dumps(result)
+    assert new_password not in dumped
+
+    patch_call = calls[-1]
+    assert patch_call[3:7] == ["patch", "secret", "subject-db-credentials", "-n"]
+    assert patch_call[patch_call.index("--type") + 1] == "merge"
+    body = json.loads(patch_call[patch_call.index("-p") + 1])
+    assert base64.b64decode(body["data"]["POSTGRES_PASSWORD"]).decode() == new_password
+    expected_url = f"postgres://lab:{new_password}@postgres:5432/observability_lab"
+    assert base64.b64decode(body["data"]["DATABASE_URL"]).decode() == expected_url
+
+
+async def test_update_db_secret_vault_missing_at_execute_time_too(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        remediate, "config",
+        dataclasses.replace(remediate.config, vault_file=str(tmp_path / "gone.txt")),
+    )
+    result = await remediate.update_db_secret(_FakeCtx(), dry_run=False, approval_id="whatever")
+    assert result == {"error": "no rotated credential found in the vault — nothing to sync"}

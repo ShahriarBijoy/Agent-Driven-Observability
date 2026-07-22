@@ -2,13 +2,14 @@
 
 Two identities do two different jobs: the READ tools (kubectl_read, k8s_events,
 rollout_status, ...) run as `agent-ro` — cluster-wide view, no writes. These
-six tools are the only place the on-call agent can ever MUTATE the cluster,
+seven tools are the only place the on-call agent can ever MUTATE the cluster,
 and they run as a second, far narrower identity: `agent-remediate`
 (infra/k8s/cluster/agent-remediate.yaml), whose Role is scoped to namespace
 `subject` and to exactly the verbs each tool needs (deployments/scale,
-deployments/rollouts patch, and get+patch on ONE named Secret for a later
-task). Every kubectl invocation here is a fixed argv, no shell — same pattern
-as `backends.kubectl_read` — with `-n subject` hard-coded; nothing here ever
+deployments/rollouts patch, and get+patch on ONE named Secret,
+subject-db-credentials, used only by `update_db_secret`). Every kubectl
+invocation here is a fixed argv, no shell — same pattern as
+`backends.kubectl_read` — with `-n subject` hard-coded; nothing here ever
 takes a namespace argument from the model.
 
 Two independent gates sit in front of every mutation:
@@ -36,6 +37,7 @@ Two independent gates sit in front of every mutation:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -318,7 +320,7 @@ async def _rollout_phase_diff(workload: str, patch_desc: str) -> str:
     return f"{state}; {patch_desc}"
 
 
-# ---- the six remediation tools -----------------------------------------------
+# ---- the seven remediation tools ---------------------------------------------
 
 
 async def rollout_undo(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -483,4 +485,123 @@ async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
         return gate
     res = await _kubectl(["rollout", "restart", f"deployment/{workload}", "-n", "subject"])
     final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)
+
+
+# ---- update_db_secret: sync the K8s Secret from the lab vault ---------------
+#
+# The flagship stale-secret incident (PLAN-2 P11 Task 9): `obs fail
+# stale-secret` rotates the in-cluster Postgres password WITHOUT touching the
+# K8s Secret; pooled connections keep working until the pool's max_lifetime
+# (60s) recycles them, then gateway/retriever start failing auth. This tool
+# is the remediation — it syncs the Secret from the lab's "vault" (a
+# host-side file standing in for a real secrets vault), behind the same
+# dry-run/approval-gate/execute flow as the other six. Unlike those six, it
+# takes no `workload` param: the target is always the one Secret RBAC allows
+# (get/patch, resourceNames: [subject-db-credentials]).
+
+_DB_SECRET_NAME = "subject-db-credentials"
+
+
+def _sha8(value: str) -> str:
+    """First 8 hex chars of sha256(value) — enough to prove a value changed
+    (or didn't) across a diff without ever printing the value itself."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _read_vault() -> str | None:
+    """Read the rotated password `obs fail stale-secret` wrote to the lab
+    vault file, or None when there's nothing there (file missing, or empty
+    after stripping whitespace)."""
+    path = config.vault_file
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            password = fh.read().strip()
+    except OSError:
+        return None
+    return password or None
+
+
+async def _current_db_password() -> tuple[str | None, str | None]:
+    """Read the CURRENT (stale) POSTGRES_PASSWORD off the live Secret via the
+    agent-remediate identity, for the masked before/after diff. Returns
+    (password, error) — never raises; a read failure just degrades the diff
+    to an unknown old value rather than blocking the dry-run."""
+    current = await _kubectl(["get", "secret", _DB_SECRET_NAME, "-n", "subject", "-o", "json"])
+    if "error" in current:
+        return None, current["error"]
+    try:
+        secret_json = json.loads(current.get("output", "") or "{}")
+    except json.JSONDecodeError:
+        return None, "kubectl returned unparseable JSON for the current secret"
+    encoded = (secret_json.get("data") or {}).get("POSTGRES_PASSWORD", "")
+    if not encoded:
+        return None, "current secret has no POSTGRES_PASSWORD key"
+    try:
+        return base64.b64decode(encoded).decode("utf-8"), None
+    except Exception as exc:  # noqa: BLE001
+        return None, f"could not decode current POSTGRES_PASSWORD: {exc}"
+
+
+async def update_db_secret(ctx: RunContext, dry_run: bool = True,
+                            approval_id: str | None = None) -> dict:
+    """Sync `secret/subject-db-credentials`'s POSTGRES_PASSWORD + DATABASE_URL
+    from the rotated credential in the lab's vault file. The literal
+    password is read here and used ONLY to build the base64 patch payload
+    sent to kubectl on execute — it is never put into a diff, a stash entry,
+    an approval summary, or any returned dict; every human/model-facing
+    value is a masked `****<sha8>`."""
+    action = "update_db_secret"
+    target = f"secret/{_DB_SECRET_NAME}"
+
+    new_password = _read_vault()
+    if new_password is None:
+        return {"error": "no rotated credential found in the vault — nothing to sync"}
+
+    aid = action_id(action, _DB_SECRET_NAME, {})
+
+    if dry_run:
+        old_password, read_err = await _current_db_password()
+        new_sha = _sha8(new_password)
+        if read_err:
+            diff = (
+                f"POSTGRES_PASSWORD: (could not read current value: {read_err}) -> ****{new_sha}\n"
+                "DATABASE_URL: (rebuilt with rotated password)"
+            )
+        else:
+            old_sha = _sha8(old_password)
+            diff = (
+                f"POSTGRES_PASSWORD: ****{old_sha} -> ****{new_sha}\n"
+                "DATABASE_URL: (rebuilt with rotated password)"
+            )
+        _stash_dryrun(ctx, aid, action, target, diff)
+        result = _dry_run_result(action, target, aid, diff)
+        result["vault_checked"] = True
+        return result
+
+    gate = await _execute_gate(ctx, approval_id, aid)
+    if gate:
+        return gate
+    new_database_url = f"postgres://lab:{new_password}@postgres:5432/observability_lab"
+    patch = json.dumps({
+        "data": {
+            "POSTGRES_PASSWORD": _b64(new_password),
+            "DATABASE_URL": _b64(new_database_url),
+        }
+    })
+    res = await _kubectl(
+        ["patch", "secret", _DB_SECRET_NAME, "-n", "subject", "--type", "merge", "-p", patch]
+    )
+    if "error" in res:
+        return _consume_dryrun(ctx, aid, res)
+    final_result = _executed_result(
+        action, target,
+        "secret patched; restart dependent workloads (gateway, retriever) to pick it up",
+    )
     return _consume_dryrun(ctx, aid, final_result)

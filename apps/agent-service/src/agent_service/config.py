@@ -97,6 +97,14 @@ class Config:
     # reports "unavailable".
     k8s_remediate_kubeconfig: str
 
+    # The lab's stand-in for a real secrets vault (PLAN-2 P11 Task 9): a
+    # host-side file `obs fail stale-secret` writes the rotated Postgres
+    # password to after rotating it in-cluster WITHOUT touching the K8s
+    # Secret. `update_db_secret` reads this (never the model, never any
+    # other tool) to sync the Secret behind one approval. Absent file = the
+    # tool reports there's nothing to sync.
+    vault_file: str
+
     # Unified alert ingress (PLAN-2 P11): the HMAC secret Grafana's webhook
     # contact point signs /webhook/alerts payloads with (hmacConfig.secret in
     # contact-points.yaml). Empty = signature verification is SKIPPED (a
@@ -157,6 +165,9 @@ def load_config() -> Config:
         ),
         k8s_remediate_kubeconfig=_anchored(
             _env("K8S_REMEDIATE_KUBECONFIG", "apps/agent-service/.kube/agent-remediate.yaml")
+        ),
+        vault_file=_anchored(
+            _env("VAULT_FILE", "apps/agent-service/.secrets/db-vault.txt")
         ),
         alert_webhook_secret=alert_webhook_secret,
         oncall_debounce_seconds=int(_env("ONCALL_DEBOUNCE_SECONDS", "90")),

@@ -24,9 +24,11 @@
     obs load  abuse [secs]   Abuser-tenant-heavy mix -> per-tenant 429 storm. The agent
                              should call it rate limiting, NOT a service fault. Default 300s.
     obs fail  [scenario] [qps]     Inject a failure while driving baseline traffic (default
-                             40 qps). Runtime chaos, k8s-native faults, and the git-mode
+                             40 qps). Runtime chaos, k8s-native faults, the git-mode
                              delivery scenarios (bad-deploy, canary-bad-image, sync-fail,
-                             config-drift). No argument lists them all with inject_mode.
+                             config-drift), and the credential-rotation scenario
+                             (stale-secret - no scripted revert, the agent's remediation IS
+                             the fix). No argument lists them all with inject_mode.
     obs chaos [clear]        Show (or clear) the /admin/chaos state on model-proxy + retriever.
     obs fixes [clean]        List auto-fixer workspaces (.artifacts/autofix) with sizes and fix
                              branches; `clean` deletes them all. The working clone is already
@@ -289,6 +291,7 @@ $FailScenarios = [ordered]@{
     'canary-bad-image' = 'k8s+ci+gitops: commit makes gateway 500 -> CI ships it -> canary takes 25% -> error-rate AnalysisRun FAILS vs Mimir -> auto-abort + webhook; agent quotes the measurements (~15 min)'
     'config-drift' = 'k8s+gitops: live kubectl edit of the subject-telemetry ConfigMap -> platform OutOfSync + on-out-of-sync webhook; agent names the drifted key (~6 min)'
     'sync-fail' = 'gitops: broken manifest lands on obs-gitops main -> the sync FAILS + on-sync-failed webhook; agent quotes the apply error and the commit (~8 min)'
+    'stale-secret' = 'k8s only: rotate the subject Postgres password without updating the K8s Secret -> auth failures build as pooled connections recycle (~5 min, no scripted revert - the agent syncs the Secret from the vault)'
 }
 
 # inject_mode (P10): how each scenario enters the system. git = through the
@@ -304,6 +307,7 @@ $FailInjectMode = [ordered]@{
     crashloop = 'live'; 'readiness-break' = 'live'
     'bad-deploy' = 'git'; 'canary-bad-image' = 'git'
     'config-drift' = 'live'; 'sync-fail' = 'git'
+    'stale-secret' = 'live'
 }
 
 Push-Location $Repo
@@ -686,6 +690,38 @@ try {
                 git -C $tmp revert --no-edit HEAD | Out-Null
                 git -C $tmp push -q origin main
                 Write-Step 'revert pushed - the next sync goes green. Check the incident inbox.'
+                break
+            }
+
+            if ($scenario -eq 'stale-secret') {
+                # P11's flagship credential-rotation incident: the in-cluster
+                # Postgres password changes but the K8s Secret does not.
+                # Pooled connections keep working until max_lifetime (60s on
+                # both gateway and retriever) recycles them, then auth starts
+                # failing. There is no scripted revert - the oncall agent's
+                # remediation (update_db_secret: reads the rotated password
+                # from the lab vault below, patches the Secret, one
+                # approval, the password is never shown) IS the fix.
+                if ($Mode -ne 'k8s') { Write-Warning "stale-secret needs k8s mode (obs k8s up) - the compose subject has no live Postgres to rotate against"; break }
+                $vm = $Ports.OBS_VM_HOST
+                $dur = '300'
+                Write-Step "stale-secret: ${dur}s of baseline load @ $qps qps; Postgres password rotates now, the Secret is left stale"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+
+                $pw = "rotated-$(Get-Random)"
+                Write-Step 'rotating the in-cluster lab Postgres password (the K8s Secret is NOT touched)'
+                $psqlCmd = "kubectl exec -n subject deploy/postgres -- psql -U lab -d observability_lab -c ""ALTER USER lab WITH PASSWORD '$pw'"""
+                ssh -o BatchMode=yes "root@$vm" $psqlCmd
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'password rotation over ssh failed'; break }
+
+                $vaultDir = Join-Path $Repo 'apps\agent-service\.secrets'
+                New-Item -ItemType Directory -Force -Path $vaultDir | Out-Null
+                $vaultFile = Join-Path $vaultDir 'db-vault.txt'
+                Set-Content -Path $vaultFile -Value $pw
+                Write-Step "rotated credential written to the lab vault: $vaultFile"
+                Write-Step 'the K8s Secret is now stale; expect auth failures within ~60s as pooled connections recycle'
+                Write-Step "ask the oncall agent to fix it: it should call update_db_secret (reads the vault, patches the Secret behind one approval, never prints the password) then flag that gateway+retriever need a restart"
                 break
             }
 
