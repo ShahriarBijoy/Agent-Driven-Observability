@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 from .config import config
-from .models import AgentRun, Approval, Artifact, RunMessage, ToolCall
+from .models import AgentRun, Approval, Artifact, RunMessage, ToolCall, new_id
 
 _pool: asyncpg.Pool | None = None
 
@@ -82,6 +82,44 @@ CREATE TABLE IF NOT EXISTS incidents (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS incidents_opened_idx ON incidents (opened_at DESC);
+
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS alert_key TEXT;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verify_deadline TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem_pr_url TEXT;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalations INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS incidents_alert_key_open_idx ON incidents (alert_key) WHERE status = 'open';
+
+CREATE TABLE IF NOT EXISTS incident_alerts (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status TEXT NOT NULL,
+  alertname TEXT NOT NULL,
+  workload TEXT NOT NULL DEFAULT '',
+  starts_at TIMESTAMPTZ,
+  fingerprint TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS incident_alerts_incident_idx ON incident_alerts (incident_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS incident_runs (
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'investigation',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (incident_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS incident_timeline (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  ts TIMESTAMPTZ NOT NULL,
+  source TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS incident_timeline_idx ON incident_timeline (incident_id, ts);
 """
 
 
@@ -340,6 +378,156 @@ async def resolve_incident(incident_id: str, note: str) -> None:
                postmortem_md = COALESCE(postmortem_md, '') || E'\\n\\n---\\n\\n' || $2
            WHERE id = $1""",
         incident_id, note,
+    )
+
+
+async def create_incident(
+    incident_id: str, *, title: str, severity: str, tenant: str, alert_key: str
+) -> None:
+    """Open a new oncall-agent incident, keyed to the alert that triggered it
+    (alert_key lets find_open_incident_by_key de-dupe re-firings into the same
+    incident instead of opening a new one each time)."""
+    await _require_pool().execute(
+        """INSERT INTO incidents (id, title, severity, status, tenant, alert_key)
+           VALUES ($1, $2, $3, 'open', $4, $5) ON CONFLICT (id) DO NOTHING""",
+        incident_id, title, severity, tenant, alert_key,
+    )
+
+
+async def find_open_incident_by_key(alert_key: str) -> dict | None:
+    """Newest open incident for this alert's dedupe key (Alertmanager fingerprint
+    grouping key), so a re-firing alert attaches to the existing incident."""
+    row = await _require_pool().fetchrow(
+        """SELECT * FROM incidents WHERE status = 'open' AND alert_key = $1
+           ORDER BY opened_at DESC LIMIT 1""",
+        alert_key,
+    )
+    return dict(row) if row else None
+
+
+async def attach_alert(
+    incident_id: str,
+    *,
+    status: str,
+    alertname: str,
+    workload: str,
+    starts_at: datetime | None,
+    fingerprint: str | None,
+    payload: dict,
+) -> None:
+    """Record one alert observation (firing or resolved) against an incident —
+    the raw feed alert_state() and get_timeline() summarise."""
+    await _require_pool().execute(
+        """INSERT INTO incident_alerts
+             (id, incident_id, status, alertname, workload, starts_at, fingerprint, payload)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)""",
+        new_id("ia"), incident_id, status, alertname, workload, starts_at, fingerprint,
+        json.dumps(payload),
+    )
+
+
+async def link_run(incident_id: str, run_id: str, kind: str = "investigation") -> None:
+    """Attach an agent run to an incident (kind: investigation|re-escalation)."""
+    await _require_pool().execute(
+        """INSERT INTO incident_runs (incident_id, run_id, kind)
+           VALUES ($1, $2, $3) ON CONFLICT (incident_id, run_id) DO NOTHING""",
+        incident_id, run_id, kind,
+    )
+
+
+async def incident_runs_for(incident_id: str) -> list[dict]:
+    rows = await _require_pool().fetch(
+        """SELECT run_id, kind, created_at FROM incident_runs
+           WHERE incident_id = $1 ORDER BY created_at ASC""",
+        incident_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def alert_state(incident_id: str) -> dict:
+    """Roll up the alert feed: how many observations, and when it last fired
+    vs. last resolved — the oncall agent's verification loop reads this."""
+    row = await _require_pool().fetchrow(
+        """SELECT count(*) AS count,
+                  max(ts) FILTER (WHERE status = 'firing') AS last_firing,
+                  max(ts) FILTER (WHERE status = 'resolved') AS last_resolved
+           FROM incident_alerts WHERE incident_id = $1""",
+        incident_id,
+    )
+    return dict(row) if row else {"count": 0, "last_firing": None, "last_resolved": None}
+
+
+async def set_verify_deadline(incident_id: str, deadline: datetime) -> None:
+    await _require_pool().execute(
+        "UPDATE incidents SET verify_deadline = $2 WHERE id = $1", incident_id, deadline,
+    )
+
+
+async def mark_verified(incident_id: str, ts: datetime, summary: str | None = None) -> None:
+    """Recovery confirmed by the oncall agent's own verification pass."""
+    await _require_pool().execute(
+        """UPDATE incidents
+           SET verified_at = $2, resolved_at = $2, status = 'resolved',
+               summary = COALESCE($3, summary)
+           WHERE id = $1""",
+        incident_id, ts, summary,
+    )
+
+
+async def bump_escalations(incident_id: str) -> int:
+    row = await _require_pool().fetchrow(
+        """UPDATE incidents SET escalations = escalations + 1
+           WHERE id = $1 RETURNING escalations""",
+        incident_id,
+    )
+    return row["escalations"] if row else 0
+
+
+async def due_incidents(now: datetime) -> list[dict]:
+    """Open incidents whose verify_deadline has passed — the scheduler's poll
+    query for incidents that need a re-check or re-escalation."""
+    rows = await _require_pool().fetch(
+        """SELECT * FROM incidents WHERE status = 'open' AND verify_deadline < $1""",
+        now,
+    )
+    return [dict(r) for r in rows]
+
+
+async def add_timeline(incident_id: str, entries: list[tuple[datetime, str, str]]) -> None:
+    """Bulk-append (ts, source, label) rows to the incident's machine timeline."""
+    if not entries:
+        return
+    rows = [(new_id("tl"), incident_id, ts, source, label) for ts, source, label in entries]
+    await _require_pool().executemany(
+        """INSERT INTO incident_timeline (id, incident_id, ts, source, label)
+           VALUES ($1, $2, $3, $4, $5)""",
+        rows,
+    )
+
+
+async def get_timeline(incident_id: str) -> list[dict]:
+    rows = await _require_pool().fetch(
+        """SELECT * FROM incident_timeline WHERE incident_id = $1 ORDER BY ts ASC""",
+        incident_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def set_postmortem_pr(incident_id: str, url: str) -> None:
+    await _require_pool().execute(
+        "UPDATE incidents SET postmortem_pr_url = $2 WHERE id = $1", incident_id, url,
+    )
+
+
+async def close_incident(incident_id: str, ts: datetime, summary: str | None = None) -> None:
+    """Resolve an incident via the Alertmanager webhook's 'resolved' status —
+    unlike mark_verified, this leaves verified_at NULL (no active recheck ran)."""
+    await _require_pool().execute(
+        """UPDATE incidents
+           SET resolved_at = $2, status = 'resolved',
+               summary = COALESCE($3, summary)
+           WHERE id = $1""",
+        incident_id, ts, summary,
     )
 
 

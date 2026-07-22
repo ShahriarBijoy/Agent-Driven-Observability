@@ -9,20 +9,22 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-AgentKind = Literal[
-    "echo",
-    "rca",
-    "incident-reporter",
-    "gitops-reporter",
-    "auto-fixer",
-    "dashboard-generator",
-    "runbook-executor",
-]
+
+class AgentKind(str, Enum):
+    ECHO = "echo"
+    RCA = "rca"
+    INCIDENT_REPORTER = "incident-reporter"
+    GITOPS_REPORTER = "gitops-reporter"
+    AUTO_FIXER = "auto-fixer"
+    DASHBOARD_GENERATOR = "dashboard-generator"
+    RUNBOOK_EXECUTOR = "runbook-executor"
+    ONCALL = "oncall"
 
 RunStatus = Literal[
     "queued",

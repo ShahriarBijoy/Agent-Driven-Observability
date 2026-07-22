@@ -85,3 +85,8 @@ def test_ev_artifact_shape() -> None:
     assert out["type"] == "artifact"
     assert out["artifact"]["id"] == "a1"
     assert out["artifact"]["createdAt"]
+
+
+def test_oncall_agent_kind():
+    from agent_service.models import AgentKind
+    assert AgentKind("oncall").value == "oncall"
