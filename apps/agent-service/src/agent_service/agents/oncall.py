@@ -15,8 +15,11 @@ never has to import `ingress` — used only via duck-typed attribute access:
 of a still-firing, past-deadline incident — `_ESCALATION_FRAME` is the exact
 framing both the banner and the prompt surface to the model.
 
-This is the orchestration skeleton only: pre-check injection and
-runbook-driven `allowed_override` narrowing are wired in later tasks (5, 6).
+Pre-check injection (Task 5, `precheck.py`): before the model takes its first
+turn, the deterministic check battery runs and its leads-first report is
+prepended to the prompt (and persisted as the `prechecks.md` artifact) — the
+Grafana Sift pattern. runbook-driven `allowed_override` narrowing is wired in
+a later task (6).
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .. import precheck
 from ..context import RunContext
 from .base import run_agent_session
 
@@ -46,9 +50,15 @@ def _alert_banner(alert: Any, escalation: dict | None) -> str:
     return banner
 
 
-def _build_prompt(alert: Any, incident_id: str, escalation: dict | None) -> str:
+def _build_prompt(
+    alert: Any, incident_id: str, escalation: dict | None, precheck_report: str = ""
+) -> str:
     """The agent's first-turn prompt — alert labels/annotations verbatim, so
-    the model works from the real payload rather than a paraphrase."""
+    the model works from the real payload rather than a paraphrase.
+
+    `precheck_report` (Task 5) is the rendered pre-check battery output,
+    prepended ahead of everything else so the very first thing the model
+    reads is real, already-gathered evidence rather than a blank page."""
     payload = {
         "alertname": alert.alertname,
         "severity": alert.severity,
@@ -65,7 +75,9 @@ def _build_prompt(alert: Any, incident_id: str, escalation: dict | None) -> str:
             + " Do not repeat a remediation that already failed without a new hypothesis "
             f"backed by new evidence.\n\nPrior diagnosis:\n{prior}"
         )
+    precheck_section = f"{precheck_report}\n\n" if precheck_report else ""
     return (
+        f"{precheck_section}"
         f"Incident {incident_id}: an alert fired and it's your page.\n\n"
         f"Alert (labels/annotations verbatim):\n{json.dumps(payload, indent=2, default=str)}"
         f"{escalation_note}\n\n"
@@ -82,7 +94,16 @@ async def run_oncall(
 ) -> None:
     await ctx.begin(trigger="alert")
     await ctx.add_user_message(_alert_banner(alert, escalation))
-    prompt = _build_prompt(alert, incident_id, escalation)
+
+    # Pre-check battery (Task 5): deterministic, non-agentic leads gathered
+    # BEFORE the model's first turn — persisted as an artifact and prepended
+    # to the prompt so the very first tool call the model makes is already
+    # informed by them, not a cold start.
+    results = await precheck.run_prechecks(alert)
+    report = precheck.render_report(results)
+    await ctx.add_artifact(name="prechecks.md", media_type="text/markdown", content=report)
+
+    prompt = _build_prompt(alert, incident_id, escalation, precheck_report=report)
     await run_agent_session(ctx, "oncall", prompt, max_turns=40)
     await ctx.end("completed", summary=f"{incident_id}: {alert.alertname}")
 

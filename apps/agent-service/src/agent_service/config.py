@@ -89,6 +89,14 @@ class Config:
     k8s_mcp_cmd: str
     k8s_mcp_config_path: str
 
+    # Server-side-only cluster identity (PLAN-2 P11 Task 5/8): the
+    # agent-remediate kubeconfig CAN read Secrets (unlike agent-ro above), so
+    # only the precheck battery's secret_age check uses it, and only via a
+    # fixed-argv kubectl subprocess — never handed to the model as an MCP
+    # server. Minted by Task 8; until then the file is absent and the check
+    # reports "unavailable".
+    k8s_remediate_kubeconfig: str
+
     # Unified alert ingress (PLAN-2 P11): the HMAC secret Grafana's webhook
     # contact point signs /webhook/alerts payloads with (hmacConfig.secret in
     # contact-points.yaml). Empty = signature verification is SKIPPED (a
@@ -146,6 +154,9 @@ def load_config() -> Config:
         k8s_mcp_cmd=_env("K8S_MCP_CMD", "npx -y kubernetes-mcp-server@0.0.65"),
         k8s_mcp_config_path=_anchored(
             _env("K8S_MCP_CONFIG", "apps/agent-service/k8s-mcp.toml")
+        ),
+        k8s_remediate_kubeconfig=_anchored(
+            _env("K8S_REMEDIATE_KUBECONFIG", "apps/agent-service/.kube/agent-remediate.yaml")
         ),
         alert_webhook_secret=alert_webhook_secret,
         oncall_debounce_seconds=int(_env("ONCALL_DEBOUNCE_SECONDS", "90")),
