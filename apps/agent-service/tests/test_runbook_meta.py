@@ -99,6 +99,35 @@ async def test_lookup_exact_match(runbooks_dir) -> None:
     # frontmatter block itself must not leak into the returned content
     assert "---" not in result["content"]
     assert result["content"].startswith("# crashloop.md")
+    # A single match still populates "matches" (one entry, same shape as the
+    # top-level fields) so callers can always read the list uniformly.
+    assert result["matches"] == [
+        {"runbook": "crashloop.md", "meta": result["meta"], "content": result["content"]}
+    ]
+
+
+async def test_lookup_multi_match_unions_both_runbooks() -> None:
+    # slo-avail-fast is claimed by BOTH gateway-high-error-rate.md and
+    # stale-secret.md against the REAL runbooks/ tree — the sorted-filename
+    # first match ("gateway-high-error-rate.md" < "stale-secret.md") must not
+    # silently drop stale-secret's remediation tools (design decision:
+    # multi-match union, not a tie-break).
+    match = await backends.runbook_lookup("slo-avail-fast")
+    names = {m["runbook"] for m in match["matches"]}
+    assert names == {"gateway-high-error-rate.md", "stale-secret.md"}
+    # Backward-compat: the top-level fields still mirror the first match.
+    assert match["runbook"] == "gateway-high-error-rate.md"
+    assert match["matches"][0]["runbook"] == match["runbook"]
+    # Neither match's content leaks its frontmatter block.
+    for m in match["matches"]:
+        assert "---" not in m["content"]
+
+    all_tools = [t for m in match["matches"] for t in (m["meta"].get("tools") or [])]
+    override = _allowed_override(all_tools)
+    # stale-secret.md's own remediation tool, correctly namespaced, survives
+    # the union alongside gateway-high-error-rate.md's tools.
+    assert toolsdk.mcp("update_db_secret") in override
+    assert toolsdk.mcp("restart_workload") in override
 
 
 async def test_lookup_no_match_lists_available(runbooks_dir) -> None:
@@ -114,6 +143,23 @@ async def test_lookup_ignores_runbooks_without_frontmatter(runbooks_dir) -> None
     result = await backends.runbook_lookup("legacy-alert")
     assert result["match"] is None
     assert "legacy.md" in result["available"]
+
+
+# ---- runbook_read frontmatter stripping ---------------------------------------
+#
+# Agents never see the metadata block through runbook_read — it exists only
+# for runbook_lookup's narrowing. Pinned against a REAL frontmatter-bearing
+# runbook, using the same splitter runbook_lookup uses (backends._strip_frontmatter).
+
+
+async def test_runbook_read_strips_frontmatter() -> None:
+    result = await backends.runbook_read("gateway-high-error-rate.md")
+    assert "error" not in result
+    assert "---" not in result["content"]
+    # Body intact past the stripped frontmatter block.
+    assert result["content"].startswith("# Gateway high error rate")
+    assert "## Diagnose" in result["content"]
+    assert "## Mitigate" in result["content"]
 
 
 # ---- enforce_budget -----------------------------------------------------------

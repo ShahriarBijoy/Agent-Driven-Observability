@@ -32,8 +32,6 @@ from ..context import RunContext
 from ..telemetry import get_tracer
 from ..tools import sdk as toolsdk
 
-_MCP_PREFIX = f"mcp__{toolsdk.SERVER}__"
-
 # Per-run Claude session ids, so a multi-turn chat (same runId) continues the
 # same SDK session instead of starting cold. Best-effort: lost on restart, which
 # just means the next turn starts fresh.
@@ -88,12 +86,10 @@ def apply_override(baseline: list[str], override: list[str] | None) -> list[str]
     return [t for t in override if t in baseline]
 
 
-def _display_name(name: str) -> str:
-    if name.startswith(_MCP_PREFIX):
-        return name[len(_MCP_PREFIX):]
-    if name.startswith("mcp__"):  # other servers keep a short server prefix: k8s:pods_get
-        return name[len("mcp__"):].replace("__", ":", 1)
-    return name
+# Display-name stripping (mcp__obslab__x -> x) lives in toolsdk.display_name
+# — shared with agents/oncall.py's runbook-match artifact — since toolsdk
+# can't import this module back (base.py already imports toolsdk).
+_display_name = toolsdk.display_name
 
 
 def _result_text(content: Any) -> str:

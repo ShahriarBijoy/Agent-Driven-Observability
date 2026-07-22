@@ -20,9 +20,13 @@ turn, the deterministic check battery runs and its leads-first report is
 prepended to the prompt (and persisted as the `prechecks.md` artifact) — the
 Grafana Sift pattern.
 
-Runbook-driven narrowing (Task 6, `tools/backends.py`'s `runbook_lookup`): a
-matched runbook's `tools` metadata narrows the session's allow-list to just
-what that runbook needs (union'd with `ONCALL_ALWAYS_TOOLS`, the
+Runbook-driven narrowing (Task 6, `tools/backends.py`'s `runbook_lookup`):
+`runbook_lookup` returns EVERY runbook matching the alert's exact name, not
+just one — a tied alertname (e.g. `slo-avail-fast`/`gw-5xx` claimed by both
+`gateway-high-error-rate.md` and `stale-secret.md`) must not silently lose
+the second runbook's remediation tools by only keeping a sorted-filename
+first match. The session's allow-list narrows to the UNION of every matched
+runbook's `tools` metadata (union'd with `ONCALL_ALWAYS_TOOLS`, the
 investigation/session spine every oncall run keeps regardless) —
 `apply_override` (agents/base.py) guarantees this can only SHRINK the
 baseline, never grant a tool the agent kind wasn't already given. No match
@@ -40,12 +44,10 @@ from ..tools import backends
 from ..tools import sdk as toolsdk
 from .base import run_agent_session
 
-_MCP_PREFIX = f"mcp__{toolsdk.SERVER}__"
-
-
-def _plain_name(name: str) -> str:
-    """Strip the `mcp__obslab__` namespacing for operator-facing display."""
-    return name[len(_MCP_PREFIX):] if name.startswith(_MCP_PREFIX) else name
+# Display-name stripping (mcp__obslab__x -> x) is shared with agents/base.py
+# via toolsdk.display_name (toolsdk is a leaf module both already import; it
+# can't import base.py back without a cycle).
+_plain_name = toolsdk.display_name
 
 
 _ESCALATION_FRAME = (
@@ -80,11 +82,12 @@ def _build_prompt(
     prepended ahead of everything else so the very first thing the model
     reads is real, already-gathered evidence rather than a blank page.
 
-    `runbook_match` (Task 6) is `backends.runbook_lookup`'s result when it
-    found one: its body + hypotheses go straight into the prompt so the model
-    starts from the runbook's own diagnostic steps instead of re-deriving
-    them. `None` (no match) is noted explicitly rather than silently omitted,
-    so the model doesn't assume one exists."""
+    `runbook_match` (Task 6) is `backends.runbook_lookup`'s result. On a
+    match, EVERY matched runbook's body + hypotheses (each labeled with its
+    filename) go straight into the prompt so the model starts from the
+    runbooks' own diagnostic steps instead of re-deriving them — a tied
+    alertname can match more than one. No match is noted explicitly rather
+    than silently omitted, so the model doesn't assume one exists."""
     payload = {
         "alertname": alert.alertname,
         "severity": alert.severity,
@@ -102,15 +105,22 @@ def _build_prompt(
             f"backed by new evidence.\n\nPrior diagnosis:\n{prior}"
         )
     precheck_section = f"{precheck_report}\n\n" if precheck_report else ""
-    if runbook_match and runbook_match.get("runbook"):
-        meta = runbook_match.get("meta") or {}
-        hypotheses = meta.get("hypotheses") or []
-        hyp_lines = "\n".join(f"- {h}" for h in hypotheses) or "(none listed)"
+    matches = (runbook_match or {}).get("matches") or []
+    if matches:
+        sections = []
+        for m in matches:
+            meta = m.get("meta") or {}
+            hypotheses = meta.get("hypotheses") or []
+            hyp_lines = "\n".join(f"- {h}" for h in hypotheses) or "(none listed)"
+            sections.append(
+                f"### {m['runbook']}\n\nCandidate hypotheses:\n{hyp_lines}\n\n"
+                f"Runbook body:\n{m.get('content', '')}"
+            )
+        plural = "runbook" if len(matches) == 1 else f"{len(matches)} runbooks"
         runbook_section = (
-            f"Matched runbook: {runbook_match['runbook']} — your toolset for this incident has "
-            "been narrowed to what it needs (see the boundary line below). Candidate "
-            f"hypotheses from the runbook:\n{hyp_lines}\n\nRunbook body:\n"
-            f"{runbook_match.get('content', '')}\n\n"
+            f"Matched {plural} for this alert — your toolset for this incident has been "
+            "narrowed to their combined needs (see the boundary line below).\n\n"
+            + "\n\n".join(sections) + "\n\n"
         )
     else:
         runbook_section = (
@@ -131,13 +141,15 @@ def _build_prompt(
 
 
 def _runbook_artifact(match: dict, allowed_override: list[str] | None) -> str:
-    """The `runbook-match.md` artifact: which runbook matched (or didn't) and
-    the resulting narrowed toolset — the acceptance signal that a runbook
-    match visibly narrows the toolbox."""
-    if match.get("runbook"):
+    """The `runbook-match.md` artifact: EVERY runbook that matched (or none)
+    and the resulting narrowed toolset — the acceptance signal that a runbook
+    match (or a tied multi-match) visibly narrows the toolbox."""
+    matches = match.get("matches") or []
+    if matches:
+        names = ", ".join(f"`{m['runbook']}`" for m in matches)
         tools = ", ".join(sorted(_plain_name(t) for t in (allowed_override or []))) or "(none)"
         return (
-            f"# Runbook match\n\n**Matched:** `{match['runbook']}`\n\n"
+            f"# Runbook match\n\n**Matched ({len(matches)}):** {names}\n\n"
             f"**Narrowed toolset ({len(allowed_override or [])} tools):** {tools}\n"
         )
     available = ", ".join(match.get("available") or []) or "(no runbooks found)"
@@ -161,13 +173,20 @@ async def run_oncall(
     report = precheck.render_report(results)
     await ctx.add_artifact(name="prechecks.md", media_type="text/markdown", content=report)
 
-    # Runbook match (Task 6): narrows the allow-list to the matched runbook's
-    # declared tools, union'd with the always-on investigation/session spine
-    # — apply_override (agents/base.py) can only shrink this, never grow it.
+    # Runbook match (Task 6): narrows the allow-list to the UNION of every
+    # matched runbook's declared tools (a tied alertname can match more than
+    # one runbook — e.g. slo-avail-fast/gw-5xx claimed by both
+    # gateway-high-error-rate.md and stale-secret.md — and both runbooks'
+    # remediation tools must stay on offer), union'd with the always-on
+    # investigation/session spine — apply_override (agents/base.py) can only
+    # shrink this, never grow it.
     match = await backends.runbook_lookup(alert.alertname)
+    matches = match.get("matches") or []
     allowed_override: list[str] | None = None
-    if match.get("runbook"):
-        meta_tools = (match.get("meta") or {}).get("tools") or []
+    if matches:
+        meta_tools: set[str] = set()
+        for m in matches:
+            meta_tools |= set((m.get("meta") or {}).get("tools") or [])
         allowed_override = sorted(
             {toolsdk.mcp(name) for name in meta_tools} | set(toolsdk.ONCALL_ALWAYS_TOOLS)
         )

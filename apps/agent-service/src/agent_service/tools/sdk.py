@@ -37,6 +37,22 @@ def k8s(name: str) -> str:
     return f"mcp__{K8S_SERVER}__{name}"
 
 
+def display_name(name: str) -> str:
+    """Inverse of `mcp()`/`k8s()`: strip this server's `mcp__obslab__` prefix
+    (or shorten another MCP server's `mcp__<server>__` prefix to
+    `<server>:name`) for operator-facing display. Shared by
+    `agents/base.py`'s transcript rendering and `agents/oncall.py`'s
+    runbook-match artifact — lives here (not in `agents/base.py`) because
+    `base.py` already imports this module, and `toolsdk` importing back from
+    `agents/base.py` would be a cycle."""
+    prefix = f"mcp__{SERVER}__"
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    if name.startswith("mcp__"):  # other servers keep a short server prefix: k8s:pods_get
+        return name[len("mcp__"):].replace("__", ":", 1)
+    return name
+
+
 def k8s_mcp_server() -> dict[str, Any] | None:
     """Stdio config for kubernetes-mcp-server, or None while the agent-ro
     kubeconfig hasn't been minted (obs k8s agent-kubeconfig)."""
@@ -227,10 +243,12 @@ async def _runbook(args: dict) -> dict:
 
 @tool(
     "runbook_lookup",
-    "Find the runbook matching the firing alert's exact alertname and return its body plus "
-    "metadata (a narrowed tools list, and candidate hypotheses) — the on-call agent's fast "
-    "path to the RIGHT runbook instead of guessing a filename with runbook_read. No match "
-    "returns the available runbook names instead of a bare miss.",
+    "Find every runbook matching the firing alert's exact alertname and return each one's body "
+    "plus metadata (a narrowed tools list, and candidate hypotheses) — the on-call agent's fast "
+    "path to the RIGHT runbook(s) instead of guessing a filename with runbook_read. The top-"
+    "level runbook/meta/content fields hold the first match; \"matches\" holds every match "
+    "(more than one when an alertname is claimed by multiple runbooks) — consult all of them. "
+    "No match returns the available runbook names instead of a bare miss.",
     {"type": "object", "properties": {"alertname": {"type": "string"}}, "required": ["alertname"]},
 )
 async def _runbook_lookup(args: dict) -> dict:

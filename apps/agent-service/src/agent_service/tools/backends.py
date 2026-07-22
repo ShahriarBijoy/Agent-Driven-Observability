@@ -394,7 +394,11 @@ async def runbook_read(path: str) -> dict:
         return {"error": f"rejected: {reason}", "path": path}
     try:
         with open(target, encoding="utf-8") as fh:
-            return {"path": path, "content": fh.read()}
+            text = fh.read()
+        # The frontmatter block (alert_types/tools/hypotheses) is narrowing
+        # metadata for runbook_lookup only — agents never see it here, same
+        # stripper runbook_lookup uses (see _strip_frontmatter below).
+        return {"path": path, "content": _strip_frontmatter(text)}
     except FileNotFoundError:
         return {"error": "runbook not found", "path": path}
     except Exception as exc:  # noqa: BLE001
@@ -419,6 +423,15 @@ def _unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
         return value[1:-1]
     return value
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop the leading `---`-delimited frontmatter block (if any) and return
+    the runbook body only. Shared by `runbook_read` (agents never see the
+    metadata block — it exists purely for `runbook_lookup`'s narrowing) and
+    `runbook_lookup` (returns the same stripped body alongside the parsed
+    `meta`)."""
+    return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
 
 
 def parse_runbook_meta(text: str) -> dict:
@@ -469,16 +482,23 @@ def parse_runbook_meta(text: str) -> dict:
 
 
 async def runbook_lookup(alertname: str) -> dict:
-    """Find the runbook whose frontmatter `alert_types` names `alertname`
-    exactly. First match wins (sorted file order). No match returns the
-    available runbook names instead of a bare miss, so the caller can retry
-    with a real one rather than guessing."""
+    """Find EVERY runbook whose frontmatter `alert_types` names `alertname`
+    exactly — a tied alertname (e.g. `slo-avail-fast`/`gw-5xx` claimed by both
+    `gateway-high-error-rate.md` and `stale-secret.md`) must not silently drop
+    the second runbook's remediation tools by only returning the
+    sorted-filename first match. Returns the FIRST match's fields at the top
+    level unchanged (`runbook`/`meta`/`content` — backward compatible with
+    callers reading only those) plus `"matches"`: every match, sorted-filename
+    order, each `{"runbook", "meta", "content"}` (content frontmatter-
+    stripped). No match returns the available runbook names instead of a bare
+    miss, so the caller can retry with a real one rather than guessing."""
     try:
         names = sorted(
             f for f in os.listdir(config.runbooks_dir) if f.lower().endswith(".md")
         )
     except OSError as exc:
         return {"error": f"cannot list runbooks: {exc}"}
+    matches: list[dict] = []
     for name in names:
         try:
             with open(os.path.join(config.runbooks_dir, name), encoding="utf-8") as fh:
@@ -487,9 +507,16 @@ async def runbook_lookup(alertname: str) -> dict:
             continue
         meta = parse_runbook_meta(text)
         if alertname in (meta.get("alert_types") or []):
-            body = _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
-            return enforce_budget("runbook_lookup", {"runbook": name, "meta": meta, "content": body})
-    return {"match": None, "available": names}
+            matches.append({"runbook": name, "meta": meta, "content": _strip_frontmatter(text)})
+    if not matches:
+        return {"match": None, "available": names}
+    # LOAD-BEARING, do not remove: run_oncall (agents/oncall.py) calls this
+    # backend function DIRECTLY, bypassing sdk.py's `_text` dispatch choke
+    # point where every OTHER tool result gets enforce_budget applied. With
+    # multiple matches now concatenating several runbooks' full bodies into
+    # one payload, this inner call is the only thing standing between a
+    # multi-match lookup and an unbudgeted blowout of the model's context.
+    return enforce_budget("runbook_lookup", {**matches[0], "matches": matches})
 
 
 # ---- Hard token budgets on every tool result (PLAN-2 P11 Task 6) ------------

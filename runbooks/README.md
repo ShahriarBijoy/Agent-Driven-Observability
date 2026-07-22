@@ -8,15 +8,22 @@ investigation and remediation steps for a specific alert or incident class:
 They're read two ways:
 
 - **`runbook_read`** — any agent can read one by name (or pass `"list"` /
-  an empty path to enumerate what exists) and follow it as prose.
+  an empty path to enumerate what exists) and follow it as prose. The
+  returned `content` has the frontmatter block stripped — agents never see
+  the metadata block; it exists only for `runbook_lookup`'s narrowing, not
+  for the model to read as part of the runbook's prose.
 - **`runbook_lookup`** (PLAN-2 P11) — the on-call agent's automatic match:
-  given the firing alert's name, it finds the runbook whose frontmatter
-  claims that alert and returns its body plus metadata. A match **narrows
-  the on-call agent's tool allow-list** to just the runbook's declared
-  `tools` (union'd with the session's always-on spine — approvals,
-  artifacts, the runbook tools themselves, `deploy_history`/`alert_status`)
-  — HolmesGPT's ~8x tool-call-reduction pattern: fewer, right tools beats
-  the whole toolbox on every page.
+  given the firing alert's name, it finds EVERY runbook whose frontmatter
+  claims that alert (an alertname can be claimed by more than one runbook —
+  see "Overlapping alert_types" below) and returns each one's body plus
+  metadata. A match **narrows the on-call agent's tool allow-list** to the
+  UNION of every matched runbook's declared `tools` (union'd with the
+  session's always-on spine — approvals, artifacts, the runbook tools
+  themselves, `deploy_history`/`alert_status`) — HolmesGPT's ~8x
+  tool-call-reduction pattern: fewer, right tools beats the whole toolbox on
+  every page. The top-level `runbook`/`meta`/`content` fields hold the
+  first match (sorted-filename order, for callers that only read those);
+  `matches` holds every match, in the same order.
 
 ## Frontmatter contract
 
@@ -79,6 +86,21 @@ automatic matching until frontmatter is added.
 | `canary-abort.md` | `rollout-stuck`, `on-rollout-aborted`, `on-analysis-run-failed` | Argo Rollouts canary aborted or wedged |
 | `ci-pipeline-red.md` | `cicd-pipeline-red` | A pipeline run on `main` failed |
 | `stale-secret.md` | `slo-avail-fast`, `gw-5xx` (with a `secret_age` pre-check lead) | Rotated DB credential the workload never restarted to pick up |
+
+### Overlapping `alert_types` (multi-match union)
+
+`gateway-high-error-rate.md` and `stale-secret.md` both claim `gw-5xx` and
+`slo-avail-fast` — a real gateway 5xx/availability burn can be either a
+generic downstream failure OR a rotated secret the workload never restarted
+to pick up, and `runbook_lookup` has no signal at match time (only the
+alertname) to tell which. Rather than picking one file to win by sorted-
+filename order and silently hiding the other's remediation tools and
+diagnostic steps, `runbook_lookup` returns **both** as `matches`, and
+`agents/oncall.py` unions their `tools` (so `update_db_secret` stays on
+offer alongside the generic gateway tools) and inlines both bodies +
+hypotheses into the prompt, each labeled with its filename, so the model
+picks the right diagnosis from evidence instead of the toolset silently
+picking for it.
 
 Every tool result — whether or not a runbook narrowed the toolset — passes
 through `enforce_budget` (`tools/backends.py`) at the single dispatch choke
