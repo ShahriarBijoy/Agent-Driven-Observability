@@ -110,6 +110,7 @@ def _patch_db_and_spawn(monkeypatch) -> dict:
     async def fake_create_incident(incident_id, **kwargs):
         calls["incident_id"] = incident_id
         calls["create_incident_kwargs"] = kwargs
+        return True
 
     async def fake_attach_alert(incident_id, **kwargs):
         calls["attach"].append((incident_id, kwargs))
@@ -156,6 +157,53 @@ async def test_grafana_alert_shim_spawns_oncall_not_incident_reporter(monkeypatc
     for _ in range(5):
         await asyncio.sleep(0)
     assert calls["run_oncall_called_with"] == (calls["incident_id"], "slo-avail-fast")
+
+
+@pytest.mark.asyncio
+async def test_webhook_alerts_lost_race_attaches_instead_of_spawning(monkeypatch):
+    """Two near-simultaneous deliveries for the same alert_key: both see no
+    open incident, but only one insert can win the unique open-incident index
+    (db.create_incident returns False for the loser). The loser must attach
+    to the winner's incident and spawn no run of its own."""
+    _patch_no_secret(monkeypatch)
+    calls: dict = {"attach": []}
+
+    lookup_calls = {"n": 0}
+
+    async def fake_find_open_incident_by_key(_key):
+        lookup_calls["n"] += 1
+        if lookup_calls["n"] == 1:
+            return None  # initial lookup: nothing open yet
+        return {"id": "inc-winner"}  # re-fetch after losing the race
+
+    async def fake_create_incident(incident_id, **kwargs):
+        return False  # lost the race
+
+    async def fake_attach_alert(incident_id, **kwargs):
+        calls["attach"].append((incident_id, kwargs))
+
+    async def fake_run_oncall(ctx, incident_id, alert, *, escalation=None):
+        calls["run_oncall_called"] = True
+        await ctx.end("completed", summary="test-complete")
+
+    monkeypatch.setattr(db, "find_open_incident_by_key", fake_find_open_incident_by_key)
+    monkeypatch.setattr(db, "create_incident", fake_create_incident)
+    monkeypatch.setattr(db, "attach_alert", fake_attach_alert)
+    monkeypatch.setattr(app_module, "run_oncall", fake_run_oncall)
+
+    request = _request(json.dumps(_grafana_alert_body()).encode())
+    response = await app_module.webhook_alerts(request)
+
+    assert response.status_code == 202
+    results = _body(response)["results"]
+    assert len(results) == 1
+    assert results[0] == {"action": "attach", "incidentId": "inc-winner"}
+    assert calls["attach"] == [("inc-winner", calls["attach"][0][1])]
+
+    # Give any errantly-spawned task a chance to run before asserting absence.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert "run_oncall_called" not in calls
 
 
 @pytest.mark.asyncio

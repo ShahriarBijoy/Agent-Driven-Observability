@@ -88,7 +88,9 @@ ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verify_deadline TIMESTAMPTZ;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem_pr_url TEXT;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalations INT NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS incidents_alert_key_open_idx ON incidents (alert_key) WHERE status = 'open';
+DROP INDEX IF EXISTS incidents_alert_key_open_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS incidents_alert_key_open_uq
+  ON incidents (alert_key) WHERE status = 'open';
 
 CREATE TABLE IF NOT EXISTS incident_alerts (
   id TEXT PRIMARY KEY,
@@ -383,15 +385,26 @@ async def resolve_incident(incident_id: str, note: str) -> None:
 
 async def create_incident(
     incident_id: str, *, title: str, severity: str, tenant: str, alert_key: str
-) -> None:
+) -> bool:
     """Open a new oncall-agent incident, keyed to the alert that triggered it
     (alert_key lets find_open_incident_by_key de-dupe re-firings into the same
-    incident instead of opening a new one each time)."""
-    await _require_pool().execute(
+    incident instead of opening a new one each time).
+
+    Returns True iff this call actually inserted the row. The unique
+    `incidents_alert_key_open_uq` index (one open incident per alert_key) is
+    the race guard: two near-simultaneous webhook deliveries for the same
+    alert_key can both see no open incident and both attempt to spawn one —
+    only the first insert wins here, and the caller must fall back to
+    attaching to the incident the winner created instead of spawning a
+    second investigation."""
+    row = await _require_pool().fetchrow(
         """INSERT INTO incidents (id, title, severity, status, tenant, alert_key)
-           VALUES ($1, $2, $3, 'open', $4, $5) ON CONFLICT (id) DO NOTHING""",
+           VALUES ($1, $2, $3, 'open', $4, $5)
+           ON CONFLICT (alert_key) WHERE status = 'open' DO NOTHING
+           RETURNING id""",
         incident_id, title, severity, tenant, alert_key,
     )
+    return row is not None
 
 
 async def find_open_incident_by_key(alert_key: str) -> dict | None:

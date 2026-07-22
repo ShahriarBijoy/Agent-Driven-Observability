@@ -185,32 +185,40 @@ async def webhook_alerts(request: Request) -> JSONResponse:
         key = ingress.alert_key(ev)
         open_inc = await db.find_open_incident_by_key(key)
         action = ingress.ingress_decision(ev, open_inc)
-        if action == "spawn":
-            incident_id = new_id("inc")
-            await db.create_incident(
-                incident_id, title=ev.summary, severity=ev.severity,
-                tenant=ev.tenant, alert_key=key,
-            )
+
+        async def _attach(incident_id: str) -> None:
             await db.attach_alert(
                 incident_id, status=ev.status, alertname=ev.alertname, workload=ev.workload,
                 starts_at=ev.starts_at, fingerprint=ev.fingerprint, payload=ev.raw,
             )
+
+        if action == "spawn":
+            incident_id = new_id("inc")
+            created = await db.create_incident(
+                incident_id, title=ev.summary, severity=ev.severity,
+                tenant=ev.tenant, alert_key=key,
+            )
+            if not created:
+                # Lost the race: another delivery for the same alert_key won
+                # the unique open-incident index between our lookup and our
+                # insert. Fall through to the same incident it just created —
+                # one alert, one brain, one incident — instead of spawning a
+                # second investigation.
+                open_inc = await db.find_open_incident_by_key(key)
+                await _attach(open_inc["id"])
+                results.append({"action": "attach", "incidentId": open_inc["id"]})
+                continue
+            await _attach(incident_id)
             ctx = new_run("oncall", ev.tenant, ev.summary)
             await db.create_run(ctx.run, "alert")
             await db.link_run(incident_id, ctx.run.id, "investigation")
             asyncio.create_task(_guard_run(ctx, run_oncall(ctx, incident_id, ev)))
             results.append({"action": action, "incidentId": incident_id, "runId": ctx.run.id})
         elif action == "attach":
-            await db.attach_alert(
-                open_inc["id"], status=ev.status, alertname=ev.alertname, workload=ev.workload,
-                starts_at=ev.starts_at, fingerprint=ev.fingerprint, payload=ev.raw,
-            )
+            await _attach(open_inc["id"])
             results.append({"action": action, "incidentId": open_inc["id"]})
         elif action == "close":
-            await db.attach_alert(
-                open_inc["id"], status=ev.status, alertname=ev.alertname, workload=ev.workload,
-                starts_at=ev.starts_at, fingerprint=ev.fingerprint, payload=ev.raw,
-            )
+            await _attach(open_inc["id"])
             await db.close_incident(
                 open_inc["id"], datetime.now(timezone.utc),
                 summary=f"resolved notification for {ev.alertname}",

@@ -109,7 +109,9 @@ ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verify_deadline TIMESTAMPTZ;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem_pr_url TEXT;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalations INT NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS incidents_alert_key_open_idx ON incidents (alert_key) WHERE status = 'open';
+DROP INDEX IF EXISTS incidents_alert_key_open_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS incidents_alert_key_open_uq
+  ON incidents (alert_key) WHERE status = 'open';
 
 CREATE TABLE IF NOT EXISTS incident_alerts (
   id TEXT PRIMARY KEY,
