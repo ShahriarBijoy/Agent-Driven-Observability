@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
-class AgentKind(str, Enum):
+class AgentKind(StrEnum):
     ECHO = "echo"
     RCA = "rca"
     INCIDENT_REPORTER = "incident-reporter"
