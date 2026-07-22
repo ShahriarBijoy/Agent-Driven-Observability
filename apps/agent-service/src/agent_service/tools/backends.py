@@ -1197,6 +1197,31 @@ async def gitea_open_pr(head: str, base: str = "main", title: str = "", body: st
         return {"error": f"gitea PR creation failed: {exc}"}
 
 
+async def gitea_put_file(path: str, content_b64: str, new_branch: str, message: str) -> dict:
+    """Create one file on the forge via the contents API, cutting `new_branch`
+    from the repo default in the same call — the first half of the postmortem
+    PR flow (`postmortem.open_postmortem_pr_impl`); `gitea_open_pr` above opens
+    the PR against the branch this creates. A 409/422 most often means the
+    branch (and file) already exist from a prior attempt at the same incident
+    — not fatal here, since the caller still tries to open the PR against
+    whatever is already on that branch."""
+    headers = _gitea_headers()
+    if headers is None:
+        return {"error": _GITEA_HELP}
+    try:
+        resp = await _http().post(
+            f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/contents/{path}",
+            headers=headers,
+            json={"content": content_b64, "new_branch": new_branch, "message": message},
+        )
+        if resp.status_code in (409, 422):
+            return {"status": "branch_exists", "path": path, "branch": new_branch}
+        resp.raise_for_status()
+        return {"status": "created", "path": path, "branch": new_branch}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"gitea file creation failed: {exc}"}
+
+
 # ---- Grafana annotations (deploy markers) ------------------------------------
 
 

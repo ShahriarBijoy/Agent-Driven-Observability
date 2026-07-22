@@ -14,6 +14,7 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from .. import postmortem
 from ..config import config
 from ..context import RunContext
 from . import backends, remediate
@@ -765,13 +766,43 @@ def build_mcp_server(ctx: RunContext):
             pass
         return _text("save_artifact", {"artifact_id": artifact.id, "name": safe_name})
 
+    @tool(
+        "open_postmortem_pr",
+        "Close out the incident: compose the MACHINE-BUILT timeline (every remediation/"
+        "verification step, alert firing/resolved observation, deploy in the incident window, "
+        "k8s event, and the log-spike onset — never anything you report) with your narrative, "
+        "and open it as a pull request on the local Gitea forge. narrative_md should cover "
+        "Summary / Impact / Root cause / What fixed it / Lessons — do NOT include timestamps "
+        "yourself; the machine timeline is the only source of times and is prepended for you. "
+        "Call this to finish EVERY incident, resolved or not.",
+        {
+            "type": "object",
+            "properties": {
+                "narrative_md": {
+                    "type": "string",
+                    "description": "Summary / Impact / Root cause / What fixed it / Lessons — no timestamps",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "short kebab-case filename slug, e.g. gateway-oom-restart",
+                },
+            },
+            "required": ["narrative_md", "slug"],
+        },
+    )
+    async def _postmortem_pr(args: dict) -> dict:
+        return _text(
+            "open_postmortem_pr",
+            await postmortem.open_postmortem_pr_impl(ctx, args["narrative_md"], args["slug"]),
+        )
+
     return create_sdk_mcp_server(
         name=SERVER,
         tools=[
             *_STATELESS, _gh, _approval, _artifact,
             _rollout_undo, _rollout_abort, _rollout_promote,
             _scale_deployment, _patch_memory_limit, _restart_workload,
-            _update_db_secret,
+            _update_db_secret, _postmortem_pr,
         ],
     )
 
@@ -960,6 +991,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
     {"name": mcp("update_db_secret"), "kind": "mcp",
      "description": "Sync the DB Secret from the lab vault after a stale-secret rotation "
                      "(dry-run first, approval-gated, password never shown)"},
+    {"name": mcp("open_postmortem_pr"), "kind": "mcp",
+     "description": "Compose the machine timeline + your narrative and open a postmortem PR"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -1105,9 +1138,12 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "failure to recover explicitly; never assume success without re-querying. Report the "
         "outcome you observe, but closure of the incident is decided server-side from the same "
         "alert_status signal, not by your report. "
-        "Finish every incident, resolved or not, by calling open_postmortem_pr with a narrative: "
-        "what fired, what you found and how, what you changed (or tried), and the current state. "
-        "Narrate as you go: one short sentence before each round of tool calls saying what you're "
-        "checking and why."
+        "Finish every incident, resolved or not, by calling open_postmortem_pr with your "
+        "narrative (Summary / Impact / Root cause / What fixed it / Lessons) and a short "
+        "kebab-case slug. Do NOT include timestamps in your narrative — the machine timeline "
+        "above the fold is the only source of times; the tool composes it together with your "
+        "narrative, so a time you write yourself would only be redundant at best. "
+        "Narrate as you go: one short sentence before each round of tool calls saying what "
+        "you're checking and why."
     ),
 }

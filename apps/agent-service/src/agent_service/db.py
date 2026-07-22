@@ -600,6 +600,27 @@ async def get_timeline(incident_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def get_incident(incident_id: str) -> dict | None:
+    """One incident's full row (title/severity/status/tenant/opened_at/
+    resolved_at/verified_at/...) — postmortem.py's compose()/PR flow need the
+    whole record, unlike get_incident_status's single column."""
+    row = await _require_pool().fetchrow("SELECT * FROM incidents WHERE id = $1", incident_id)
+    return dict(row) if row else None
+
+
+async def get_incident_alert_observations(incident_id: str) -> list[dict]:
+    """Every alert firing/resolved observation on record for an incident,
+    oldest first — one of build_timeline's (postmortem.py) raw event sources,
+    alongside the machine timeline, deploy history, k8s events, and the
+    log-spike onset."""
+    rows = await _require_pool().fetch(
+        """SELECT status, alertname, starts_at, ts FROM incident_alerts
+           WHERE incident_id = $1 ORDER BY ts ASC""",
+        incident_id,
+    )
+    return [dict(r) for r in rows]
+
+
 async def set_postmortem_pr(incident_id: str, url: str) -> None:
     await _require_pool().execute(
         "UPDATE incidents SET postmortem_pr_url = $2 WHERE id = $1", incident_id, url,
