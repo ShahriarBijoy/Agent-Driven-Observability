@@ -6,18 +6,23 @@ tool call (the Grafana Sift pattern). Structured as `_fetch_*` (I/O) +
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from agent_service import config as config_module
 from agent_service.ingress import AlertEvent
 from agent_service.precheck import (
     PRECHECK_BUDGET,
     CheckResult,
+    _LEAD_CHAR_CAP,
+    _LEADS_CAP,
+    _SECTION_MARKER_ALLOWANCE,
+    _fetch_log_spike,
     _shape_kube_scan,
     _shape_log_spike,
     _shape_recent_deploys,
     _shape_rollout_state,
     _shape_secret_age,
+    _truncate,
     render_report,
     run_prechecks,
 )
@@ -37,10 +42,20 @@ def _alert(**overrides) -> AlertEvent:
 
 def test_render_report_flags_leads_first_and_budgets():
     r = [CheckResult("kube_scan", "ok", "all pods Ready", []),
-         CheckResult("log_spike", "lead", "x" * 2000, ["error spike 12x baseline at 01:59:30Z"])]
+         CheckResult("log_spike", "lead", "1 log_spike lead",
+                     ["error spike 12x baseline at 01:59:30Z"])]
     out = render_report(r)
     assert out.index("log_spike") < out.index("kube_scan")
     assert len(out) < 3000 and "error spike 12x" in out
+
+
+def test_render_report_truncates_oversized_summary_even_at_the_cost_of_leads():
+    # An oversized summary alone (independent of the whole-section cap) is
+    # still budgeted to PRECHECK_BUDGET — the per-field truncation this test
+    # covered before the whole-section enforcement was added.
+    r = [CheckResult("log_spike", "lead", "x" * 5000, ["error spike 12x baseline at 01:59:30Z"])]
+    out = render_report(r)
+    assert len(out) < PRECHECK_BUDGET + _SECTION_MARKER_ALLOWANCE + 100
 
 
 def test_render_report_is_a_markdown_leads_section():
@@ -54,6 +69,42 @@ def test_render_report_orders_unavailable_last():
          CheckResult("log_spike", "lead", "spike", ["onset at 01:59:30Z"])]
     out = render_report(r)
     assert out.index("log_spike") < out.index("kube_scan") < out.index("secret_age")
+
+
+def test_truncate_never_overshoots_limit_with_marker_included():
+    marker = "… (truncated)"
+    out = _truncate("x" * 5000, 800, marker)
+    assert len(out) <= 800
+    assert out.endswith(marker)
+
+
+def test_render_report_caps_leads_at_eight_bullets():
+    leads = [f"lead-{i}" for i in range(12)]
+    r = [CheckResult("kube_scan", "lead", "12 kube-scan leads", leads)]
+    out = render_report(r)
+    bullet_lines = [ln for ln in out.splitlines() if ln.startswith("- lead-")]
+    assert len(bullet_lines) == _LEADS_CAP
+    assert "+4 more leads omitted" in out
+
+
+def test_render_report_truncates_long_lead_bullets_within_char_cap():
+    long_lead = "y" * 500
+    r = [CheckResult("kube_scan", "lead", "1 kube-scan lead", [long_lead])]
+    out = render_report(r)
+    bullet_line = next(ln for ln in out.splitlines() if ln.startswith("- "))
+    assert len(bullet_line) - 2 <= _LEAD_CHAR_CAP
+    assert bullet_line.rstrip().endswith("(truncated)")
+
+
+def test_render_report_section_never_exceeds_budget_plus_marker_allowance():
+    # Many long leads: even after the per-lead/per-summary caps this would
+    # still overflow (8 bullets * 200 chars alone is already >> PRECHECK_BUDGET)
+    # without the whole-section enforcement.
+    leads = [f"lead-{i}-" + "x" * 190 for i in range(20)]
+    r = [CheckResult("kube_scan", "lead", "20 kube-scan leads", leads)]
+    out = render_report(r)
+    body = out[len("## Pre-check leads\n\n"):].rstrip("\n")
+    assert len(body) <= PRECHECK_BUDGET + _SECTION_MARKER_ALLOWANCE
 
 
 # ---- recent_deploys -----------------------------------------------------------
@@ -136,6 +187,44 @@ def test_log_spike_shaping_handles_zero_baseline():
     assert res.status == "lead"
 
 
+async def test_log_spike_fetch_queries_now_and_baseline_as_separate_windows(monkeypatch):
+    """The bug this guards against: loki_query sends direction=backward, so a
+    single range="70m" call has its line budget filled from the newest lines
+    first — during a real burst the 60-70min-ago baseline slice starves to
+    ~0, inflating "Nx baseline". Fetching the two windows as separate calls
+    (each with its own start/end) means the baseline always gets its own
+    budget regardless of how busy the last 10 minutes are."""
+    from agent_service.tools import backends
+
+    calls: list[dict] = []
+
+    async def fake_loki_query(logql, range="1h", limit=100, *, start=None, end=None):
+        calls.append({"range": range, "limit": limit, "start": start, "end": end})
+        if start is not None or end is not None:
+            return {"count": 2, "lines": []}
+        return {"count": 5, "lines": []}
+
+    monkeypatch.setattr(backends, "loki_query", fake_loki_query)
+
+    now_count, baseline_count, first_line, first_ts = await _fetch_log_spike()
+
+    assert len(calls) == 2
+    now_call, baseline_call = calls
+    # "now" window: unchanged relative range, no explicit start/end.
+    assert now_call["range"] == "10m"
+    assert now_call["start"] is None and now_call["end"] is None
+    # baseline window: explicit start/end 60-70 minutes ago, distinct from "now".
+    assert baseline_call["start"] is not None and baseline_call["end"] is not None
+    baseline_start = datetime.fromisoformat(baseline_call["start"])
+    baseline_end = datetime.fromisoformat(baseline_call["end"])
+    now = datetime.now(timezone.utc)
+    assert baseline_end < now - timedelta(minutes=59)
+    assert baseline_start < baseline_end
+    assert (baseline_end - baseline_start) - timedelta(minutes=10) < timedelta(seconds=5)
+    assert now_count == 5
+    assert baseline_count == 2
+
+
 # ---- rollout_state -----------------------------------------------------------
 
 
@@ -185,11 +274,33 @@ def test_rollout_state_shaping_ok_when_stable():
 # ---- secret_age -----------------------------------------------------------
 
 
+def _secret_json(created: str, managed_time: str) -> dict:
+    """A canned `kubectl get secret ... -o json` payload — the exact shape
+    _shape_secret_age now parses directly (no jsonpath, no shell-escaping)."""
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "Opaque",
+        "data": {"password": "cGxhY2Vob2xkZXI="},
+        "metadata": {
+            "name": "subject-db-credentials",
+            "namespace": "subject",
+            "creationTimestamp": created,
+            "managedFields": [
+                {
+                    "manager": "kubectl-client-side-apply",
+                    "operation": "Update",
+                    "time": managed_time,
+                }
+            ],
+        },
+    }
+
+
 def test_secret_age_shaping_flags_recent_rotation():
     now = datetime(2026, 7, 22, 2, 0, tzinfo=timezone.utc)
     res = _shape_secret_age(
-        "2026-06-01T00:00:00Z",
-        "map[apiVersion:v1 manager:kubectl-client-side-apply operation:Update time:2026-07-22T01:45:00Z]",
+        _secret_json("2026-06-01T00:00:00Z", "2026-07-22T01:45:00Z"),
         now=now,
     )
     assert res.status == "lead"
@@ -200,12 +311,28 @@ def test_secret_age_shaping_flags_recent_rotation():
 def test_secret_age_shaping_ok_when_stable():
     now = datetime(2026, 7, 22, 2, 0, tzinfo=timezone.utc)
     res = _shape_secret_age(
-        "2026-01-01T00:00:00Z",
-        "map[apiVersion:v1 manager:kubectl-client-side-apply operation:Update time:2026-01-01T00:00:00Z]",
+        _secret_json("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
         now=now,
     )
     assert res.status == "ok"
     assert "subject-db-credentials" in res.summary
+
+
+def test_secret_age_shaping_handles_fractional_second_timestamps():
+    # _TS_RE already matched fractional seconds; _parse must too — a raw
+    # kubectl JSON payload can carry them (e.g. server-side-apply managers).
+    now = datetime(2026, 7, 22, 2, 0, tzinfo=timezone.utc)
+    res = _shape_secret_age(
+        _secret_json("2026-06-01T00:00:00.123456Z", "2026-01-01T00:00:00.000001Z"),
+        now=now,
+    )
+    assert res.status == "ok"
+    assert "subject-db-credentials" in res.summary
+
+
+def test_secret_age_shaping_unavailable_when_no_timestamps():
+    res = _shape_secret_age({"metadata": {}})
+    assert res.status == "unavailable"
 
 
 # ---- run_prechecks: gather with return_exceptions never raises ---------------

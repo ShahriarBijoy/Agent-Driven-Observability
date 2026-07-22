@@ -14,7 +14,7 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -50,17 +50,51 @@ def _json_safe(value: Any) -> Any:
 # ---- Loki -------------------------------------------------------------------
 
 
-async def loki_query(logql: str, range: str = "1h", limit: int = 100) -> dict:
+def _parse_ts(value: str | int) -> datetime:
+    """Accept epoch-ns (int, or a numeric string) or an ISO-8601 string ('Z'
+    suffix accepted) and return a tz-aware UTC datetime."""
+    if isinstance(value, int):
+        return datetime.fromtimestamp(value / 1e9, tz=timezone.utc)
+    v = value.strip()
+    if re.fullmatch(r"-?\d+", v):
+        return datetime.fromtimestamp(int(v) / 1e9, tz=timezone.utc)
+    iso = v[:-1] + "+00:00" if v.endswith("Z") else v
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+async def loki_query(
+    logql: str,
+    range: str = "1h",
+    limit: int = 100,
+    *,
+    start: str | int | None = None,
+    end: str | int | None = None,
+) -> dict:
+    """Query Loki over a relative `range` from now (default, unchanged), or an
+    explicit [start, end) window via the keyword-only `start`/`end` (each ISO-
+    8601 or epoch-ns) — added so a caller needing two disjoint windows (e.g.
+    the precheck log_spike baseline) isn't forced through one relative range.
+    Omitting start/end keeps prior behavior exactly."""
     if not logql or not logql.strip():
         return {"error": "logql is required"}
-    start, end = parse_range(range)
+    try:
+        if start is not None or end is not None:
+            end_dt = datetime.now(timezone.utc) if end is None else _parse_ts(end)
+            start_dt = end_dt - timedelta(hours=1) if start is None else _parse_ts(start)
+        else:
+            start_dt, end_dt = parse_range(range)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"invalid start/end: {exc}", "query": logql}
     try:
         resp = await _http().get(
             f"{config.loki_url}/loki/api/v1/query_range",
             params={
                 "query": logql,
-                "start": str(int(start.timestamp() * 1e9)),
-                "end": str(int(end.timestamp() * 1e9)),
+                "start": str(int(start_dt.timestamp() * 1e9)),
+                "end": str(int(end_dt.timestamp() * 1e9)),
                 "limit": str(limit),
                 "direction": "backward",
             },
