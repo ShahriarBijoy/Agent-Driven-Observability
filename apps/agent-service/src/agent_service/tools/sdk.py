@@ -509,17 +509,40 @@ def build_mcp_server(ctx: RunContext):
     @tool(
         "request_approval",
         "Pause and ask the human operator to approve a sensitive action before proceeding. "
-        "Returns the decision. If denied, do NOT proceed — stop and explain.",
+        "Returns the decision. If denied, do NOT proceed — stop and explain. For a remediation "
+        "tool's dry_run result, pass its action_id here (do NOT paste the diff into prompt "
+        "yourself) — the server looks up the matching dry-run and appends a verified diff block "
+        "to the approval card before it's shown to the operator, so the card always reflects a "
+        "real server-side read rather than model-authored text.",
         {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "one operator-readable sentence"},
+                "action_id": {
+                    "type": "string",
+                    "description": "optional: the action_id from a remediation tool's dry-run "
+                                    "result. When given, a matching dry-run must be on record for "
+                                    "this run (call the remediation tool with dry_run=true first) "
+                                    "— the server appends its verified diff to the approval card.",
+                },
             },
             "required": ["prompt"],
         },
     )
     async def _approval(args: dict) -> dict:
-        decision = await ctx.request_approval(args["prompt"])
+        prompt = args["prompt"]
+        aid = args.get("action_id")
+        if aid:
+            block = remediate.server_verified_block(ctx.run_id, aid)
+            if block is None:
+                return _text(
+                    "request_approval",
+                    {"error": f"no dry-run on record for action_id {aid!r} on this run — "
+                              "call the remediation tool with dry_run=true first, then pass "
+                              "the action_id it returns here"},
+                )
+            prompt = f"{prompt}{block}"
+        decision = await ctx.request_approval(prompt)
         instruction = (
             "Approved by the operator. Proceed."
             if decision == "approved"
@@ -608,8 +631,12 @@ def build_mcp_server(ctx: RunContext):
         ),
     )
     async def _scale_deployment(args: dict) -> dict:
+        try:
+            replicas = int(args["replicas"])
+        except (TypeError, ValueError):
+            return _text("scale_deployment", {"error": "replicas must be an integer"})
         return _text("scale_deployment", await remediate.scale_deployment(
-            ctx, args["workload"], int(args["replicas"]),
+            ctx, args["workload"], replicas,
             bool(args.get("dry_run", True)), args.get("approval_id"),
         ))
 
@@ -624,8 +651,12 @@ def build_mcp_server(ctx: RunContext):
         ),
     )
     async def _patch_memory_limit(args: dict) -> dict:
+        try:
+            memory_mi = int(args["memory_mi"])
+        except (TypeError, ValueError):
+            return _text("patch_memory_limit", {"error": "memory_mi must be an integer"})
         return _text("patch_memory_limit", await remediate.patch_memory_limit(
-            ctx, args["workload"], int(args["memory_mi"]),
+            ctx, args["workload"], memory_mi,
             bool(args.get("dry_run", True)), args.get("approval_id"),
         ))
 
@@ -1025,9 +1056,14 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "loki_query, tempo_query, mimir_query, k8s_events, and kubectl_read to name the root cause "
         "with evidence — query results, never vibes or guesses. "
         "Once you have an evidence-backed root cause, propose a remediation and DRY-RUN it first "
-        "(the remediation tools accept a dry_run flag): put the dry-run diff verbatim in the "
-        "summary you pass to request_approval, and wait for the decision before executing for "
-        "real. If denied, stop and say so plainly — do not retry unapproved. "
+        "(the remediation tools accept a dry_run flag, and default to it): the dry-run returns "
+        "an action_id. Call request_approval with a one-sentence summary AND that action_id — "
+        "do NOT paste the diff into the summary yourself, the server looks up the dry-run and "
+        "appends the verified diff to the approval card for you. Wait for the decision before "
+        "executing for real (dry_run=false with the same action_id and the approval_id "
+        "request_approval returned). If denied, stop and say so plainly — do not retry "
+        "unapproved. An approval is single-use per dry-run: if you need to execute again, "
+        "dry-run again first. "
         "After executing the real remediation, re-query alert_status repeatedly until it reports "
         "recovery, or until you can no longer justify continuing — in which case report the "
         "failure to recover explicitly; never assume success without re-querying. "

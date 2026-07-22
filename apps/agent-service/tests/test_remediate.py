@@ -11,11 +11,22 @@ argv)."""
 from __future__ import annotations
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from agent_service.tools import remediate
+
+
+@pytest.fixture(autouse=True)
+def _clear_dryrun_stash():
+    """`_DRYRUN_STASH` is a module-level registry keyed by run_id — clear it
+    around every test so leftover entries from one test (or a previous run)
+    can never leak into another's assertions."""
+    remediate._DRYRUN_STASH.clear()
+    yield
+    remediate._DRYRUN_STASH.clear()
 
 
 # ---- Step 1 (brief, verbatim): pure validation + fingerprint ----------------
@@ -59,6 +70,14 @@ def test_memory_bounds_are_inclusive():
 def test_malformed_workload_names_are_denied():
     for bad in ("Gateway", "gate way", "-gateway", "gateway-", "gateway/../etc", "", "a" * 64):
         assert remediate.validate_remediation("rollout_undo", bad) is not None, bad
+
+
+def test_workload_regex_is_anchored_with_z_not_dollar():
+    """`$` (without re.MULTILINE) still matches just before a trailing
+    newline — `gateway\\n` would satisfy `^...$` even though it carries an
+    embedded newline. `\\Z` anchors to the true end of the string only."""
+    assert remediate.validate_remediation("rollout_undo", "gateway\n") is not None
+    assert remediate.validate_remediation("rollout_undo", "gateway\nrm -rf") is not None
 
 
 def test_every_allowed_workload_is_a_valid_dns_label():
@@ -132,13 +151,44 @@ async def test_gate_wrong_fingerprint_is_denied(approvals):
     assert "error" in result
 
 
-async def test_gate_approved_matching_fingerprint_passes(approvals):
+async def test_gate_forged_bare_fingerprint_without_marker_is_denied(approvals):
+    """A model could paste the bare action_id into its own request_approval
+    prompt — that alone must NOT satisfy the gate. Only the server-authored
+    marker (written by request_approval when it finds a matching stashed
+    dry-run) proves the diff on the card is real."""
     approvals["apr-1"] = {
         "run_id": "run-1", "decision": "approved",
         "summary": "scale gateway 2 -> 4 — action deadbeefdeadbeef",
     }
     result = await remediate._execute_gate(_FakeCtx(), "apr-1", "deadbeefdeadbeef")
+    assert "error" in result
+
+
+async def test_gate_approved_with_server_marker_but_no_stash_is_replay_denied(approvals):
+    """The marker text alone (e.g. a stale approval whose dry-run has since
+    been popped by an earlier execute) is not enough without a live stash
+    entry — this is the single-use replay guard."""
+    aid = "deadbeefdeadbeef"
+    approvals["apr-1"] = {
+        "run_id": "run-1", "decision": "approved",
+        "summary": f"scale gateway{remediate.server_verified_marker(aid)}",
+    }
+    result = await remediate._execute_gate(_FakeCtx(), "apr-1", aid)
+    assert "error" in result
+    assert "re-run dry_run" in result["error"]
+
+
+async def test_gate_approved_matching_marker_and_stash_passes(approvals):
+    aid = "deadbeefdeadbeef"
+    remediate._stash_dryrun(_FakeCtx(), aid, "scale_deployment", "gateway", "2 -> 4")
+    approvals["apr-1"] = {
+        "run_id": "run-1", "decision": "approved",
+        "summary": f"scale gateway{remediate.server_verified_block('run-1', aid)}",
+    }
+    result = await remediate._execute_gate(_FakeCtx(), "apr-1", aid)
     assert result is None
+    # single-use: the stash entry is now gone
+    assert remediate.server_verified_block("run-1", aid) is None
 
 
 # ---- tool-level dry-run / execute wiring (fixed-argv, no shell) --------------
@@ -185,14 +235,47 @@ async def test_scale_execute_requires_gate(fake_kubectl):
 
 
 async def test_scale_execute_with_valid_approval_runs_scale(fake_kubectl, approvals, monkeypatch):
-    aid = remediate.action_id("scale_deployment", "gateway", {"replicas": 4})
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
     approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
-                           "summary": f"scale gateway — action {aid}"}
+                           "summary": f"scale gateway{block}"}
     result = await remediate.scale_deployment(
-        _FakeCtx(), "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
     )
     assert result.get("executed") is True
     assert fake_kubectl[-1][3:] == ["scale", "deployment/gateway", "--replicas=4", "-n", "subject"]
+
+
+async def test_scale_replay_of_same_approval_is_rejected_after_execute(fake_kubectl, approvals):
+    """A second dry_run=false call reusing the same approval_id must fail —
+    the stash entry that made the first execute's marker meaningful was
+    consumed single-use."""
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+    first = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert first.get("executed") is True
+
+    replay = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert "error" in replay
+    assert "re-run dry_run" in replay["error"]
+
+
+async def test_request_approval_action_id_without_stash_errors():
+    """What sdk.py's request_approval tool does when the model passes an
+    action_id that was never dry-run for this run: server_verified_block
+    returns None, and the tool must surface an error instead of persisting
+    an approval with nothing verified behind it."""
+    assert remediate.server_verified_block("run-1", "never-dry-run") is None
 
 
 async def test_restart_workload_dry_run_has_no_live_read(fake_kubectl):
@@ -211,11 +294,137 @@ async def test_rollout_abort_and_promote_use_status_subresource_merge_patch(fake
         approvals.clear()
         name = action.__name__
         aid = remediate.action_id(name, "gateway", {})
-        approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
-                               "summary": f"{name} — action {aid}"}
+        # Simulate a prior dry-run having stashed a diff for this action_id —
+        # the diff-builder itself (which calls backends.rollout_status, not
+        # remediate._kubectl) is exercised separately; this test's focus is
+        # the merge-patch argv shape.
+        remediate._stash_dryrun(_FakeCtx(), aid, name, "gateway", "would patch ...")
+        approvals["apr-1"] = {
+            "run_id": "run-1", "decision": "approved",
+            "summary": f"{name}{remediate.server_verified_block('run-1', aid)}",
+        }
         await action(_FakeCtx(), "gateway", dry_run=False, approval_id="apr-1")
         patch_calls = [c for c in fake_kubectl if "patch" in c]
         assert any(
             "--subresource=status" in c and "merge" in c and expected_patch in c
             for c in patch_calls
         ), (name, fake_kubectl)
+
+
+# ---- rollout_undo's dry-run diff builder (kubectl rollout history parsing) --
+
+
+@pytest.fixture
+def fake_kubectl_rollout_history(monkeypatch, tmp_path):
+    """Canned `kubectl rollout history` output (the revision list, then one
+    `--revision=N` detail call per revision) so `_rollout_undo_diff`'s regex
+    parsing (`_REVISION_RE`, `_IMAGE_RE`) runs against realistic text."""
+    kubeconfig = tmp_path / "agent-remediate.yaml"
+    kubeconfig.write_text("apiVersion: v1\nkind: Config\n", encoding="utf-8")
+    monkeypatch.setattr(
+        remediate, "config",
+        dataclasses.replace(remediate.config, k8s_remediate_kubeconfig=str(kubeconfig)),
+    )
+    calls: list[list[str]] = []
+
+    def _run(argv, capture_output, text, timeout):
+        calls.append(argv)
+        joined = " ".join(argv)
+        if "--revision=2" in joined:
+            out = (
+                "deployment.apps/gateway with revision #2\n"
+                "Pod Template:\n"
+                "  Containers:\n"
+                "   gateway:\n"
+                "    Image:\tregistry.local/gateway:v2\n"
+            )
+        elif "--revision=1" in joined:
+            out = (
+                "deployment.apps/gateway with revision #1\n"
+                "Pod Template:\n"
+                "  Containers:\n"
+                "   gateway:\n"
+                "    Image:\tregistry.local/gateway:v1\n"
+            )
+        else:
+            out = (
+                "deployment.apps/gateway\n"
+                "REVISION  CHANGE-CAUSE\n"
+                "1         <none>\n"
+                "2         <none>\n"
+            )
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(remediate.subprocess, "run", _run)
+    return calls
+
+
+async def test_rollout_undo_dry_run_diff_names_both_revisions_and_images(
+    fake_kubectl_rollout_history,
+):
+    result = await remediate.rollout_undo(_FakeCtx(), "gateway", dry_run=True)
+    assert result["dry_run"] is True
+    diff = result["diff"]
+    assert "revision 2" in diff and "revision 1" in diff
+    assert "registry.local/gateway:v2" in diff
+    assert "registry.local/gateway:v1" in diff
+    # stashed for a later request_approval/execute round
+    stashed = remediate.server_verified_block("run-1", result["action_id"])
+    assert stashed is not None
+    assert diff in stashed
+
+
+async def test_rollout_undo_dry_run_with_only_one_revision_reports_no_previous(
+    fake_kubectl_rollout_history, monkeypatch
+):
+    def _one_revision(argv, capture_output, text, timeout):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="deployment.apps/gateway\nREVISION  CHANGE-CAUSE\n1         <none>\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(remediate.subprocess, "run", _one_revision)
+    result = await remediate.rollout_undo(_FakeCtx(), "gateway", dry_run=True)
+    assert result["dry_run"] is True
+    assert "no previous revision" in result["diff"]
+
+
+# ---- patch_memory_limit: dry-run diff + execute merge-patch body ------------
+
+
+async def test_memory_dry_run_reads_live_limit_first(fake_kubectl):
+    result = await remediate.patch_memory_limit(_FakeCtx(), "gateway", memory_mi=512, dry_run=True)
+    assert result["dry_run"] is True
+    assert "action_id" in result and len(result["action_id"]) == 16
+    assert "limits.memory: 128Mi -> 512Mi" in result["diff"]
+    assert fake_kubectl[0][3:] == [
+        "get", "deployment", "gateway", "-n", "subject", "-o",
+        'jsonpath={.spec.template.spec.containers[?(@.name=="gateway")].resources.limits.memory}',
+    ]
+
+
+async def test_memory_execute_sends_merge_patch_with_container_name_and_limit(
+    fake_kubectl, approvals
+):
+    ctx = _FakeCtx()
+    dry = await remediate.patch_memory_limit(ctx, "gateway", memory_mi=512, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"bump gateway memory{block}"}
+    result = await remediate.patch_memory_limit(
+        ctx, "gateway", memory_mi=512, dry_run=False, approval_id="apr-1"
+    )
+    assert result.get("executed") is True
+
+    patch_call = fake_kubectl[-1]
+    assert patch_call[3:8] == ["patch", "deployment", "gateway", "-n", "subject"]
+    assert "--type" in patch_call
+    assert patch_call[patch_call.index("--type") + 1] == "merge"
+    body = json.loads(patch_call[patch_call.index("-p") + 1])
+    assert body == {
+        "spec": {"template": {"spec": {"containers": [
+            {"name": "gateway", "resources": {"limits": {"memory": "512Mi"}}}
+        ]}}}
+    }

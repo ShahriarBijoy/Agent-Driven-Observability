@@ -18,14 +18,19 @@ Two independent gates sit in front of every mutation:
    refuses BEFORE any subprocess is ever built — an injection-shaped workload
    string never reaches argv.
 2. `_execute_gate` (server-side, stateful): every tool defaults to
-   `dry_run=True`, which only reads live state and returns a diff + an
-   `action_id` fingerprint (sha256 of action+workload+params). Executing for
-   real requires an `approval_id` naming a row in `agent_approvals` for THIS
-   run, with `decision == "approved"` and a `summary` that contains the exact
-   dry-run `action_id`. The model cannot satisfy this by asserting approval in
-   its own text — it must have actually gotten `request_approval` to return
-   'approved' with that fingerprint quoted back, and that happened over a
-   channel (Postgres, decided by the human operator) the model doesn't write.
+   `dry_run=True`, which only reads live state, returns a diff + an
+   `action_id` fingerprint (sha256 of action+workload+params), AND stashes
+   that diff server-side (`_stash_dryrun`) keyed by (run_id, action_id).
+   Executing for real requires an `approval_id` naming a row in
+   `agent_approvals` for THIS run, with `decision == "approved"` and a
+   `summary` that contains the SERVER-authored marker
+   (`server_verified_marker`) for that action_id — not merely the bare
+   fingerprint. Only `request_approval` (tools/sdk.py), given an `action_id`
+   with a matching stashed dry-run, ever writes that marker, by appending the
+   stashed diff to the model's prompt before the approval is persisted. A
+   model asserting approval — or pasting a bare action_id — in its own text
+   satisfies neither the marker check nor the stash, which is popped
+   single-use on a successful execute so an approval can't be replayed.
 """
 
 from __future__ import annotations
@@ -53,7 +58,7 @@ HARD_DENY_MESSAGE = "denied: outside the remediation allow-list"
 # DNS-1123 label — the same shape a Kubernetes object name must have. Anything
 # that doesn't match (spaces, `;`, path separators, leading/trailing `-`, over
 # length) is refused before it can be interpolated into an argv element.
-_WORKLOAD_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_WORKLOAD_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\Z")
 
 _ACTIONS = {
     "rollout_undo",
@@ -102,6 +107,68 @@ def action_id(action: str, workload: str, params: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+# ---- server-side dry-run registry -------------------------------------------
+#
+# Every dry-run's diff is recorded here, server-side, keyed by (run_id,
+# action_id). This is what lets `request_approval` attach a SERVER-authored
+# verified block to the approval card instead of trusting whatever diff text
+# the model chose to paste into its own prompt, and what lets `_execute_gate`
+# demand that the approved summary actually carries that server marker —
+# forging the bare action_id into a summary is no longer enough. Bounded per
+# run (a stuck/looping run can't grow this without bound) and single-use
+# (`_execute_gate` pops the entry on a successful execute, so a replayed
+# approval_id can't authorize a second real mutation without a fresh dry-run).
+
+_DRYRUN_STASH: dict[str, dict[str, dict]] = {}
+_STASH_CAP_PER_RUN = 16
+
+
+def _stash_dryrun(ctx: RunContext, action_id: str, action: str, target: str, diff: str) -> None:
+    """Record one dry-run result for this run. Caps at `_STASH_CAP_PER_RUN`
+    entries per run, evicting the oldest when a NEW action_id would exceed
+    it (re-dry-running an already-stashed action_id just refreshes its
+    value in place, without consuming a slot)."""
+    run_stash = _DRYRUN_STASH.setdefault(ctx.run_id, {})
+    run_stash[action_id] = {"action": action, "target": target, "diff": diff}
+    while len(run_stash) > _STASH_CAP_PER_RUN:
+        oldest = next(iter(run_stash))
+        del run_stash[oldest]
+
+
+def _peek_dryrun(run_id: str, action_id: str) -> dict | None:
+    return _DRYRUN_STASH.get(run_id, {}).get(action_id)
+
+
+def _pop_dryrun(run_id: str, action_id: str) -> dict | None:
+    run_stash = _DRYRUN_STASH.get(run_id)
+    if not run_stash:
+        return None
+    return run_stash.pop(action_id, None)
+
+
+def server_verified_marker(action_id: str) -> str:
+    """The server-controlled substring `_execute_gate` requires an approved
+    summary to contain — a model can paste this text into its own prompt,
+    but only `request_approval`-with-a-matching-stashed-`action_id` ever
+    puts it there for real, and only alongside the real diff."""
+    return f"--- server-verified dry-run [{action_id}] ---"
+
+
+def server_verified_block(run_id: str, action_id: str) -> str | None:
+    """The block `request_approval` appends to the model's prompt summary
+    when it's given an `action_id` that has a stashed dry-run for this run.
+    Returns None when nothing is stashed (unknown action_id, wrong run, or
+    never dry-run) — the caller should refuse rather than fabricate one."""
+    entry = _peek_dryrun(run_id, action_id)
+    if entry is None:
+        return None
+    return (
+        f"\n\n{server_verified_marker(action_id)}\n"
+        f"{entry['action']} {entry['target']}\n"
+        f"{entry['diff']}"
+    )
+
+
 # ---- fixed-argv kubectl against the agent-remediate identity ----------------
 
 
@@ -137,11 +204,16 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
     the caller should return verbatim. Loads the approval row for THIS run
     from Postgres (db.get_approval) — never trusts anything the model merely
     claims — and requires decision == 'approved' AND the row's summary to
-    contain the exact dry-run action_id, so an approval for one action/param
-    set can't be replayed to authorize a different one."""
+    contain the SERVER marker (`server_verified_marker`) for the exact
+    dry-run action_id, not merely the bare fingerprint: a model can paste a
+    bare action_id into its own prompt, but only `request_approval` ever
+    writes the marker, and only when a real dry-run for that action_id was
+    stashed for this run. Single-use: a successful pass here pops the stash
+    entry, so an approval row can't be replayed to authorize a second real
+    mutation without a fresh dry-run."""
     deny = {
         "error": "execution requires an approved request_approval whose summary "
-        "includes the dry-run action_id"
+        "includes the server-verified dry-run marker for this action_id"
     }
     if not approval_id:
         return deny
@@ -150,8 +222,11 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
         return deny
     if approval.get("decision") != "approved":
         return deny
-    if expected_action_id not in (approval.get("summary") or ""):
+    marker = server_verified_marker(expected_action_id)
+    if marker not in (approval.get("summary") or ""):
         return deny
+    if _pop_dryrun(ctx.run_id, expected_action_id) is None:
+        return {"error": "no server-verified dry-run pending; re-run dry_run"}
     return None
 
 
@@ -162,7 +237,9 @@ def _dry_run_result(action: str, workload: str, aid: str, diff: str) -> dict:
         "dry_run": True,
         "action_id": aid,
         "diff": diff,
-        "next": "request_approval with this diff, then re-call with dry_run=false and approval_id",
+        "next": "call request_approval with a one-sentence summary AND this action_id (the "
+                "server attaches the verified diff for you — do not paste the diff yourself), "
+                "then re-call with dry_run=false, this action_id, and the returned approval_id",
     }
 
 
@@ -246,7 +323,9 @@ async def rollout_undo(ctx: RunContext, workload: str, dry_run: bool = True,
         return {"error": err}
     aid = action_id(action, workload, {})
     if dry_run:
-        return _dry_run_result(action, workload, aid, await _rollout_undo_diff(workload))
+        diff = await _rollout_undo_diff(workload)
+        _stash_dryrun(ctx, aid, action, workload, diff)
+        return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
         return gate
@@ -272,6 +351,7 @@ async def rollout_abort(ctx: RunContext, workload: str, dry_run: bool = True,
         diff = await _rollout_phase_diff(
             workload, f'would patch Rollout status (merge, --subresource=status): {patch}'
         )
+        _stash_dryrun(ctx, aid, action, workload, diff)
         return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
@@ -305,6 +385,7 @@ async def rollout_promote(ctx: RunContext, workload: str, dry_run: bool = True,
             f"would patch Rollout spec (merge): {spec_patch}, then status "
             f"(merge, --subresource=status): {status_patch}",
         )
+        _stash_dryrun(ctx, aid, action, workload, diff)
         return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
@@ -334,7 +415,9 @@ async def scale_deployment(ctx: RunContext, workload: str, replicas: int, dry_ru
         return {"error": err}
     aid = action_id(action, workload, {"replicas": replicas})
     if dry_run:
-        return _dry_run_result(action, workload, aid, await _scale_diff(workload, replicas))
+        diff = await _scale_diff(workload, replicas)
+        _stash_dryrun(ctx, aid, action, workload, diff)
+        return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
         return gate
@@ -357,7 +440,9 @@ async def patch_memory_limit(ctx: RunContext, workload: str, memory_mi: int, dry
         return {"error": err}
     aid = action_id(action, workload, {"memory_mi": memory_mi})
     if dry_run:
-        return _dry_run_result(action, workload, aid, await _memory_diff(workload, memory_mi))
+        diff = await _memory_diff(workload, memory_mi)
+        _stash_dryrun(ctx, aid, action, workload, diff)
+        return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
         return gate
@@ -387,6 +472,7 @@ async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
             "would patch spec.template annotation kubectl.kubernetes.io/restartedAt "
             "(rolling restart, no spec change)"
         )
+        _stash_dryrun(ctx, aid, action, workload, diff)
         return _dry_run_result(action, workload, aid, diff)
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
