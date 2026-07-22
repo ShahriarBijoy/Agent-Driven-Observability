@@ -477,7 +477,14 @@ def _strip_frontmatter(text: str) -> str:
 def parse_runbook_meta(text: str) -> dict:
     """Parse a runbook's leading `---`-delimited frontmatter block.
 
-    Supports exactly two list forms (no full YAML): inline `key: [a, b, c]`,
+    Supports the list forms these runbooks use (no full YAML): inline
+    `key: [a, b, c]`; a multi-line bracketed flow sequence (what oxfmt
+    reflows a long inline list into) —
+        key:
+          [
+            a,
+            b,
+          ]
     and a block list —
         key:
           - item one
@@ -501,23 +508,38 @@ def parse_runbook_meta(text: str) -> dict:
             i += 1
             continue
         key, rest = kv.group(1), kv.group(2).strip()
-        if rest.startswith("[") and rest.endswith("]"):
-            inner = rest[1:-1].strip()
-            meta[key] = [] if not inner else [_unquote(x.strip()) for x in inner.split(",")]
-            i += 1
-        else:
-            # Bare `key:` opens a block list; anything else on the same line
-            # (a scalar) is treated as a single-item list — this format only
-            # ever needs lists.
-            items = [] if not rest else [_unquote(rest)]
-            i += 1
-            while i < len(lines):
-                item = _META_ITEM_RE.match(lines[i])
-                if item is None:
-                    break
-                items.append(_unquote(item.group(1).strip()))
+        i += 1
+
+        # A bare `key:` whose bracketed value opens on the next line (oxfmt
+        # reflows long inline lists this way): adopt that line as the value.
+        if not rest:
+            j = i
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and lines[j].strip().startswith("["):
+                rest = lines[j].strip()
+                i = j + 1
+
+        if rest.startswith("["):
+            # Flow sequence — inline or spanning lines until the closing `]`.
+            buf = rest
+            while "]" not in buf and i < len(lines):
+                buf += " " + lines[i].strip()
                 i += 1
-            meta[key] = items
+            inner = buf[buf.index("[") + 1 : (buf.rindex("]") if "]" in buf else len(buf))]
+            # `split` + the empty-token filter also drops oxfmt's trailing comma.
+            meta[key] = [_unquote(x.strip()) for x in inner.split(",") if x.strip()]
+            continue
+
+        # Bare `key:` opens a block list; a scalar on the line is a single item.
+        items = [] if not rest else [_unquote(rest)]
+        while i < len(lines):
+            item = _META_ITEM_RE.match(lines[i])
+            if item is None:
+                break
+            items.append(_unquote(item.group(1).strip()))
+            i += 1
+        meta[key] = items
     return meta
 
 

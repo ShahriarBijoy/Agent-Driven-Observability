@@ -1,5 +1,6 @@
 ---
-alert_types: [dq-high-violation, DQ high-severity violation, dq-prompt-drift, DQ prompt drift sustained]
+alert_types:
+  [dq-high-violation, DQ high-severity violation, dq-prompt-drift, DQ prompt drift sustained]
 tools: [marquez_lineage, mimir_query, pg_select]
 hypotheses:
   - The producing job for this dataset stopped emitting new runs

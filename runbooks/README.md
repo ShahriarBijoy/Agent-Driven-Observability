@@ -76,16 +76,16 @@ automatic matching until frontmatter is added.
 
 ## Current runbooks
 
-| Runbook | Alerts | Notes |
-| --- | --- | --- |
-| `gateway-high-error-rate.md` | `gw-5xx`, `slo-avail-fast` | Gateway 5xx / availability burn — generic triage |
-| `dq-freshness-stall.md` | `dq-high-violation`, `dq-prompt-drift` | Data pipeline stopped producing fresh output |
-| `snapshot-agent-audit.md` | *(none — on-demand)* | Point-in-time audit-log snapshot, operator-triggered |
-| `k8s-crashloop.md` | `k8s-pod-crashloop`, `k8s-container-waiting` | CrashLoopBackOff / stuck image-pull |
-| `k8s-node-failure.md` | `k8s-node-not-ready` | A cluster node's kubelet is unreachable |
-| `canary-abort.md` | `rollout-stuck` | Argo Rollouts canary aborted or wedged (its own `on-rollout-aborted`/`on-analysis-run-failed` events go to gitops-reporter instead — see the root README's Phase 11 note) |
-| `ci-pipeline-red.md` | `cicd-pipeline-red` | A pipeline run on `main` failed |
-| `stale-secret.md` | `slo-avail-fast`, `gw-5xx` (with a `secret_age` pre-check lead) | Rotated DB credential the workload never restarted to pick up |
+| Runbook                      | Alerts                                                          | Notes                                                                                                                                                                     |
+| ---------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway-high-error-rate.md` | `gw-5xx`, `slo-avail-fast`                                      | Gateway 5xx / availability burn — generic triage                                                                                                                          |
+| `dq-freshness-stall.md`      | `dq-high-violation`, `dq-prompt-drift`                          | Data pipeline stopped producing fresh output                                                                                                                              |
+| `snapshot-agent-audit.md`    | _(none — on-demand)_                                            | Point-in-time audit-log snapshot, operator-triggered                                                                                                                      |
+| `k8s-crashloop.md`           | `k8s-pod-crashloop`, `k8s-container-waiting`                    | CrashLoopBackOff / stuck image-pull                                                                                                                                       |
+| `k8s-node-failure.md`        | `k8s-node-not-ready`                                            | A cluster node's kubelet is unreachable                                                                                                                                   |
+| `canary-abort.md`            | `rollout-stuck`                                                 | Argo Rollouts canary aborted or wedged (its own `on-rollout-aborted`/`on-analysis-run-failed` events go to gitops-reporter instead — see the root README's Phase 11 note) |
+| `ci-pipeline-red.md`         | `cicd-pipeline-red`                                             | A pipeline run on `main` failed                                                                                                                                           |
+| `stale-secret.md`            | `slo-avail-fast`, `gw-5xx` (with a `secret_age` pre-check lead) | Rotated DB credential the workload never restarted to pick up                                                                                                             |
 
 ### Overlapping `alert_types` (multi-match union)
 

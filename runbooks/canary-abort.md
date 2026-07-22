@@ -1,6 +1,15 @@
 ---
 alert_types: [rollout-stuck, Rollout stuck (progressing too long / replicas short)]
-tools: [rollout_status, analysisrun_get, deploy_history, gitea_compare, rollout_abort, rollout_promote, rollout_undo]
+tools:
+  [
+    rollout_status,
+    analysisrun_get,
+    deploy_history,
+    gitea_compare,
+    rollout_abort,
+    rollout_promote,
+    rollout_undo,
+  ]
 hypotheses:
   - The canary's AnalysisRun failed a real metric threshold (error-rate/latency regression in the new revision)
   - The canary never became Ready (crash/config issue) so the analysis never got real traffic to measure

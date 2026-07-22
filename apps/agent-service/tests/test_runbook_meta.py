@@ -60,6 +60,38 @@ def test_empty_inline_list() -> None:
     assert meta["tools"] == ["pg_select"]
 
 
+def test_multiline_flow_sequence() -> None:
+    # The exact shape oxfmt reflows a long inline list into: a bare `key:`,
+    # a `[` on its own line, one item per line with a trailing comma, `]`.
+    text = (
+        "---\n"
+        "alert_types: [rollout-stuck]\n"
+        "tools:\n"
+        "  [\n"
+        "    rollout_status,\n"
+        "    analysisrun_get,\n"
+        "    rollout_abort,\n"
+        "    rollout_undo,\n"
+        "  ]\n"
+        "hypotheses:\n"
+        "  - The canary regressed a real metric threshold\n"
+        "---\n"
+        "# Title\n"
+    )
+    meta = backends.parse_runbook_meta(text)
+    assert meta["alert_types"] == ["rollout-stuck"]
+    assert meta["tools"] == [
+        "rollout_status", "analysisrun_get", "rollout_abort", "rollout_undo",
+    ]
+    assert meta["hypotheses"] == ["The canary regressed a real metric threshold"]
+
+
+def test_inline_flow_sequence_spanning_one_line_with_trailing_comma() -> None:
+    # A bracketed list kept on the key line but with a trailing comma also parses.
+    meta = backends.parse_runbook_meta("---\ntools: [a, b,]\n---\n")
+    assert meta["tools"] == ["a", "b"]
+
+
 def test_frontmatter_must_be_at_the_very_start() -> None:
     text = "# Title\n\n---\nalert_types: [x]\n---\n"
     assert backends.parse_runbook_meta(text) == {}
