@@ -84,6 +84,15 @@ async def test_resolve_when_not_remediated_and_alert_cleared(recorder):
     assert incident_id == "inc_1"
     assert summary == "alert cleared without remediation"
     assert recorder["ensure_verify_deadline"] == []
+    # The resolve branch must also leave a timeline trace — otherwise an
+    # incident that never got remediated (alert cleared on its own) shows no
+    # verification evidence in the machine timeline at all.
+    assert len(recorder["add_timeline"]) == 1
+    tl_incident_id, entries = recorder["add_timeline"][0]
+    assert tl_incident_id == "inc_1"
+    _ts, source, label = entries[0]
+    assert source == "verification"
+    assert label == "alert cleared without remediation"
 
 
 async def test_deadline_when_remediated_but_still_active(recorder):
@@ -139,3 +148,71 @@ async def test_no_op_when_incident_already_resolved(recorder):
     assert recorder["mark_verified"] == []
     assert recorder["add_timeline"] == []
     assert recorder["ensure_verify_deadline"] == []
+
+
+# ---- run_oncall must close out even when the session itself crashes --------
+
+
+class _SessionCtx:
+    """Minimal ctx stand-in for run_oncall — only the methods it calls before
+    (and, on the happy path, after) the agent session."""
+
+    run_id = "run-1"
+
+    def __init__(self) -> None:
+        self.ended: tuple[str, str | None] | None = None
+
+    async def begin(self, trigger=None):
+        pass
+
+    async def add_user_message(self, content):
+        pass
+
+    async def add_artifact(self, name, media_type, content):
+        pass
+
+    async def end(self, status, summary=None):
+        self.ended = (status, summary)
+
+
+async def test_run_oncall_runs_closing_step_when_session_raises(monkeypatch):
+    """A session that raises (AgentSessionError from a crashed/max-turns run,
+    same as `_guard_run`/`_guarded` catch elsewhere) must still run the
+    verify-then-close step — otherwise a crashed investigation's incident
+    never gets a verify_deadline and the escalation watcher can never find
+    it to re-escalate. The exception must still propagate afterwards."""
+    from agent_service.agents.base import AgentSessionError
+
+    calls = {"closed_for": [], "session_ran": False, "ended": False}
+
+    async def _fake_prechecks(alert):
+        return []
+
+    def _fake_render(results):
+        return ""
+
+    async def _fake_lookup(alertname):
+        return {"match": None, "available": []}
+
+    async def _fake_session(ctx, kind, prompt, *, max_turns, allowed_override=None):
+        calls["session_ran"] = True
+        raise AgentSessionError("boom")
+
+    async def _fake_close(ctx, incident_id, alert):
+        calls["closed_for"].append(incident_id)
+
+    monkeypatch.setattr(oncall.precheck, "run_prechecks", _fake_prechecks)
+    monkeypatch.setattr(oncall.precheck, "render_report", _fake_render)
+    monkeypatch.setattr(oncall.backends, "runbook_lookup", _fake_lookup)
+    monkeypatch.setattr(oncall, "run_agent_session", _fake_session)
+    monkeypatch.setattr(oncall, "_close_incident", _fake_close)
+
+    alert = SimpleNamespace(alertname="gw-5xx", severity="page", summary="x", tenant="acme")
+    ctx = _SessionCtx()
+
+    with pytest.raises(AgentSessionError):
+        await oncall.run_oncall(ctx, "inc_1", alert)
+
+    assert calls["session_ran"] is True
+    assert calls["closed_for"] == ["inc_1"]
+    assert ctx.ended is None  # ctx.end never reached — the exception propagated

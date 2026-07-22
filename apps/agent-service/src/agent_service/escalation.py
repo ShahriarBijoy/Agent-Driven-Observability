@@ -32,16 +32,31 @@ logger = logging.getLogger(__name__)
 
 MAX_ESCALATIONS = 3
 
+# Linked-run statuses that mean an investigation is already in flight for this
+# incident — the watcher must not pile a duplicate re-escalation run on top of
+# one that's still queued, actively running, or waiting on an operator's
+# approve/deny decision.
+_IN_FLIGHT_RUN_STATUSES = {"queued", "running", "awaiting_approval"}
 
-def escalation_due(incident: dict, state: dict, now: datetime) -> bool:
+
+def escalation_due(
+    incident: dict, state: dict, now: datetime, *, latest_run_status: str | None = None
+) -> bool:
     """True iff `incident` needs a re-escalation right now: open, its
     verify_deadline has passed, the alert feed is still firing (the last
     firing observation is newer than the last resolved one, or nothing has
-    resolved it at all), and it hasn't already been escalated MAX_ESCALATIONS
-    times."""
+    resolved it at all), it hasn't already been escalated MAX_ESCALATIONS
+    times, and — `latest_run_status` — the newest run already linked to it
+    isn't itself still in flight (queued/running/awaiting_approval): a run
+    that hasn't finished yet may still fix things before its own deadline
+    check would; escalating on top of it would double-invest the same
+    incident. `latest_run_status=None` (no linked run, or the caller didn't
+    look one up) never blocks escalation."""
     if incident.get("status") != "open":
         return False
     if incident.get("escalations", 0) >= MAX_ESCALATIONS:
+        return False
+    if latest_run_status in _IN_FLIGHT_RUN_STATUSES:
         return False
     deadline = incident.get("verify_deadline")
     if deadline is None or deadline >= now:
@@ -151,7 +166,8 @@ async def watcher_loop(interval_seconds: int = 60) -> None:
             for incident in await db.due_incidents(now):
                 try:
                     state = await db.alert_state(incident["id"])
-                    if escalation_due(incident, state, now):
+                    latest_run_status = await db.latest_linked_run_status(incident["id"])
+                    if escalation_due(incident, state, now, latest_run_status=latest_run_status):
                         await escalate(incident)
                 except Exception:  # noqa: BLE001
                     logger.exception(

@@ -136,6 +136,24 @@ Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo`
 
 > **Windows note:** the agent-service binds IPv4; the web app defaults to `http://127.0.0.1:8093` because `localhost` may resolve to IPv6 first and refuse the connection.
 
+### Phase 11 notes (the on-call brain)
+
+- **GitOps notifications stay on their own path.** Argo Rollouts' own
+  `on-rollout-aborted` / `on-analysis-run-failed` notification events still
+  post to `/webhook/gitops` and are handled entirely by the gitops-reporter
+  agent (unchanged since Phase 10) — they never reach the on-call agent's
+  `runbook_lookup`. The on-call agent picks up an aborted/wedged canary
+  through the Grafana-alert path instead: the `rollout-stuck` alert (canary
+  Progressing past its budget, or short on ready replicas), diagnosed with
+  `canary-abort.md`. Two agents, two independent triggers, by design — not a
+  gap to unify.
+- **Flapping alerts open a fresh incident per cycle.** An alert that fires,
+  resolves, then fires again gets a brand-new incident each time it re-fires
+  (the open-incident dedupe key only covers one still-open incident per
+  alert). Debounce/coalescing across flap cycles is reserved for a later
+  pass, not implemented yet — a genuinely flapping alert will show up as
+  several short-lived incidents in the on-call feed rather than one.
+
 ## Development
 
 ```bash

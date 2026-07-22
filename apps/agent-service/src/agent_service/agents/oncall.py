@@ -43,7 +43,7 @@ from typing import Any
 from .. import db, precheck
 from ..config import config
 from ..context import RunContext
-from ..tools import backends
+from ..tools import backends, remediate
 from ..tools import sdk as toolsdk
 from .base import run_agent_session
 
@@ -206,6 +206,10 @@ async def _close_incident(ctx: RunContext, incident_id: str, alert: Any) -> None
             await db.mark_verified(
                 incident_id, now, summary="alert cleared without remediation"
             )
+            await db.add_timeline(
+                incident_id,
+                [(now, "verification", "alert cleared without remediation")],
+            )
         else:  # "deadline" or "leave-open" — recovery not (yet) confirmed
             # ensure_verify_deadline (not set_verify_deadline): must not stomp
             # a deadline the remediation recording already armed, but a
@@ -259,10 +263,21 @@ async def run_oncall(
     )
 
     prompt = _build_prompt(alert, incident_id, escalation, precheck_report=report, runbook_match=match)
-    await run_agent_session(ctx, "oncall", prompt, max_turns=40, allowed_override=allowed_override)
-    # Verify-then-close (Task 10): decided by code from an OBSERVED signal —
-    # never by the model's own narration of success.
-    await _close_incident(ctx, incident_id, alert)
+    try:
+        await run_agent_session(ctx, "oncall", prompt, max_turns=40, allowed_override=allowed_override)
+    finally:
+        # Verify-then-close (Task 10) must run even when the session above
+        # raised (e.g. AgentSessionError from a crashed/max-turns run) —
+        # otherwise a crashed investigation leaves its incident with no
+        # verify_deadline and the escalation watcher can never find it.
+        # _close_incident already never raises and no-ops on a non-open
+        # incident, so this can't mask the original exception; the `finally`
+        # just re-raises it unchanged once closing is done.
+        await _close_incident(ctx, incident_id, alert)
+        # The run is done either way — drop its dry-run stash (remediate.py's
+        # _DRYRUN_STASH) so a finished run's stashed diffs don't linger
+        # forever; nothing else ever evicts a run wholesale.
+        remediate.clear_run_stash(ctx.run_id)
     await ctx.end("completed", summary=f"{incident_id}: {alert.alertname}")
 
 

@@ -83,7 +83,7 @@ automatic matching until frontmatter is added.
 | `snapshot-agent-audit.md` | *(none — on-demand)* | Point-in-time audit-log snapshot, operator-triggered |
 | `k8s-crashloop.md` | `k8s-pod-crashloop`, `k8s-container-waiting` | CrashLoopBackOff / stuck image-pull |
 | `k8s-node-failure.md` | `k8s-node-not-ready` | A cluster node's kubelet is unreachable |
-| `canary-abort.md` | `rollout-stuck`, `on-rollout-aborted`, `on-analysis-run-failed` | Argo Rollouts canary aborted or wedged |
+| `canary-abort.md` | `rollout-stuck` | Argo Rollouts canary aborted or wedged (its own `on-rollout-aborted`/`on-analysis-run-failed` events go to gitops-reporter instead — see the root README's Phase 11 note) |
 | `ci-pipeline-red.md` | `cicd-pipeline-red` | A pipeline run on `main` failed |
 | `stale-secret.md` | `slo-avail-fast`, `gw-5xx` (with a `secret_age` pre-check lead) | Rotated DB credential the workload never restarted to pick up |
 

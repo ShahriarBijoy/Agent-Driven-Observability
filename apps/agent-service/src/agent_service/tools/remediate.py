@@ -25,13 +25,22 @@ Two independent gates sit in front of every mutation:
    Executing for real requires an `approval_id` naming a row in
    `agent_approvals` for THIS run, with `decision == "approved"` and a
    `summary` that contains the SERVER-authored marker
-   (`server_verified_marker`) for that action_id — not merely the bare
-   fingerprint. Only `request_approval` (tools/sdk.py), given an `action_id`
-   with a matching stashed dry-run, ever writes that marker, by appending the
-   stashed diff to the model's prompt before the approval is persisted. A
-   model asserting approval — or pasting a bare action_id — in its own text
-   satisfies neither the marker check nor the stash, which is popped
-   single-use on a successful execute so an approval can't be replayed.
+   (`server_verified_marker`) for that action_id AND the CURRENT stash
+   entry's nonce — not merely the bare fingerprint. Only `request_approval`
+   (tools/sdk.py), given an `action_id` with a matching stashed dry-run, ever
+   writes that marker, by appending the stashed diff to the model's prompt
+   before the approval is persisted. A model asserting approval — or pasting
+   a bare action_id — in its own text satisfies neither the marker check nor
+   the stash, which is popped single-use on a successful execute so an
+   approval can't be replayed.
+
+   Each `_stash_dryrun` call mints a fresh random nonce, so an approval only
+   ever authorizes the dry-run that produced the marker it quotes: re-running
+   an identical dry-run (same action_id, since the fingerprint doesn't cover
+   the nonce) mints a NEW nonce and overwrites the stash entry in place, which
+   silently invalidates every already-approved marker for that action_id —
+   a fresh approval is required rather than being able to replay one
+   approval across repeated identical dry-run/execute rounds.
 """
 
 from __future__ import annotations
@@ -43,7 +52,9 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -129,16 +140,35 @@ _DRYRUN_STASH: dict[str, dict[str, dict]] = {}
 _STASH_CAP_PER_RUN = 16
 
 
-def _stash_dryrun(ctx: RunContext, action_id: str, action: str, target: str, diff: str) -> None:
-    """Record one dry-run result for this run. Caps at `_STASH_CAP_PER_RUN`
-    entries per run, evicting the oldest when a NEW action_id would exceed
-    it (re-dry-running an already-stashed action_id just refreshes its
-    value in place, without consuming a slot)."""
+def _stash_dryrun(ctx: RunContext, action_id: str, action: str, target: str, diff: str) -> str:
+    """Record one dry-run result for this run, keyed by action_id, with a
+    FRESH random nonce every call. Caps at `_STASH_CAP_PER_RUN` entries per
+    run, evicting the oldest when a NEW action_id would exceed it
+    (re-dry-running an already-stashed action_id just refreshes its value —
+    and mints a new nonce — in place, without consuming a slot).
+
+    The nonce is what makes re-arming the stash with an unchanged action_id
+    (identical action+workload+params — the fingerprint alone doesn't change)
+    still invalidate a prior approval: `server_verified_marker` embeds it, so
+    an approval's summary only matches the marker for the dry-run that was
+    live when it was minted, never a later one that happens to share the same
+    action_id. Returns the minted nonce."""
+    nonce = secrets.token_hex(4)
     run_stash = _DRYRUN_STASH.setdefault(ctx.run_id, {})
-    run_stash[action_id] = {"action": action, "target": target, "diff": diff}
+    run_stash[action_id] = {"action": action, "target": target, "diff": diff, "nonce": nonce}
     while len(run_stash) > _STASH_CAP_PER_RUN:
         oldest = next(iter(run_stash))
         del run_stash[oldest]
+    return nonce
+
+
+def clear_run_stash(run_id: str) -> None:
+    """Drop this run's entire dry-run stash. Called once from `agents/
+    oncall.py`'s `run_oncall` (in its `finally`, alongside `_close_incident`)
+    when the run ends — without this, a finished run's stashed diffs sit in
+    `_DRYRUN_STASH` forever, since nothing else ever evicts a run wholesale
+    (only `_stash_dryrun`'s per-run cap evicts individual entries)."""
+    _DRYRUN_STASH.pop(run_id, None)
 
 
 def _peek_dryrun(run_id: str, action_id: str) -> dict | None:
@@ -196,24 +226,30 @@ async def _consume_dryrun(ctx: RunContext, action_id: str, result: dict) -> dict
     return result
 
 
-def server_verified_marker(action_id: str) -> str:
+def server_verified_marker(action_id: str, nonce: str) -> str:
     """The server-controlled substring `_execute_gate` requires an approved
     summary to contain — a model can paste this text into its own prompt,
     but only `request_approval`-with-a-matching-stashed-`action_id` ever
-    puts it there for real, and only alongside the real diff."""
-    return f"--- server-verified dry-run [{action_id}] ---"
+    puts it there for real, and only alongside the real diff. `nonce` binds
+    the marker to ONE specific dry-run: `_stash_dryrun` mints a fresh nonce
+    every call, so a later re-dry-run of the identical action (same
+    action_id) produces a marker that no longer matches an earlier
+    approval's summary."""
+    return f"--- server-verified dry-run [{action_id}:{nonce}] ---"
 
 
 def server_verified_block(run_id: str, action_id: str) -> str | None:
     """The block `request_approval` appends to the model's prompt summary
     when it's given an `action_id` that has a stashed dry-run for this run.
     Returns None when nothing is stashed (unknown action_id, wrong run, or
-    never dry-run) — the caller should refuse rather than fabricate one."""
+    never dry-run) — the caller should refuse rather than fabricate one.
+    Always built from the CURRENT stash entry's nonce, so it reflects
+    whichever dry-run is live right now."""
     entry = _peek_dryrun(run_id, action_id)
     if entry is None:
         return None
     return (
-        f"\n\n{server_verified_marker(action_id)}\n"
+        f"\n\n{server_verified_marker(action_id, entry['nonce'])}\n"
         f"{entry['action']} {entry['target']}\n"
         f"{entry['diff']}"
     )
@@ -255,11 +291,16 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
     from Postgres (db.get_approval) — never trusts anything the model merely
     claims — and requires decision == 'approved' AND the row's summary to
     contain the SERVER marker (`server_verified_marker`) for the exact
-    dry-run action_id, not merely the bare fingerprint: a model can paste a
-    bare action_id into its own prompt, but only `request_approval` ever
-    writes the marker, and only when a real dry-run for that action_id was
-    stashed for this run. Single-use semantics preserved by `_consume_dryrun`,
-    which pops the stash entry only after the mutation succeeds."""
+    dry-run action_id AND the CURRENT stash entry's nonce, not merely the
+    bare fingerprint: a model can paste a bare action_id into its own prompt,
+    but only `request_approval` ever writes the marker, and only when a real
+    dry-run for that action_id was stashed for this run. Checking against the
+    CURRENT entry's nonce (not whatever nonce the approval happened to quote)
+    is what makes a re-dry-run of the identical action invalidate an earlier
+    approval: `_stash_dryrun` overwrites the entry with a fresh nonce, so the
+    marker the earlier approval's summary carries no longer matches. Single-
+    use semantics preserved by `_consume_dryrun`, which pops the stash entry
+    only after the mutation succeeds."""
     deny = {
         "error": "execution requires an approved request_approval whose summary "
         "includes the server-verified dry-run marker for this action_id"
@@ -271,11 +312,12 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
         return deny
     if approval.get("decision") != "approved":
         return deny
-    marker = server_verified_marker(expected_action_id)
+    entry = _peek_dryrun(ctx.run_id, expected_action_id)
+    if entry is None:
+        return {"error": "no server-verified dry-run pending; re-run dry_run"}
+    marker = server_verified_marker(expected_action_id, entry["nonce"])
     if marker not in (approval.get("summary") or ""):
         return deny
-    if _peek_dryrun(ctx.run_id, expected_action_id) is None:
-        return {"error": "no server-verified dry-run pending; re-run dry_run"}
     return None
 
 
@@ -627,7 +669,11 @@ async def update_db_secret(ctx: RunContext, dry_run: bool = True,
     gate = await _execute_gate(ctx, approval_id, aid)
     if gate:
         return gate
-    new_database_url = f"postgres://lab:{new_password}@postgres:5432/observability_lab"
+    # URL-encode the password: it's model/lab-generated and may contain
+    # characters (@, :, /, %, ...) that would otherwise corrupt the URL's own
+    # delimiters (safe="" — every reserved char gets escaped, including '/').
+    encoded_password = urllib.parse.quote(new_password, safe="")
+    new_database_url = f"postgres://lab:{encoded_password}@postgres:5432/observability_lab"
     patch = json.dumps({
         "data": {
             "POSTGRES_PASSWORD": _b64(new_password),

@@ -1,5 +1,5 @@
 ---
-alert_types: [rollout-stuck, Rollout stuck (progressing too long / replicas short), on-rollout-aborted, on-analysis-run-failed]
+alert_types: [rollout-stuck, Rollout stuck (progressing too long / replicas short)]
 tools: [rollout_status, analysisrun_get, deploy_history, gitea_compare, rollout_abort, rollout_promote, rollout_undo]
 hypotheses:
   - The canary's AnalysisRun failed a real metric threshold (error-rate/latency regression in the new revision)
@@ -10,8 +10,12 @@ hypotheses:
 # GitOps canary aborted / analysis failed / rollout stuck
 
 **Trigger:** `rollout-stuck` (Progressing past its 12m budget or short on
-ready replicas), or a gitops-reporter `on-rollout-aborted` /
-`on-analysis-run-failed` event from Argo Rollouts.
+ready replicas) — the only alert that reaches this runbook via
+`runbook_lookup`. Argo Rollouts' own `on-rollout-aborted` /
+`on-analysis-run-failed` notification events go to `/webhook/gitops` and are
+handled entirely by the gitops-reporter agent (see the root README's Phase 11
+note) — they never reach the on-call agent's `runbook_lookup`, so they're not
+listed in this runbook's `alert_types`.
 
 ## Diagnose
 

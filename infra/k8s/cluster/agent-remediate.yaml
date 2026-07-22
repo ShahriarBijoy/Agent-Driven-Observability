@@ -13,6 +13,12 @@
 #     plus get/patch/update on the `scale` subresource specifically
 #     (scale_deployment goes through `kubectl scale`, which is the scale
 #     subresource - not a raw spec.replicas patch).
+#   - ReplicaSets: get/list only - `kubectl rollout history`/`rollout undo`
+#     against a plain Deployment (rollout_undo's diff builder and its execute
+#     path) resolve revisions through the Deployment's ReplicaSets, so the
+#     identity needs read access to them even though it never mutates one.
+#     Rollouts (below) don't need this - Argo Rollouts tracks its own
+#     revision history on the Rollout CR, not via ReplicaSets.
 #   - Rollouts (argoproj.io): get/list/patch on both the Rollout resource and
 #     its `status` subresource - rollout_abort/rollout_promote patch
 #     `.status.abort` / `.status.promoteFull` via `--subresource=status`
@@ -54,6 +60,9 @@ rules:
   - apiGroups: [apps]
     resources: [deployments/scale]
     verbs: [get, patch, update]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
   - apiGroups: [argoproj.io]
     resources: [rollouts, rollouts/status]
     verbs: [get, list, patch]

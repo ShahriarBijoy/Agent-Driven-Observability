@@ -207,7 +207,12 @@ function toOncallIncident(r: Record<string, unknown>, runs: OncallRunRef[]): Onc
 
 /** Newest-first incidents with their alert-storm size and linked runs — the
  * left-pane feed. Awaiting-approval is derived client-side from
- * `runs.some(r => r.status === "awaiting_approval")`, not stored separately. */
+ * `runs.some(r => r.status === "awaiting_approval")`, not stored separately.
+ * `alert_key is not null` scopes this feed to on-call-brain incidents only —
+ * legacy incidents (created before Phase 11, or by a path that never set an
+ * alert_key) have nowhere in the feed's incident_alerts/incident_runs/
+ * incident_timeline machinery to hang data off, and stay visible on
+ * /incidents instead. */
 export async function oncallFeed(limit = 50): Promise<OncallIncident[]> {
   const rows = await safeRows<Record<string, unknown>>(
     () => sql()`
@@ -216,6 +221,7 @@ export async function oncallFeed(limit = 50): Promise<OncallIncident[]> {
              count(a.id) as alert_count, max(a.ts) as last_alert_at
       from incidents i
       left join incident_alerts a on a.incident_id = i.id
+      where i.alert_key is not null
       group by i.id
       order by i.opened_at desc
       limit ${limit}
@@ -227,7 +233,10 @@ export async function oncallFeed(limit = 50): Promise<OncallIncident[]> {
 
 /** One incident's full detail: the machine timeline, the latest linked run's
  * prechecks.md / runbook-match.md artifacts, and any pending approval (found
- * via agent_approvals.decision IS NULL joined through incident_runs). */
+ * via agent_approvals.decision IS NULL joined through incident_runs, scoped
+ * to a run that's still awaiting_approval or running — a decision-less
+ * approval row on a completed/failed/denied run is stale bookkeeping, not
+ * something an operator can still act on). */
 export async function oncallIncidentDetail(id: string): Promise<OncallIncidentDetail | null> {
   const rows = await safeRows<Record<string, unknown>>(
     () => sql()`
@@ -278,7 +287,9 @@ export async function oncallIncidentDetail(id: string): Promise<OncallIncidentDe
           select ap.id as approval_id, ap.run_id, ap.summary
           from agent_approvals ap
           join incident_runs ir on ir.run_id = ap.run_id
+          join agent_runs r on r.id = ap.run_id
           where ir.incident_id = ${id} and ap.decision is null
+            and r.status in ('awaiting_approval', 'running')
           order by ap.requested_at desc
           limit 1
         `,

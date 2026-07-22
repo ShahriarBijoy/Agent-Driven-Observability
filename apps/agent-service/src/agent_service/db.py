@@ -484,6 +484,22 @@ async def incident_was_remediated(incident_id: str) -> bool:
     return row is not None
 
 
+async def latest_linked_run_status(incident_id: str) -> str | None:
+    """Status of the NEWEST agent run linked to this incident (by
+    incident_runs.created_at) — the escalation watcher's guard against
+    spawning a duplicate re-investigation on top of one that's already
+    queued/running/awaiting an operator decision. None when the incident has
+    no linked run at all."""
+    row = await _require_pool().fetchrow(
+        """SELECT ar.status FROM incident_runs ir
+           JOIN agent_runs ar ON ar.id = ir.run_id
+           WHERE ir.incident_id = $1
+           ORDER BY ir.created_at DESC LIMIT 1""",
+        incident_id,
+    )
+    return row["status"] if row else None
+
+
 async def incident_runs_for(incident_id: str) -> list[dict]:
     rows = await _require_pool().fetch(
         """SELECT run_id, kind, created_at FROM incident_runs

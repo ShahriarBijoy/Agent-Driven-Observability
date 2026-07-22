@@ -27,6 +27,21 @@ def test_not_due_before_deadline_or_no_deadline_or_maxed():
     assert not escalation_due({**BASE, "escalations": MAX_ESCALATIONS}, {"last_firing": NOW, "last_resolved": None}, NOW)
 
 
+# ---- latest_run_status: skip incidents an investigation is already working -
+
+
+def test_not_due_when_latest_linked_run_is_in_flight():
+    state = {"last_firing": NOW, "last_resolved": None}
+    for status in ("queued", "running", "awaiting_approval"):
+        assert not escalation_due(BASE, state, NOW, latest_run_status=status), status
+
+
+def test_due_when_latest_linked_run_is_terminal_or_unknown():
+    state = {"last_firing": NOW, "last_resolved": None}
+    for status in ("completed", "failed", "denied", None):
+        assert escalation_due(BASE, state, NOW, latest_run_status=status), status
+
+
 # ---- closing_decision: incidents close on OBSERVED recovery only (Task 10) --
 
 

@@ -518,6 +518,32 @@ _STATELESS = [
 # ---- per-run server (binds ctx into approval + artifact) ---------------------
 
 
+async def request_approval_impl(ctx: RunContext, prompt: str, action_id: str | None) -> dict:
+    """The real body behind the `request_approval` MCP tool, factored out of
+    `build_mcp_server`'s per-run closure so it's directly callable — by the
+    tool wrapper below in production, and by tests that want to exercise the
+    genuine dry-run -> approval -> approval_id flow without going through the
+    Agent SDK's MCP dispatch machinery. When `action_id` names a stashed
+    dry-run for this run, the verified diff block is appended to the prompt
+    BEFORE it's persisted, exactly as the tool contract promises."""
+    if action_id:
+        block = remediate.server_verified_block(ctx.run_id, action_id)
+        if block is None:
+            return {
+                "error": f"no dry-run on record for action_id {action_id!r} on this run — "
+                          "call the remediation tool with dry_run=true first, then pass "
+                          "the action_id it returns here",
+            }
+        prompt = f"{prompt}{block}"
+    decision, approval_id = await ctx.request_approval(prompt)
+    instruction = (
+        "Approved by the operator. Proceed."
+        if decision == "approved"
+        else "Denied by the operator. Do not proceed; stop and explain why."
+    )
+    return {"decision": decision, "approval_id": approval_id, "instruction": instruction}
+
+
 def build_mcp_server(ctx: RunContext):
     @tool(
         "request_approval",
@@ -543,25 +569,8 @@ def build_mcp_server(ctx: RunContext):
         },
     )
     async def _approval(args: dict) -> dict:
-        prompt = args["prompt"]
-        aid = args.get("action_id")
-        if aid:
-            block = remediate.server_verified_block(ctx.run_id, aid)
-            if block is None:
-                return _text(
-                    "request_approval",
-                    {"error": f"no dry-run on record for action_id {aid!r} on this run — "
-                              "call the remediation tool with dry_run=true first, then pass "
-                              "the action_id it returns here"},
-                )
-            prompt = f"{prompt}{block}"
-        decision = await ctx.request_approval(prompt)
-        instruction = (
-            "Approved by the operator. Proceed."
-            if decision == "approved"
-            else "Denied by the operator. Do not proceed; stop and explain why."
-        )
-        return _text("request_approval", {"decision": decision, "instruction": instruction})
+        result = await request_approval_impl(ctx, args["prompt"], args.get("action_id"))
+        return _text("request_approval", result)
 
     # ---- remediation tools (PLAN-2 P11 Task 8) --------------------------------
     # Per-run (need ctx.run_id for the server-side approval gate — see
