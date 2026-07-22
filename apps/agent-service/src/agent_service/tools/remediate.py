@@ -545,7 +545,7 @@ async def _current_db_password() -> tuple[str | None, str | None]:
         return None, "current secret has no POSTGRES_PASSWORD key"
     try:
         return base64.b64decode(encoded).decode("utf-8"), None
-    except Exception as exc:  # noqa: BLE001
+    except UnicodeDecodeError as exc:
         return None, f"could not decode current POSTGRES_PASSWORD: {exc}"
 
 
@@ -564,7 +564,7 @@ async def update_db_secret(ctx: RunContext, dry_run: bool = True,
     if new_password is None:
         return {"error": "no rotated credential found in the vault — nothing to sync"}
 
-    aid = action_id(action, _DB_SECRET_NAME, {})
+    aid = action_id(action, _DB_SECRET_NAME, {"new_sha8": _sha8(new_password)})
 
     if dry_run:
         old_password, read_err = await _current_db_password()

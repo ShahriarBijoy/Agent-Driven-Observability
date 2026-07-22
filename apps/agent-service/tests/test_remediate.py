@@ -1,12 +1,12 @@
-"""agent-remediate: the scoped writer identity for the on-call agent's six
-remediation tools. Every one dry-runs first and fingerprints its action;
-executing for real is gated server-side (`_execute_gate`) on a Postgres
-approval row this run actually collected — the model asserting "approved" in
-its own text is worth nothing without a matching row. `validate_remediation`
-is the hard-deny layer: unknown workload/action, out-of-bounds params, or a
-malformed name refuses regardless of anything else (checked BEFORE any
-kubectl subprocess is ever built, so an injection attempt never reaches
-argv)."""
+"""agent-remediate: the scoped writer identity for the on-call agent's seven
+remediation tools incl. update_db_secret. Every one dry-runs first and
+fingerprints its action; executing for real is gated server-side
+(`_execute_gate`) on a Postgres approval row this run actually collected —
+the model asserting "approved" in its own text is worth nothing without a
+matching row. `validate_remediation` is the hard-deny layer: unknown
+workload/action, out-of-bounds params, or a malformed name refuses
+regardless of anything else (checked BEFORE any kubectl subprocess is ever
+built, so an injection attempt never reaches argv)."""
 
 from __future__ import annotations
 
@@ -577,3 +577,53 @@ async def test_update_db_secret_vault_missing_at_execute_time_too(monkeypatch, t
     )
     result = await remediate.update_db_secret(_FakeCtx(), dry_run=False, approval_id="whatever")
     assert result == {"error": "no rotated credential found in the vault — nothing to sync"}
+
+
+async def test_update_db_secret_vault_empty_or_whitespace(monkeypatch, tmp_path):
+    """Vault file exists but is empty or contains only whitespace — same
+    'nothing to sync' error as if the file were missing."""
+    vault = tmp_path / "db-vault.txt"
+    vault.write_text("   \n  \n", encoding="utf-8")
+    monkeypatch.setattr(
+        remediate, "config",
+        dataclasses.replace(remediate.config, vault_file=str(vault)),
+    )
+    result = await remediate.update_db_secret(_FakeCtx(), dry_run=True)
+    assert result == {"error": "no rotated credential found in the vault — nothing to sync"}
+
+
+async def test_update_db_secret_fingerprint_binds_to_vault_content(
+    fake_kubectl_secret, approvals, monkeypatch
+):
+    """Vault password changes between dry-run and execute: the action_id
+    changes, so the old approval is no longer valid for the new password."""
+    calls, _old_password, original_password = fake_kubectl_secret
+
+    # Step 1: dry-run with password A
+    ctx = _FakeCtx()
+    dry_a = await remediate.update_db_secret(ctx, dry_run=True)
+    aid_a = dry_a["action_id"]
+    block_a = remediate.server_verified_block(ctx.run_id, aid_a)
+    approvals["apr-1"] = {
+        "run_id": "run-1",
+        "decision": "approved",
+        "summary": f"sync db secret from vault{block_a}",
+    }
+
+    # Step 2: vault rotates to password B
+    vault_path = remediate.config.vault_file
+    new_password_b = "different-rotated-pw456"
+    with open(vault_path, "w", encoding="utf-8") as fh:
+        fh.write(new_password_b)
+
+    # Step 3: re-dry-run yields a DIFFERENT action_id (bound to password B)
+    dry_b = await remediate.update_db_secret(ctx, dry_run=True)
+    aid_b = dry_b["action_id"]
+    assert aid_b != aid_a, "action_id should change when vault content changes"
+
+    # Step 4: try to execute with the OLD approval (for password A) → gate rejects
+    # because aid_a is no longer valid (vault changed); the approval carries the
+    # marker for aid_a, not for the current aid_b
+    result = await remediate.update_db_secret(ctx, dry_run=False, approval_id="apr-1")
+    assert "error" in result
+    assert "requires an approved request_approval" in result["error"]
