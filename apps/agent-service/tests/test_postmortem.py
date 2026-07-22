@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import json as jsonlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -226,6 +226,56 @@ async def test_build_timeline_does_not_repersist_rows_already_on_record(monkeypa
     assert persisted == []  # nothing new to persist
 
 
+async def test_build_timeline_skips_k8s_events_when_window_exceeds_max(monkeypatch):
+    """When incident window > 20 hours, skip k8s events entirely to avoid
+    clock-collision mis-dating (HH:MM:SS local time only)."""
+    incident_id = "inc_1"
+    # Set opened_at far in the past so elapsed_minutes > 1200 (20 hours)
+    # Will be capped at MAX_WINDOW_MINUTES = 1440 (24 hours)
+    opened_at = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+    async def _get_incident(iid):
+        return {"opened_at": opened_at}
+
+    async def _get_timeline(iid):
+        return []
+
+    async def _get_alert_obs(iid):
+        return []
+
+    async def _incident_runs_for(iid):
+        return []
+
+    k8s_calls = []
+
+    async def _add_timeline(iid, entries):
+        pass
+
+    async def _deploy_history(window_minutes=180, workload=None):
+        return {"entries": []}
+
+    async def _k8s_events(**kwargs):
+        # Record that this was called; it shouldn't be for wide windows.
+        k8s_calls.append(kwargs)
+        return {"events": [{"time": "10:30:00", "object": "pod/foo", "reason": "Started"}]}
+
+    monkeypatch.setattr(db, "get_incident", _get_incident)
+    monkeypatch.setattr(db, "get_timeline", _get_timeline)
+    monkeypatch.setattr(db, "get_incident_alert_observations", _get_alert_obs)
+    monkeypatch.setattr(db, "incident_runs_for", _incident_runs_for)
+    monkeypatch.setattr(db, "add_timeline", _add_timeline)
+    monkeypatch.setattr(backends, "deploy_history", _deploy_history)
+    monkeypatch.setattr(backends, "k8s_events", _k8s_events)
+
+    result = await postmortem.build_timeline(incident_id, SimpleNamespace(workload=""))
+
+    # k8s_events should never have been called because window > 20h (capped at 1440m)
+    assert len(k8s_calls) == 0
+    # No k8s rows in result
+    sources = [entry[1] for entry in result]
+    assert "k8s" not in sources
+
+
 # ---- log-spike onset parsing (defensive) ---------------------------------------
 
 
@@ -246,6 +296,153 @@ def test_parse_onset_extracts_iso_timestamp_defensively():
 def test_parse_onset_returns_none_when_absent():
     assert postmortem._parse_onset("### log_spike — OK\nerror/failed log rate normal\n") is None
     assert postmortem._parse_onset("") is None
+
+
+# ---- k8s event timestamp reconstruction (defensive) ----
+
+
+def test_k8s_event_ts_same_day_when_clock_is_earlier():
+    """Event's clock is earlier than now → use today's date."""
+    now = datetime(2026, 7, 22, 14, 30, 0, tzinfo=timezone(
+        timedelta(hours=-5)))  # local 2026-07-22 14:30, UTC-5
+    ts = postmortem._k8s_event_ts("10:00:00", now)
+    assert ts is not None
+    # Reconstructed: local 2026-07-22 10:00:00 UTC-5 → UTC 2026-07-22 15:00:00Z
+    assert ts.year == 2026 and ts.month == 7 and ts.day == 22
+
+
+def test_k8s_event_ts_yesterday_when_clock_is_in_future():
+    """Event's clock is later than now → it must be from yesterday (midnight rollback)."""
+    # Use UTC time to avoid timezone conversion issues in testing.
+    # now = 2026-07-22 10:00:00 UTC
+    # When we call astimezone(), it converts to system local. If clock is "14:00:00"
+    # (which would be after the local hour), it's in the future and should roll back.
+    now = datetime(2026, 7, 22, 22, 0, 0, tzinfo=UTC)  # 10 PM UTC
+    ts = postmortem._k8s_event_ts("23:30:00", now)
+    assert ts is not None
+    # If the system is in UTC, this should work: 23:30 > 22:01, so subtract 1 day
+    # 2026-07-21 23:30:00 UTC
+    # But if the system is in a different timezone, the behavior might vary.
+    # So we'll just check that it's before `now`
+    assert ts < now
+
+
+def test_k8s_event_ts_returns_none_on_bad_format():
+    """Parse failures return None; the event is skipped."""
+    now = datetime(2026, 7, 22, 10, 0, 0, tzinfo=UTC)
+    assert postmortem._k8s_event_ts("invalid", now) is None
+    assert postmortem._k8s_event_ts("", now) is None
+    assert postmortem._k8s_event_ts(None, now) is None
+
+
+# ---- log-spike onset wiring (db integration) -----------------------------------
+
+
+async def test_log_spike_onset_wiring_finds_artifact_and_parses_timestamp(monkeypatch):
+    """_log_spike_onset queries db for runs, finds a prechecks.md artifact
+    with an onset line, and returns the parsed TimelineEntry."""
+    incident_id = "inc_1"
+    run_id = "run_1"
+    prechecks_text = (
+        "### log_spike — LEAD\n"
+        "error rate 10x baseline — "
+        "onset: msg=\"connection timeout\" at 2026-07-22T10:05:30+00:00\n"
+    )
+
+    async def _incident_runs_for(iid):
+        assert iid == incident_id
+        return [{"run_id": run_id}]
+
+    class _FakeArtifact:
+        def __init__(self, name, content):
+            self.name = name
+            self.content = content
+
+    class _FakeRun:
+        def __init__(self):
+            self.artifacts = [_FakeArtifact("prechecks.md", prechecks_text)]
+
+    async def _get_run(run_id_param):
+        if run_id_param == run_id:
+            return _FakeRun()
+        return None
+
+    monkeypatch.setattr(db, "incident_runs_for", _incident_runs_for)
+    monkeypatch.setattr(db, "get_run", _get_run)
+
+    result = await postmortem._log_spike_onset(incident_id)
+
+    assert result is not None
+    ts, source, label = result
+    assert ts == datetime(2026, 7, 22, 10, 5, 30, tzinfo=UTC)
+    assert source == "log-spike"
+    assert "connection timeout" in label
+
+
+async def test_log_spike_onset_wiring_handles_missing_artifact(monkeypatch):
+    """When no prechecks.md artifact exists or none has an onset, return None
+    without crashing."""
+    incident_id = "inc_1"
+    run_id = "run_1"
+
+    async def _incident_runs_for(iid):
+        return [{"run_id": run_id}]
+
+    class _FakeRun:
+        def __init__(self):
+            # No artifacts, or an artifact with no onset line
+            self.artifacts = []
+
+    async def _get_run(run_id_param):
+        if run_id_param == run_id:
+            return _FakeRun()
+        return None
+
+    monkeypatch.setattr(db, "incident_runs_for", _incident_runs_for)
+    monkeypatch.setattr(db, "get_run", _get_run)
+
+    result = await postmortem._log_spike_onset(incident_id)
+
+    assert result is None
+
+
+async def test_log_spike_onset_wiring_skips_missing_runs(monkeypatch):
+    """If db.get_run returns None for a run_id, skip it gracefully."""
+    incident_id = "inc_1"
+    run_id_1 = "run_1"
+    run_id_2 = "run_2"
+
+    async def _incident_runs_for(iid):
+        # Two runs, but the first returns None from db.get_run
+        return [{"run_id": run_id_1}, {"run_id": run_id_2}]
+
+    prechecks_text = "onset: x at 2026-07-22T10:10:00+00:00\n"
+
+    class _FakeArtifact:
+        def __init__(self, name, content):
+            self.name = name
+            self.content = content
+
+    class _FakeRun:
+        def __init__(self):
+            self.artifacts = [_FakeArtifact("prechecks.md", prechecks_text)]
+
+    async def _get_run(run_id_param):
+        if run_id_param == run_id_1:
+            return None  # First run not found
+        if run_id_param == run_id_2:
+            return _FakeRun()
+        return None
+
+    monkeypatch.setattr(db, "incident_runs_for", _incident_runs_for)
+    monkeypatch.setattr(db, "get_run", _get_run)
+
+    result = await postmortem._log_spike_onset(incident_id)
+
+    # Should find the onset from run_2 despite run_1 being missing
+    assert result is not None
+    ts, source, label = result
+    assert source == "log-spike"
 
 
 # ---- open_postmortem_pr_impl: Gitea REST flow ----------------------------------
@@ -367,10 +564,13 @@ async def test_open_postmortem_pr_surfaces_existing_pr_gracefully(monkeypatch):
     _wire_gitea(monkeypatch, client)
     _wire_incident(monkeypatch)
 
-    result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "gateway-oom")
+    ctx = _FakeCtx()
+    result = await postmortem.open_postmortem_pr_impl(ctx, "narrative", "gateway-oom")
 
     assert "error" in result and "already exists" in result["error"]
     assert result["file"] == "postmortems/2026-07-22-gateway-oom.md"
+    # Artifact saved even on PR-open failure (aids debugging)
+    assert ctx.artifacts and ctx.artifacts[0][0] == "postmortem.md"
 
 
 async def test_open_postmortem_pr_tolerates_branch_already_existing(monkeypatch):

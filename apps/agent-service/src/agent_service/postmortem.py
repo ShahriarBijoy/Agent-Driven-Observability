@@ -60,6 +60,12 @@ _ONSET_RE = re.compile(
     r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))"
 )
 
+# k8s_events only reports HH:MM:SS local time, no date. When reconstructing
+# against `now`, two events with colliding clock strings ~24h apart are
+# indistinguishable. If the incident window exceeds this threshold, omitting
+# k8s-event rows entirely is better than mis-dating them.
+_K8S_EVENTS_MAX_WINDOW_HOURS = 20
+
 
 def _window_minutes(opened_at: Any, now: datetime) -> int:
     if not isinstance(opened_at, datetime):
@@ -186,16 +192,18 @@ async def build_timeline(incident_id: str, alert: Any) -> list[TimelineEntry]:
         if ts is not None:
             fresh.append((ts, f"deploy:{item.get('source', '?')}", item.get("summary", "")))
 
-    try:
-        k8s = await backends.k8s_events(namespace="subject", range=f"{window_minutes}m", limit=100)
-    except Exception:  # noqa: BLE001
-        k8s = {}
-    events = k8s.get("events") if isinstance(k8s, dict) else None
-    for event in events or []:
-        ts = _k8s_event_ts(event.get("time", ""), now)
-        if ts is not None:
-            label = f"{event.get('object', '?')}: {event.get('reason') or event.get('message') or ''}".strip()
-            fresh.append((ts, "k8s", label))
+    # Skip k8s events when the window exceeds the max—clock-collision protection.
+    if window_minutes <= _K8S_EVENTS_MAX_WINDOW_HOURS * 60:
+        try:
+            k8s = await backends.k8s_events(namespace="subject", range=f"{window_minutes}m", limit=100)
+        except Exception:  # noqa: BLE001
+            k8s = {}
+        events = k8s.get("events") if isinstance(k8s, dict) else None
+        for event in events or []:
+            ts = _k8s_event_ts(event.get("time", ""), now)
+            if ts is not None:
+                label = f"{event.get('object', '?')}: {event.get('reason') or event.get('message') or ''}".strip()
+                fresh.append((ts, "k8s", label))
 
     onset = await _log_spike_onset(incident_id)
     if onset is not None:
@@ -379,6 +387,8 @@ async def open_postmortem_pr_impl(ctx: Any, narrative_md: str, slug: str) -> dic
 
     pr_result = await backends.gitea_open_pr(branch, "main", f"Postmortem: {title}", "")
     if "error" in pr_result:
+        # Still save the composed markdown as artifact even on PR-open failure — aids debugging.
+        await ctx.add_artifact(name="postmortem.md", media_type="text/markdown", content=document)
         # Surfaced gracefully, same as gitea_open_pr's own callers do: an
         # existing PR (or nothing to diff) is reported, not raised.
         return {"error": pr_result["error"], "file": filename}
