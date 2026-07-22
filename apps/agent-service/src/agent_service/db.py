@@ -496,6 +496,22 @@ async def bump_escalations(incident_id: str) -> int:
     return row["escalations"] if row else 0
 
 
+async def latest_firing_alert(incident_id: str) -> dict | None:
+    """Most recent firing observation recorded against an incident —
+    escalation.py rebuilds the AlertEvent from its stored `payload` JSONB."""
+    row = await _require_pool().fetchrow(
+        """SELECT * FROM incident_alerts WHERE incident_id = $1 AND status = 'firing'
+           ORDER BY ts DESC LIMIT 1""",
+        incident_id,
+    )
+    if row is None:
+        return None
+    d = dict(row)
+    if isinstance(d.get("payload"), str):
+        d["payload"] = json.loads(d["payload"])
+    return d
+
+
 async def due_incidents(now: datetime) -> list[dict]:
     """Open incidents whose verify_deadline has passed — the scheduler's poll
     query for incidents that need a re-check or re-escalation."""

@@ -1,0 +1,27 @@
+"""Tests for the re-escalation watcher (PLAN-2 P11, Task 4): a still-firing
+alert past its verification deadline spawns a NEW linked investigation
+instead of being silently swallowed by /webhook/alerts' dedupe."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from agent_service.escalation import MAX_ESCALATIONS, escalation_due
+
+NOW = datetime(2026, 7, 22, 2, 0, tzinfo=timezone.utc)
+BASE = {"id": "inc_1", "status": "open", "verify_deadline": NOW - timedelta(minutes=1), "escalations": 0}
+
+
+def test_due_when_past_deadline_and_still_firing():
+    assert escalation_due(BASE, {"last_firing": NOW, "last_resolved": None}, NOW)
+
+
+def test_not_due_when_resolved_after_last_firing():
+    st = {"last_firing": NOW - timedelta(minutes=5), "last_resolved": NOW}
+    assert not escalation_due(BASE, st, NOW)
+
+
+def test_not_due_before_deadline_or_no_deadline_or_maxed():
+    assert not escalation_due({**BASE, "verify_deadline": NOW + timedelta(minutes=5)}, {"last_firing": NOW, "last_resolved": None}, NOW)
+    assert not escalation_due({**BASE, "verify_deadline": None}, {"last_firing": NOW, "last_resolved": None}, NOW)
+    assert not escalation_due({**BASE, "escalations": MAX_ESCALATIONS}, {"last_firing": NOW, "last_resolved": None}, NOW)

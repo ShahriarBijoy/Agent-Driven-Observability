@@ -14,6 +14,7 @@ Plus triggered entrypoints added in later milestones (dashboard, webhook, etc.).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db
+from . import escalation
 from . import ingress
 from . import settings as settings_store
 from .agents.autofix import run_autofixer
@@ -65,7 +67,11 @@ CHAT_AGENTS: dict[str, ChatAgent] = {
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_telemetry()
     await db.init_pool()
+    watcher_task = asyncio.create_task(escalation.watcher_loop())
     yield
+    watcher_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watcher_task
     await backends.close_http()
     await db.close_pool()
 

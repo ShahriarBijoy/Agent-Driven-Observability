@@ -1,19 +1,22 @@
 """On-call agent — triggered when an alert maps to a runbook-carrying
-workload (phase-11 Task 3, `ingress.py`, not built yet). Investigates from
-pre-check leads injected into the conversation, consults the matched
-runbook, correlates with deploy history, proposes a dry-run remediation
-gated behind `request_approval`, executes it once approved, re-verifies
-recovery via `alert_status`, and closes the loop with `open_postmortem_pr`.
+workload (phase-11 Task 3, `ingress.py`). Investigates from pre-check leads
+injected into the conversation, consults the matched runbook, correlates with
+deploy history, proposes a dry-run remediation gated behind
+`request_approval`, executes it once approved, re-verifies recovery via
+`alert_status`, and closes the loop with `open_postmortem_pr`.
 
-`AlertEvent` doesn't exist yet — Task 3 (`ingress.py`) defines it. `alert` is
-therefore typed loosely here (`Any`) and used only via duck-typed attribute
-access: `.alertname`, `.summary`, `.severity`, `.tenant`, plus whatever
-`.labels` / `.annotations` mappings it carries. Do not import from
-`ingress` — it doesn't exist and this module must not create it.
+`alert` (an `ingress.AlertEvent`) is typed loosely here (`Any`) so this module
+never has to import `ingress` — used only via duck-typed attribute access:
+`.alertname`, `.summary`, `.severity`, `.tenant`, plus whatever `.labels` /
+`.annotations` mappings it carries.
 
-This is the orchestration skeleton only: pre-check injection, runbook-driven
-`allowed_override` narrowing, and closing verification are wired in later
-tasks (5, 6, 10).
+`escalation` (Task 4, `escalation.py`'s `escalate()`) is
+`{"prior_diagnosis": str, "attempt": int}` when this run is a re-escalation
+of a still-firing, past-deadline incident — `_ESCALATION_FRAME` is the exact
+framing both the banner and the prompt surface to the model.
+
+This is the orchestration skeleton only: pre-check injection and
+runbook-driven `allowed_override` narrowing are wired in later tasks (5, 6).
 """
 
 from __future__ import annotations
@@ -25,13 +28,21 @@ from ..context import RunContext
 from .base import run_agent_session
 
 
+_ESCALATION_FRAME = (
+    "Prior diagnosis + continued impact — the earlier fix did not restore service "
+    "(attempt {attempt}). Re-examine, and check whether the fix itself is stuck "
+    "(e.g. a red CI pipeline)."
+)
+
+
 def _alert_banner(alert: Any, escalation: dict | None) -> str:
-    """One-line summary for the run's user-message log."""
+    """One-line summary for the run's user-message log.
+
+    escalation (Task 4, escalation.py): {"prior_diagnosis": str, "attempt": int}.
+    """
     banner = f"On-call page: {alert.alertname} ({alert.severity}) — {alert.summary}"
     if escalation:
-        level = escalation.get("level")
-        if level is not None:
-            banner += f"\nEscalation: attempt {level}"
+        banner += "\n" + _ESCALATION_FRAME.format(attempt=escalation.get("attempt", "?"))
     return banner
 
 
@@ -48,10 +59,11 @@ def _build_prompt(alert: Any, incident_id: str, escalation: dict | None) -> str:
     }
     escalation_note = ""
     if escalation:
+        prior = escalation.get("prior_diagnosis") or "(no prior diagnosis recorded)"
         escalation_note = (
-            f"\n\nThis is an ESCALATION (attempt {escalation.get('level', '?')}) — a prior "
-            "on-call pass did not resolve this incident. Do not repeat a remediation that "
-            "already failed without a new hypothesis backed by new evidence."
+            "\n\n" + _ESCALATION_FRAME.format(attempt=escalation.get("attempt", "?"))
+            + " Do not repeat a remediation that already failed without a new hypothesis "
+            f"backed by new evidence.\n\nPrior diagnosis:\n{prior}"
         )
     return (
         f"Incident {incident_id}: an alert fired and it's your page.\n\n"
