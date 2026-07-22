@@ -382,6 +382,30 @@ async def _grafana_annotations(args: dict) -> dict:
 
 
 @tool(
+    "deploy_history",
+    "Merged chronological deploy/change timeline across Grafana annotations, CI runs, "
+    "Argo sync history, and rollout revisions — check this FIRST for any incident.",
+    {
+        "type": "object",
+        "properties": {
+            "window_minutes": {"type": "integer",
+                                "description": "lookback in minutes (default 180)"},
+            "workload": {"type": "string",
+                         "description": "narrow to one workload (gateway, model-proxy, ...); "
+                                        "omit for everything"},
+        },
+    },
+)
+async def _deploy_history(args: dict) -> dict:
+    return _text(
+        "deploy_history",
+        await backends.deploy_history(
+            int(args.get("window_minutes", 180)), args.get("workload")
+        ),
+    )
+
+
+@tool(
     "gitea_open_pr",
     "Open a pull request on the local Gitea forge (obs/obs-lab) from an ALREADY-PUSHED "
     "branch via the REST API. Use when a branch exists on the forge but has no PR (e.g. a "
@@ -474,7 +498,7 @@ async def _analysisrun(args: dict) -> dict:
 _STATELESS = [
     _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook, _runbook_lookup,
     _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
-    _gitea_pr, _argo_app, _rollout_status, _analysisrun,
+    _gitea_pr, _argo_app, _rollout_status, _analysisrun, _deploy_history,
 ]
 
 
@@ -599,9 +623,12 @@ K8S_READ_TOOLS = [
 CLUSTER_READ_TOOLS = [*K8S_READ_TOOLS, mcp("k8s_events"), mcp("kubectl_read")]
 
 # Delivery history (PLAN-2 P9): deploy annotations + CI runs + diffs — the
-# "what changed right before this?" axis of an investigation.
+# "what changed right before this?" axis of an investigation. deploy_history
+# (P11 Task 7) is the merged view across this AND the gitops surface below —
+# it belongs in every toolset that already carries both.
 DELIVERY_READ_TOOLS = [
     mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
+    mcp("deploy_history"),
 ]
 
 # The gitops surface (P10): Application/Rollout/AnalysisRun CR reads —
@@ -732,6 +759,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Argo Rollout canary state: phase, step, hashes, replicas"},
     {"name": mcp("analysisrun_get"), "kind": "mcp",
      "description": "AnalysisRun verdicts with measurements verbatim"},
+    {"name": mcp("deploy_history"), "kind": "mcp",
+     "description": "Merged chronological deploy/change timeline (annotations+CI+Argo+rollouts)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",

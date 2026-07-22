@@ -530,6 +530,7 @@ TOOL_BUDGETS: dict[str, int] = {
     "kubectl_read": 8000,
     "gitea_compare": 12000,
     "runbook_lookup": 8000,
+    "deploy_history": 10000,
 }
 DEFAULT_TOOL_BUDGET = 6000
 
@@ -1187,3 +1188,158 @@ async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) 
                 "count": len(annotations), "annotations": annotations}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"grafana annotations query failed: {exc}"}
+
+
+# ---- deploy_history (PLAN-2 P11 Task 7): the correlation primitive ----------
+#
+# Merges four already-shaped sources into one chronological timeline.
+# Annotations and CI runs are treated as environment-wide ("source-agnostic"):
+# always kept regardless of `workload`. Argo apps and Rollouts each carry a
+# workload identity (app/rollout name) and are filtered against `workload`
+# when given. Individual source outages are skipped and named in
+# deploy_history's "sources_unavailable" — merge_history itself is pure.
+
+_DEPLOY_HISTORY_ROLLOUTS = ("gateway", "model-proxy")
+_DEPLOY_HISTORY_CAP = 40
+
+
+def merge_history(
+    annotations: list,
+    ci_runs: list,
+    argo_apps: list,
+    rollouts: list,
+    window_minutes: int,
+    workload: str | None,
+) -> dict:
+    """Pure merge of the four source shapes into one timeline, sorted
+    newest-first and capped at 40 entries. Each entry: ts, source
+    (annotation|ci|argo|rollout), summary (<=200 chars), ref."""
+    needle = workload.strip().lower() if workload and workload.strip() else None
+    entries: list[dict[str, Any]] = []
+
+    for ann in annotations or []:
+        ts = ann.get("time")
+        if not ts:
+            continue
+        text = (ann.get("text") or "").strip() or "deploy annotation"
+        tags = ann.get("tags") or []
+        entries.append({
+            "ts": ts,
+            "source": "annotation",
+            "summary": text[:200],
+            "ref": ",".join(str(t) for t in tags),
+        })
+
+    for run in ci_runs or []:
+        ts = run.get("started_at")
+        if not ts:
+            continue
+        status = run.get("conclusion") or run.get("status") or "unknown"
+        branch = run.get("branch") or ""
+        title = (run.get("title") or "").strip()
+        head = f"CI run #{run.get('run_number')} {status} on {branch}".strip()
+        summary = f"{head}: {title}" if title else head
+        entries.append({
+            "ts": ts,
+            "source": "ci",
+            "summary": summary[:200],
+            "ref": run.get("sha") or run.get("url") or "",
+        })
+
+    for app in argo_apps or []:
+        app_name = str(app.get("app") or "")
+        if needle and needle not in app_name.lower():
+            continue
+        for h in (app.get("history") or []):
+            ts = h.get("deployedAt") or h.get("deployStartedAt")
+            if not ts:
+                continue
+            revision = h.get("revision") or ""
+            entries.append({
+                "ts": ts,
+                "source": "argo",
+                "summary": f"{app_name} synced to {revision}"[:200],
+                "ref": revision,
+            })
+
+    for ro in rollouts or []:
+        name = str(ro.get("rollout") or "")
+        if needle and needle not in name.lower():
+            continue
+        ts = ro.get("ts")
+        if not ts:
+            continue
+        phase = ro.get("phase") or "unknown"
+        step = ro.get("step") or ""
+        aborted = " ABORTED" if ro.get("aborted") else ""
+        entries.append({
+            "ts": ts,
+            "source": "rollout",
+            "summary": f"{name} rollout {phase} (step {step}){aborted}".strip()[:200],
+            "ref": ro.get("canaryHash") or ro.get("stableHash") or "",
+        })
+
+    entries.sort(key=lambda e: e["ts"], reverse=True)
+    entries = entries[:_DEPLOY_HISTORY_CAP]
+    return {"window_minutes": window_minutes, "entries": entries, "count": len(entries)}
+
+
+async def deploy_history(window_minutes: int = 180, workload: str | None = None) -> dict:
+    """Merged chronological deploy/change timeline across Grafana
+    annotations, CI runs, Argo sync history, and rollout revisions — check
+    this FIRST for any incident. Never raises: a source that fails is skipped
+    and named in "sources_unavailable"."""
+    window_minutes = max(1, window_minutes)
+    sources_unavailable: list[str] = []
+
+    async def _try(coro: Any) -> Any:
+        try:
+            return await coro
+        except Exception as exc:  # noqa: BLE001 — one source outage must not sink the merge
+            return {"error": str(exc)}
+
+    ann_res, ci_res, argo_slim_res = await asyncio.gather(
+        _try(grafana_annotations(range=f"{window_minutes}m")),
+        _try(gitea_ci_runs(limit=10)),
+        _try(argo_app("")),
+    )
+
+    annotations: list = []
+    if isinstance(ann_res, dict) and "error" not in ann_res:
+        annotations = ann_res.get("annotations") or []
+    else:
+        sources_unavailable.append("annotation")
+
+    ci_runs: list = []
+    if isinstance(ci_res, dict) and "error" not in ci_res:
+        ci_runs = ci_res.get("runs") or []
+    else:
+        sources_unavailable.append("ci")
+
+    argo_apps: list = []
+    if isinstance(argo_slim_res, dict) and "error" not in argo_slim_res:
+        app_names = [a.get("app") for a in (argo_slim_res.get("apps") or []) if a.get("app")]
+        if app_names:
+            per_app = await asyncio.gather(*[_try(argo_app(n)) for n in app_names])
+            argo_apps = [a for a in per_app if isinstance(a, dict) and "error" not in a]
+            if not argo_apps:
+                sources_unavailable.append("argo")
+        # else: the cluster simply has no Applications yet — not an outage.
+    else:
+        sources_unavailable.append("argo")
+
+    rollouts: list = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rollout_results = await asyncio.gather(
+        *[_try(rollout_status(n)) for n in _DEPLOY_HISTORY_ROLLOUTS]
+    )
+    for res in rollout_results:
+        if isinstance(res, dict) and "error" not in res:
+            rollouts.append({**res, "ts": now_iso})
+    if not rollouts:
+        sources_unavailable.append("rollout")
+
+    merged = merge_history(annotations, ci_runs, argo_apps, rollouts, window_minutes, workload)
+    if sources_unavailable:
+        merged["sources_unavailable"] = sources_unavailable
+    return merged
