@@ -711,8 +711,10 @@ try {
 
                 $pw = "rotated-$(Get-Random)"
                 Write-Step 'rotating the in-cluster lab Postgres password (the K8s Secret is NOT touched)'
-                $psqlCmd = "kubectl exec -n subject deploy/postgres -- psql -U lab -d observability_lab -c ""ALTER USER lab WITH PASSWORD '$pw'"""
-                ssh -o BatchMode=yes "root@$vm" $psqlCmd
+                # Pipe the SQL via stdin: inline -c quoting does not survive the
+                # PowerShell -> ssh -> kubectl exec argv layers on Windows.
+                $sql = "ALTER USER lab WITH PASSWORD '$pw';"
+                $sql | ssh -o BatchMode=yes "root@$vm" 'kubectl exec -i -n subject deploy/postgres -- psql -U lab -d observability_lab'
                 if ($LASTEXITCODE -ne 0) { Write-Warning 'password rotation over ssh failed'; break }
 
                 $vaultDir = Join-Path $Repo 'apps\agent-service\.secrets'
