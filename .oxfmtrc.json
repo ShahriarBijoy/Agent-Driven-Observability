@@ -1,3 +1,9 @@
 {
-  "ignorePatterns": ["**/dist/**", "**/.turbo/**", "**/node_modules/**", "**/routeTree.gen.ts"]
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.turbo/**",
+    "**/node_modules/**",
+    "**/routeTree.gen.ts",
+    "postmortems/*.md"
+  ]
 }
