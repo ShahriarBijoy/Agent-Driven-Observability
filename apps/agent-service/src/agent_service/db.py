@@ -223,6 +223,16 @@ async def add_approval(run_id: str, approval: Approval) -> None:
     await touch(run_id)
 
 
+async def get_approval(run_id: str, approval_id: str) -> dict | None:
+    """One approval row by (run_id, id) — the server-side execution gate
+    (tools.remediate._execute_gate) reads `decision`/`summary` here directly
+    instead of trusting anything the model claims about its own approval."""
+    row = await _require_pool().fetchrow(
+        "SELECT * FROM agent_approvals WHERE run_id = $1 AND id = $2", run_id, approval_id,
+    )
+    return dict(row) if row else None
+
+
 async def decide_approval(run_id: str, approval_id: str, decision: str) -> bool:
     row = await _require_pool().fetchrow(
         """UPDATE agent_approvals

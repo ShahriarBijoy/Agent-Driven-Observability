@@ -53,7 +53,11 @@
                              monitoring (install/upgrade the k8s-monitoring chart from
                              infra/k8s/monitoring/values.yaml - P8 telemetry),
                              argo (install/upgrade Argo CD + Argo Rollouts from
-                             infra/k8s/{argocd,rollouts}/values.yaml - P10 delivery).
+                             infra/k8s/{argocd,rollouts}/values.yaml - P10 delivery),
+                             agent-kubeconfig (mint the agent-ro 168h read-only kubeconfig),
+                             agent-remediate-kubeconfig (mint the agent-remediate 168h
+                             kubeconfig - the on-call agent's scoped writer identity,
+                             namespace `subject` + one named Secret - P11 Task 8).
     obs ci <sub>             CI layer on the VM (Profile A): Gitea + Actions runner +
                              ci-shim (P9). Subcommands: up (ship source, compose up,
                              bootstrap admin/token/runner), down, logs [svc],
@@ -873,6 +877,49 @@ current-context: agent-ro@obs-lab
 "@ | Set-Content -Encoding ascii $dest
                     Write-Step "wrote $dest (valid 168h)"
                 }
+                'agent-remediate-kubeconfig' {
+                    # Week-long SCOPED WRITER kubeconfig for the on-call agent's
+                    # six remediation tools (PLAN-2 P11 Task 8) - namespace
+                    # `subject` + one named Secret only (infra/k8s/cluster/
+                    # agent-remediate.yaml), never handed to the model as an MCP
+                    # server (tools/remediate.py shells out to it directly,
+                    # fixed-argv). Apply the RBAC first so a fresh cluster (or
+                    # one that predates this task) gets the Role/SA/Binding
+                    # before the token mint below can succeed.
+                    kubectl --kubeconfig $kubeconfig apply -f infra/k8s/cluster/agent-remediate.yaml | Out-Null
+                    $tok = (ssh -o BatchMode=yes "root@$vm" 'kubectl create token agent-remediate -n kube-system --duration=168h').Trim()
+                    if ($LASTEXITCODE -ne 0 -or -not $tok) { throw 'token mint failed - is the cluster up (obs k8s up)?' }
+                    $caLine = (Get-Content $kubeconfig | Where-Object { $_ -match 'certificate-authority-data:' } | Select-Object -First 1)
+                    $ca = ($caLine -split ':\s*', 2)[1].Trim()
+                    $dest = Join-Path $Repo 'apps\agent-service\.kube\agent-remediate.yaml'
+                    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+                    @"
+# Scoped writer cluster access for the on-call agent's remediation tools
+# (Role scoped to namespace subject + one named Secret; see
+# infra/k8s/cluster/agent-remediate.yaml). Minted $(Get-Date -Format s) for
+# 168h by 'obs k8s agent-remediate-kubeconfig' - rerun to rotate. NOT tracked
+# by git. Never load this as an MCP server - only tools/remediate.py's
+# fixed-argv kubectl subprocess uses it.
+apiVersion: v1
+kind: Config
+clusters:
+  - name: obs-lab
+    cluster:
+      server: https://${vm}:$($Ports.OBS_K3D_API_PORT)
+      certificate-authority-data: $ca
+users:
+  - name: agent-remediate
+    user:
+      token: $tok
+contexts:
+  - name: agent-remediate@obs-lab
+    context:
+      cluster: obs-lab
+      user: agent-remediate
+current-context: agent-remediate@obs-lab
+"@ | Set-Content -Encoding ascii $dest
+                    Write-Step "wrote $dest (valid 168h)"
+                }
                 'monitoring' {
                     # P8: kube-state-metrics + cadvisor/kubelet + events + pod
                     # logs -> the laptop's Mimir/Loki (see values.yaml for the
@@ -957,7 +1004,7 @@ current-context: agent-ro@obs-lab
                     Write-Host "NOTE 'docker system prune' on the VM while the cluster is STOPPED deletes it."
                     Write-Host "     Stop order for quitting Docker Desktop locally is irrelevant to the VM cluster."
                 }
-                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|argo|node-stop|node-start)" }
+                default { Write-Warning "unknown: obs k8s $sub (up|down|delete|status|build|deploy|smoke|monitoring|argo|node-stop|node-start|agent-kubeconfig|agent-remediate-kubeconfig)" }
             }
         }
 

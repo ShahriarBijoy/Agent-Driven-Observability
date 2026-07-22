@@ -16,7 +16,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from ..config import config
 from ..context import RunContext
-from . import backends
+from . import backends, remediate
 from .validation import safe_artifact_name
 
 SERVER = "obslab"
@@ -527,6 +527,119 @@ def build_mcp_server(ctx: RunContext):
         )
         return _text("request_approval", {"decision": decision, "instruction": instruction})
 
+    # ---- remediation tools (PLAN-2 P11 Task 8) --------------------------------
+    # Per-run (need ctx.run_id for the server-side approval gate — see
+    # remediate._execute_gate). Every one defaults to dry_run=True: that path
+    # only reads live state and returns a diff + action_id fingerprint, never
+    # mutates. Setting dry_run=false requires approval_id naming a Postgres
+    # approval row for THIS run whose summary quotes that exact action_id back
+    # — enforced server-side in remediate.py, not by anything the model says.
+
+    _REMEDIATE_COMMON = {
+        "dry_run": {
+            "type": "boolean",
+            "description": "default true: read-only, returns a diff + action_id. "
+                            "Set false only after request_approval returned 'approved' "
+                            "with this action_id, and pass approval_id.",
+        },
+        "approval_id": {
+            "type": "string",
+            "description": "the approval id from request_approval; required when dry_run=false",
+        },
+    }
+
+    def _remediate_schema(extra: dict[str, Any], required: list[str]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "workload": {
+                    "type": "string",
+                    "description": "gateway | model-proxy | retriever | embedder | load-generator",
+                },
+                **extra,
+                **_REMEDIATE_COMMON,
+            },
+            "required": ["workload", *required],
+        }
+
+    @tool(
+        "rollout_undo",
+        "Roll deployment/<workload> back to its previous revision (kubectl rollout undo). "
+        "dry_run (default true) reads the current vs previous revision and their images "
+        "without changing anything.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_undo(args: dict) -> dict:
+        return _text("rollout_undo", await remediate.rollout_undo(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "rollout_abort",
+        "Abort the Argo Rollout canary in progress for <workload> (merge-patches the Rollout's "
+        "status subresource with status.abort=true). dry_run (default true) reports the current "
+        "phase/step and the exact patch that would be applied.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_abort(args: dict) -> dict:
+        return _text("rollout_abort", await remediate.rollout_abort(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "rollout_promote",
+        "Fully promote the Argo Rollout for <workload>, skipping remaining steps/analysis "
+        "(status.promoteFull=true, clearing spec.paused). dry_run (default true) reports the "
+        "current phase/step and the exact patches that would be applied.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_promote(args: dict) -> dict:
+        return _text("rollout_promote", await remediate.rollout_promote(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "scale_deployment",
+        "Scale deployment/<workload> to `replicas` (0..6). dry_run (default true) reads the "
+        "live replica count first and returns a diff like 'spec.replicas: 2 -> 4'.",
+        _remediate_schema(
+            {"replicas": {"type": "integer", "description": "target replica count, 0..6"}},
+            ["replicas"],
+        ),
+    )
+    async def _scale_deployment(args: dict) -> dict:
+        return _text("scale_deployment", await remediate.scale_deployment(
+            ctx, args["workload"], int(args["replicas"]),
+            bool(args.get("dry_run", True)), args.get("approval_id"),
+        ))
+
+    @tool(
+        "patch_memory_limit",
+        "Patch deployment/<workload>'s container memory limit to `memory_mi` MiB (64..2048). "
+        "dry_run (default true) reads the live limit first and returns a diff like "
+        "'limits.memory: 512Mi -> 1024Mi'.",
+        _remediate_schema(
+            {"memory_mi": {"type": "integer", "description": "target memory limit in MiB, 64..2048"}},
+            ["memory_mi"],
+        ),
+    )
+    async def _patch_memory_limit(args: dict) -> dict:
+        return _text("patch_memory_limit", await remediate.patch_memory_limit(
+            ctx, args["workload"], int(args["memory_mi"]),
+            bool(args.get("dry_run", True)), args.get("approval_id"),
+        ))
+
+    @tool(
+        "restart_workload",
+        "Rolling-restart deployment/<workload> (stamps a restartedAt annotation; no spec "
+        "change). dry_run (default true) describes the patch without applying it.",
+        _remediate_schema({}, []),
+    )
+    async def _restart_workload(args: dict) -> dict:
+        return _text("restart_workload", await remediate.restart_workload(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
     @tool(
         "gh_open_pr",
         "Open a pull request from the contained workspace clone. Edit files directly with Edit "
@@ -591,7 +704,14 @@ def build_mcp_server(ctx: RunContext):
             pass
         return _text("save_artifact", {"artifact_id": artifact.id, "name": safe_name})
 
-    return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _gh, _approval, _artifact])
+    return create_sdk_mcp_server(
+        name=SERVER,
+        tools=[
+            *_STATELESS, _gh, _approval, _artifact,
+            _rollout_undo, _rollout_abort, _rollout_promote,
+            _scale_deployment, _patch_memory_limit, _restart_workload,
+        ],
+    )
 
 
 # save_artifact kind → (media type, default file name). Unit-tested; keep in
@@ -761,6 +881,18 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "AnalysisRun verdicts with measurements verbatim"},
     {"name": mcp("deploy_history"), "kind": "mcp",
      "description": "Merged chronological deploy/change timeline (annotations+CI+Argo+rollouts)"},
+    {"name": mcp("rollout_undo"), "kind": "mcp",
+     "description": "Roll a deployment back to its previous revision (dry-run first, approval-gated)"},
+    {"name": mcp("rollout_abort"), "kind": "mcp",
+     "description": "Abort an in-progress Rollout canary (dry-run first, approval-gated)"},
+    {"name": mcp("rollout_promote"), "kind": "mcp",
+     "description": "Fully promote a Rollout, skipping remaining steps (dry-run first, approval-gated)"},
+    {"name": mcp("scale_deployment"), "kind": "mcp",
+     "description": "Scale a deployment's replica count 0..6 (dry-run first, approval-gated)"},
+    {"name": mcp("patch_memory_limit"), "kind": "mcp",
+     "description": "Patch a deployment's container memory limit, 64..2048Mi (dry-run first, approval-gated)"},
+    {"name": mcp("restart_workload"), "kind": "mcp",
+     "description": "Rolling-restart a deployment (dry-run first, approval-gated)"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
