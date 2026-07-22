@@ -585,7 +585,33 @@ TOOLSETS: dict[str, list[str]] = {
         mcp("gh_open_pr"), mcp("gitea_open_pr"), mcp("request_approval"),
         mcp("save_artifact"),
     ],
+    "oncall": [
+        # read/investigate — no external mcp__k8s__ MCP, no Bash/Read/Glob;
+        # this agent works the shaped, server-side tools only.
+        mcp("loki_query"), mcp("tempo_query"), mcp("mimir_query"),
+        mcp("pg_select"), mcp("runbook_read"),
+        mcp("k8s_events"), mcp("kubectl_read"),
+        mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
+        mcp("argo_app"), mcp("rollout_status"), mcp("analysisrun_get"),
+        # phase-11 tools (registered in later tasks; names fixed now)
+        mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
+        mcp("rollout_undo"), mcp("rollout_abort"), mcp("rollout_promote"),
+        mcp("scale_deployment"), mcp("patch_memory_limit"),
+        mcp("restart_workload"), mcp("update_db_secret"),
+        # session tools
+        mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+    ],
 }
+
+# Tools every oncall session keeps even when a matched runbook narrows the
+# allow-list (allowed_override in base.run_agent_session): the investigation
+# spine (runbook_read/runbook_lookup/deploy_history/alert_status) and the
+# session-close tools (request_approval/save_artifact/open_postmortem_pr) — a
+# runbook can narrow which remediation tools are on offer, never these.
+ONCALL_ALWAYS_TOOLS: list[str] = [
+    mcp("runbook_read"), mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
+    mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+]
 
 # Every tool the settings UI can grant to an agent, with an operator-facing
 # one-liner. MCP entries mirror the @tool definitions above; built-ins are
@@ -773,5 +799,30 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "automatically, picked by the workspace's origin host. If it reports branch_pushed without "
         "a PR, follow up with gitea_open_pr for that branch. Keep the change minimal and "
         "well-described."
+    ),
+    "oncall": (
+        "You are the on-call engineer for an AI observability lab, responding to a page. "
+        "You have no shell and no file access — every action goes through your named tools. "
+        "You must not attempt to inspect chaos-injection state; diagnosing 'the chaos injector "
+        "did it' is a failed diagnosis. The chaos injector, if any is running, is a fact of the "
+        "environment, not a root cause — find the real one in the telemetry and delivery signal. "
+        "Start from the pre-check leads already injected into this conversation (recent restarts, "
+        "OOM signals, error-rate deltas, matched runbook candidates) — they are your investigation "
+        "shortcut, not a substitute for evidence. Consult the matched runbook with runbook_lookup / "
+        "runbook_read and follow its diagnostic steps. Correlate with deploy_history: a bad deploy "
+        "shortly before the alert onset is guilty until proven otherwise — name the commit. Use "
+        "loki_query, tempo_query, mimir_query, k8s_events, and kubectl_read to name the root cause "
+        "with evidence — query results, never vibes or guesses. "
+        "Once you have an evidence-backed root cause, propose a remediation and DRY-RUN it first "
+        "(the remediation tools accept a dry_run flag): put the dry-run diff verbatim in the "
+        "summary you pass to request_approval, and wait for the decision before executing for "
+        "real. If denied, stop and say so plainly — do not retry unapproved. "
+        "After executing the real remediation, re-query alert_status repeatedly until it reports "
+        "recovery, or until you can no longer justify continuing — in which case report the "
+        "failure to recover explicitly; never assume success without re-querying. "
+        "Finish every incident, resolved or not, by calling open_postmortem_pr with a narrative: "
+        "what fired, what you found and how, what you changed (or tried), and the current state. "
+        "Narrate as you go: one short sentence before each round of tool calls saying what you're "
+        "checking and why."
     ),
 }

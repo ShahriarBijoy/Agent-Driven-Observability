@@ -75,6 +75,19 @@ def stop_reason(
     return f"the session ended abnormally ({subtype})"
 
 
+def apply_override(baseline: list[str], override: list[str] | None) -> list[str]:
+    """Narrow `baseline` down to `override`.
+
+    An override can only shrink the allow-list, never grow it: any name in
+    `override` that isn't already in `baseline` is silently dropped (a runbook
+    can't smuggle in a tool the agent kind was never granted). `None` means
+    "no narrowing requested" — the full baseline passes through unchanged.
+    """
+    if override is None:
+        return list(baseline)
+    return [t for t in override if t in baseline]
+
+
 def _display_name(name: str) -> str:
     if name.startswith(_MCP_PREFIX):
         return name[len(_MCP_PREFIX):]
@@ -109,6 +122,7 @@ async def run_agent_session(
     cwd: str | None = None,
     max_turns: int | None = None,
     extra_allowed: list[str] | None = None,
+    allowed_override: list[str] | None = None,
 ) -> str:
     """Run one agent turn-set to completion; returns the final assistant text."""
     server = toolsdk.build_mcp_server(ctx)
@@ -116,6 +130,9 @@ async def run_agent_session(
     allowed = settings_store.resolve_allowed(agent_kind, stg)
     if extra_allowed:
         allowed += extra_allowed
+    # A runbook (or any other narrowing signal) may only shrink the resolved
+    # baseline, never extend it — applied last, after settings grants + extras.
+    allowed = apply_override(allowed, allowed_override)
 
     # The k8s MCP child (an npx subprocess per session) is only worth spawning
     # when this agent may actually call it — and only exists once the agent-ro

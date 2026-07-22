@@ -37,3 +37,10 @@ def test_deny_list_covers_the_observed_flailing_tools():
     # be removable from context for agents that weren't granted them.
     for name in ("Bash", "Read", "Glob", "Grep"):
         assert name in _DENYABLE_BUILTINS
+
+
+def test_allowed_override_only_narrows():
+    from agent_service.agents.base import apply_override
+
+    assert apply_override(["a", "b", "c"], ["b", "zzz"]) == ["b"]
+    assert apply_override(["a", "b"], None) == ["a", "b"]

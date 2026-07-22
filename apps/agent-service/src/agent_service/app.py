@@ -35,7 +35,8 @@ from .agents.gitops import (
     run_gitops_resolution,
     subject_of,
 )
-from .agents.incident import run_incident_reporter, summarize_alert
+from .agents.incident import run_incident_chat, run_incident_reporter, summarize_alert
+from .agents.oncall import run_oncall_chat
 from .agents.rca import run_rca
 from .agents.runbook import run_runbook_executor
 from .config import config
@@ -53,6 +54,8 @@ CHAT_AGENTS: dict[str, ChatAgent] = {
     "echo": run_echo,
     "rca": run_rca,
     "dashboard-generator": run_dashboard_generator,
+    "oncall": run_oncall_chat,
+    "incident-reporter": run_incident_chat,
 }
 
 
