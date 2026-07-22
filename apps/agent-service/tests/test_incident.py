@@ -207,6 +207,53 @@ async def test_webhook_alerts_lost_race_attaches_instead_of_spawning(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_webhook_alerts_lost_race_ignores_when_incident_already_closed(monkeypatch):
+    """Lost race where the winning incident is then immediately closed: the
+    re-fetch returns None. The loser must ignore the event, not attempt to
+    attach or spawn."""
+    _patch_no_secret(monkeypatch)
+    calls: dict = {"attach": []}
+
+    lookup_calls = {"n": 0}
+
+    async def fake_find_open_incident_by_key(_key):
+        lookup_calls["n"] += 1
+        if lookup_calls["n"] == 1:
+            return None  # initial lookup: nothing open yet
+        return None  # re-fetch after losing the race: winning incident already closed
+
+    async def fake_create_incident(incident_id, **kwargs):
+        return False  # lost the race
+
+    async def fake_attach_alert(incident_id, **kwargs):
+        calls["attach"].append((incident_id, kwargs))
+
+    async def fake_run_oncall(ctx, incident_id, alert, *, escalation=None):
+        calls["run_oncall_called"] = True
+        await ctx.end("completed", summary="test-complete")
+
+    monkeypatch.setattr(db, "find_open_incident_by_key", fake_find_open_incident_by_key)
+    monkeypatch.setattr(db, "create_incident", fake_create_incident)
+    monkeypatch.setattr(db, "attach_alert", fake_attach_alert)
+    monkeypatch.setattr(app_module, "run_oncall", fake_run_oncall)
+
+    request = _request(json.dumps(_grafana_alert_body()).encode())
+    response = await app_module.webhook_alerts(request)
+
+    assert response.status_code == 202
+    results = _body(response)["results"]
+    assert len(results) == 1
+    assert results[0]["action"] == "ignore"
+    assert results[0]["reason"] == "raced with an incident that already closed"
+    assert calls["attach"] == []  # no attach call
+
+    # Give any errantly-spawned task a chance to run before asserting absence.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert "run_oncall_called" not in calls
+
+
+@pytest.mark.asyncio
 async def test_webhook_alerts_rejects_bad_signature(monkeypatch):
     monkeypatch.setattr(
         app_module, "config",

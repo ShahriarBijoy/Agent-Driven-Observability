@@ -205,6 +205,14 @@ async def webhook_alerts(request: Request) -> JSONResponse:
                 # one alert, one brain, one incident — instead of spawning a
                 # second investigation.
                 open_inc = await db.find_open_incident_by_key(key)
+                if open_inc is None:
+                    # The winning incident was already closed between their insert
+                    # and our re-fetch. Ignore this event.
+                    results.append({
+                        "action": "ignore",
+                        "reason": "raced with an incident that already closed",
+                    })
+                    continue
                 await _attach(open_inc["id"])
                 results.append({"action": "attach", "incidentId": open_inc["id"]})
                 continue
