@@ -146,6 +146,15 @@ def _pop_dryrun(run_id: str, action_id: str) -> dict | None:
     return run_stash.pop(action_id, None)
 
 
+def _consume_dryrun(ctx: RunContext, action_id: str, result: dict) -> dict:
+    """Pop the dry-run stash entry only when the mutation succeeded. If result
+    contains an "error" key, the stash entry is retained so a retry with the
+    same approval can proceed. Returns result unchanged."""
+    if "error" not in result:
+        _pop_dryrun(ctx.run_id, action_id)
+    return result
+
+
 def server_verified_marker(action_id: str) -> str:
     """The server-controlled substring `_execute_gate` requires an approved
     summary to contain — a model can paste this text into its own prompt,
@@ -208,9 +217,8 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
     dry-run action_id, not merely the bare fingerprint: a model can paste a
     bare action_id into its own prompt, but only `request_approval` ever
     writes the marker, and only when a real dry-run for that action_id was
-    stashed for this run. Single-use: a successful pass here pops the stash
-    entry, so an approval row can't be replayed to authorize a second real
-    mutation without a fresh dry-run."""
+    stashed for this run. Single-use semantics preserved by `_consume_dryrun`,
+    which pops the stash entry only after the mutation succeeds."""
     deny = {
         "error": "execution requires an approved request_approval whose summary "
         "includes the server-verified dry-run marker for this action_id"
@@ -225,7 +233,7 @@ async def _execute_gate(ctx: RunContext, approval_id: str | None, expected_actio
     marker = server_verified_marker(expected_action_id)
     if marker not in (approval.get("summary") or ""):
         return deny
-    if _pop_dryrun(ctx.run_id, expected_action_id) is None:
+    if _peek_dryrun(ctx.run_id, expected_action_id) is None:
         return {"error": "no server-verified dry-run pending; re-run dry_run"}
     return None
 
@@ -330,9 +338,8 @@ async def rollout_undo(ctx: RunContext, workload: str, dry_run: bool = True,
     if gate:
         return gate
     res = await _kubectl(["rollout", "undo", f"deployment/{workload}", "-n", "subject"])
-    if "error" in res:
-        return res
-    return _executed_result(action, workload, res.get("output", ""))
+    final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)
 
 
 async def rollout_abort(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -360,9 +367,8 @@ async def rollout_abort(ctx: RunContext, workload: str, dry_run: bool = True,
         ["patch", "rollout", workload, "-n", "subject", "--subresource=status",
          "--type", "merge", "-p", patch]
     )
-    if "error" in res:
-        return res
-    return _executed_result(action, workload, res.get("output", ""))
+    final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)
 
 
 async def rollout_promote(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -394,15 +400,15 @@ async def rollout_promote(ctx: RunContext, workload: str, dry_run: bool = True,
         ["patch", "rollout", workload, "-n", "subject", "--type", "merge", "-p", spec_patch]
     )
     if "error" in spec_res:
-        return spec_res
+        return _consume_dryrun(ctx, aid, spec_res)
     status_res = await _kubectl(
         ["patch", "rollout", workload, "-n", "subject", "--subresource=status",
          "--type", "merge", "-p", status_patch]
     )
     if "error" in status_res:
-        return status_res
+        return _consume_dryrun(ctx, aid, status_res)
     combined = "\n".join(t for t in (spec_res.get("output", ""), status_res.get("output", "")) if t)
-    return _executed_result(action, workload, combined)
+    return _consume_dryrun(ctx, aid, _executed_result(action, workload, combined))
 
 
 async def scale_deployment(ctx: RunContext, workload: str, replicas: int, dry_run: bool = True,
@@ -424,9 +430,8 @@ async def scale_deployment(ctx: RunContext, workload: str, replicas: int, dry_ru
     res = await _kubectl(
         ["scale", f"deployment/{workload}", f"--replicas={replicas}", "-n", "subject"]
     )
-    if "error" in res:
-        return res
-    return _executed_result(action, workload, res.get("output", ""))
+    final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)
 
 
 async def patch_memory_limit(ctx: RunContext, workload: str, memory_mi: int, dry_run: bool = True,
@@ -452,9 +457,8 @@ async def patch_memory_limit(ctx: RunContext, workload: str, memory_mi: int, dry
         ]}}}
     })
     res = await _kubectl(["patch", "deployment", workload, "-n", "subject", "--type", "merge", "-p", patch])
-    if "error" in res:
-        return res
-    return _executed_result(action, workload, res.get("output", ""))
+    final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)
 
 
 async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
@@ -478,6 +482,5 @@ async def restart_workload(ctx: RunContext, workload: str, dry_run: bool = True,
     if gate:
         return gate
     res = await _kubectl(["rollout", "restart", f"deployment/{workload}", "-n", "subject"])
-    if "error" in res:
-        return res
-    return _executed_result(action, workload, res.get("output", ""))
+    final_result = res if "error" in res else _executed_result(action, workload, res.get("output", ""))
+    return _consume_dryrun(ctx, aid, final_result)

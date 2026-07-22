@@ -187,8 +187,9 @@ async def test_gate_approved_matching_marker_and_stash_passes(approvals):
     }
     result = await remediate._execute_gate(_FakeCtx(), "apr-1", aid)
     assert result is None
-    # single-use: the stash entry is now gone
-    assert remediate.server_verified_block("run-1", aid) is None
+    # stash entry is still present after gate passes; it will be consumed by
+    # _consume_dryrun after a successful execute
+    assert remediate.server_verified_block("run-1", aid) is not None
 
 
 # ---- tool-level dry-run / execute wiring (fixed-argv, no shell) --------------
@@ -251,7 +252,7 @@ async def test_scale_execute_with_valid_approval_runs_scale(fake_kubectl, approv
 async def test_scale_replay_of_same_approval_is_rejected_after_execute(fake_kubectl, approvals):
     """A second dry_run=false call reusing the same approval_id must fail —
     the stash entry that made the first execute's marker meaningful was
-    consumed single-use."""
+    consumed single-use by _consume_dryrun."""
     ctx = _FakeCtx()
     dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
     aid = dry["action_id"]
@@ -268,6 +269,42 @@ async def test_scale_replay_of_same_approval_is_rejected_after_execute(fake_kube
     )
     assert "error" in replay
     assert "re-run dry_run" in replay["error"]
+
+
+async def test_scale_failed_execute_retains_stash_for_retry(fake_kubectl, approvals, monkeypatch):
+    """When a kubectl execute fails (error in result), the stash entry is
+    retained, allowing a retry with the same approval_id to pass the gate and
+    try the mutation again."""
+    ctx = _FakeCtx()
+    dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
+    aid = dry["action_id"]
+    block = remediate.server_verified_block(ctx.run_id, aid)
+    approvals["apr-1"] = {"run_id": "run-1", "decision": "approved",
+                           "summary": f"scale gateway{block}"}
+
+    # First execute fails: stub kubectl to return an error
+    def _run_fails(argv, capture_output, text, timeout):
+        return SimpleNamespace(returncode=1, stdout="", stderr="kubectl error: connection refused")
+
+    monkeypatch.setattr(remediate.subprocess, "run", _run_fails)
+    failed = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert "error" in failed
+    # stash entry is still there because execute failed
+    assert remediate.server_verified_block(ctx.run_id, aid) is not None
+
+    # Second attempt with same approval succeeds: stash was retained
+    def _run_succeeds(argv, capture_output, text, timeout):
+        return SimpleNamespace(returncode=0, stdout="deployment.apps/gateway scaled", stderr="")
+
+    monkeypatch.setattr(remediate.subprocess, "run", _run_succeeds)
+    retry = await remediate.scale_deployment(
+        ctx, "gateway", replicas=4, dry_run=False, approval_id="apr-1"
+    )
+    assert retry.get("executed") is True
+    # now stash is gone
+    assert remediate.server_verified_block(ctx.run_id, aid) is None
 
 
 async def test_request_approval_action_id_without_stash_errors():
