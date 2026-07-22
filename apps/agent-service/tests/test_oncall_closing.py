@@ -29,6 +29,7 @@ def recorder(monkeypatch):
         "ensure_verify_deadline": [],
         "remediated": False,
         "alert_status": {"alertname": ALERT.alertname, "active": False, "count": 0, "since": None},
+        "incident_status": "open",
     }
 
     async def _incident_was_remediated(incident_id):
@@ -46,10 +47,14 @@ def recorder(monkeypatch):
     async def _grafana_active_alerts(alertname):
         return calls["alert_status"]
 
+    async def _get_incident_status(incident_id):
+        return calls["incident_status"]
+
     monkeypatch.setattr(db, "incident_was_remediated", _incident_was_remediated)
     monkeypatch.setattr(db, "mark_verified", _mark_verified)
     monkeypatch.setattr(db, "add_timeline", _add_timeline)
     monkeypatch.setattr(db, "ensure_verify_deadline", _ensure_verify_deadline)
+    monkeypatch.setattr(db, "get_incident_status", _get_incident_status)
     monkeypatch.setattr(backends, "grafana_active_alerts", _grafana_active_alerts)
     return calls
 
@@ -122,3 +127,15 @@ async def test_closing_step_never_raises_on_db_failure(recorder, monkeypatch):
     monkeypatch.setattr(db, "incident_was_remediated", _boom)
     # Must not raise — degrades to leaving the incident open.
     await oncall._close_incident(_FakeCtx(), "inc_1", ALERT)
+
+
+async def test_no_op_when_incident_already_resolved(recorder):
+    """When a webhook already closed the incident (status='resolved'),
+    _close_incident must not mutate it — no mark_verified, add_timeline,
+    or ensure_verify_deadline calls."""
+    recorder["incident_status"] = "resolved"
+    await oncall._close_incident(_FakeCtx(), "inc_1", ALERT)
+
+    assert recorder["mark_verified"] == []
+    assert recorder["add_timeline"] == []
+    assert recorder["ensure_verify_deadline"] == []

@@ -182,6 +182,15 @@ async def _close_incident(ctx: RunContext, incident_id: str, alert: Any) -> None
     from ..escalation import closing_decision
 
     try:
+        # Guard: if a webhook already closed the incident, no-op to avoid
+        # overwriting resolved_at/summary or appending misleading timeline rows.
+        incident_status = await db.get_incident_status(incident_id)
+        if incident_status != "open":
+            logger.debug(
+                "closing step skipped for incident %s: already %s", incident_id, incident_status
+            )
+            return
+
         remediated = await db.incident_was_remediated(incident_id)
         status = await backends.grafana_active_alerts(alert.alertname)
         active = True if "error" in status else bool(status.get("active"))

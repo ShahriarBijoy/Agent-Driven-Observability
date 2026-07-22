@@ -583,6 +583,15 @@ async def add_timeline(incident_id: str, entries: list[tuple[datetime, str, str]
     )
 
 
+async def get_incident_status(incident_id: str) -> str | None:
+    """Fetch the current status of an incident (e.g. 'open', 'resolved') — used
+    by the closing step to guard mutations when a webhook already closed it."""
+    row = await _require_pool().fetchrow(
+        "SELECT status FROM incidents WHERE id = $1", incident_id
+    )
+    return row["status"] if row else None
+
+
 async def get_timeline(incident_id: str) -> list[dict]:
     rows = await _require_pool().fetch(
         """SELECT * FROM incident_timeline WHERE incident_id = $1 ORDER BY ts ASC""",
