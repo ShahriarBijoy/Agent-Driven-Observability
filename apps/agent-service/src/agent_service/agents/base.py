@@ -134,6 +134,11 @@ async def run_agent_session(
     # baseline, never extend it — applied last, after settings grants + extras.
     allowed = apply_override(allowed, allowed_override)
 
+    # Information barrier: oncall gets shaped server-side tools only, regardless
+    # of operator grants. Unconditionally strip built-ins and external k8s-MCP.
+    if agent_kind == "oncall":
+        allowed = [t for t in allowed if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")]
+
     # The k8s MCP child (an npx subprocess per session) is only worth spawning
     # when this agent may actually call it — and only exists once the agent-ro
     # kubeconfig has been minted. Resolve BEFORE the boundary text below so the
