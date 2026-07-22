@@ -401,6 +401,176 @@ async def runbook_read(path: str) -> dict:
         return {"error": f"read failed: {exc}", "path": path}
 
 
+# ---- Runbook metadata + lookup (PLAN-2 P11 Task 6) --------------------------
+#
+# Runbooks carry an optional YAML-ish frontmatter block (alert_types/tools/
+# hypotheses) that lets a matched runbook NARROW the on-call agent's tool
+# surface instead of handing it the whole toolbox — HolmesGPT's ~8x
+# tool-call-reduction pattern. No PyYAML dependency: the format is
+# deliberately a tiny subset (`key: [a, b]` inline lists, `- item` block
+# lists) that a ~30-line hand parser covers completely.
+
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
+_META_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
+_META_ITEM_RE = re.compile(r"^\s*-\s+(.*)$")
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def parse_runbook_meta(text: str) -> dict:
+    """Parse a runbook's leading `---`-delimited frontmatter block.
+
+    Supports exactly two list forms (no full YAML): inline `key: [a, b, c]`,
+    and a block list —
+        key:
+          - item one
+          - item two
+    `{}` if `text` has no frontmatter block. A present key always yields a
+    list (possibly empty), so callers can index it without a `.get` guard.
+    """
+    match = _FRONTMATTER_RE.match(text.lstrip("﻿"))
+    if not match:
+        return {}
+    lines = match.group(1).splitlines()
+    meta: dict[str, list[str]] = {}
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        kv = _META_KV_RE.match(stripped)
+        if not kv:
+            i += 1
+            continue
+        key, rest = kv.group(1), kv.group(2).strip()
+        if rest.startswith("[") and rest.endswith("]"):
+            inner = rest[1:-1].strip()
+            meta[key] = [] if not inner else [_unquote(x.strip()) for x in inner.split(",")]
+            i += 1
+        else:
+            # Bare `key:` opens a block list; anything else on the same line
+            # (a scalar) is treated as a single-item list — this format only
+            # ever needs lists.
+            items = [] if not rest else [_unquote(rest)]
+            i += 1
+            while i < len(lines):
+                item = _META_ITEM_RE.match(lines[i])
+                if item is None:
+                    break
+                items.append(_unquote(item.group(1).strip()))
+                i += 1
+            meta[key] = items
+    return meta
+
+
+async def runbook_lookup(alertname: str) -> dict:
+    """Find the runbook whose frontmatter `alert_types` names `alertname`
+    exactly. First match wins (sorted file order). No match returns the
+    available runbook names instead of a bare miss, so the caller can retry
+    with a real one rather than guessing."""
+    try:
+        names = sorted(
+            f for f in os.listdir(config.runbooks_dir) if f.lower().endswith(".md")
+        )
+    except OSError as exc:
+        return {"error": f"cannot list runbooks: {exc}"}
+    for name in names:
+        try:
+            with open(os.path.join(config.runbooks_dir, name), encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        meta = parse_runbook_meta(text)
+        if alertname in (meta.get("alert_types") or []):
+            body = _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
+            return enforce_budget("runbook_lookup", {"runbook": name, "meta": meta, "content": body})
+    return {"match": None, "available": names}
+
+
+# ---- Hard token budgets on every tool result (PLAN-2 P11 Task 6) ------------
+#
+# Per-tool truncation upstream (kubectl_read's 8000-char cap, etc.) is a
+# best-effort shape; this is the BACKSTOP applied to every tool result at the
+# sdk.py dispatch choke point, so nothing can blow the model's context no
+# matter which backend produced it or whether it remembered to truncate.
+
+TOOL_BUDGETS: dict[str, int] = {
+    "kubectl_read": 8000,
+    "gitea_compare": 12000,
+    "runbook_lookup": 8000,
+}
+DEFAULT_TOOL_BUDGET = 6000
+
+
+def _truncate_strings(value: Any, limit: int) -> tuple[Any, bool]:
+    """Recursively clip every string in `value` to `limit` chars. Returns
+    (shaped_value, whether anything was clipped)."""
+    if isinstance(value, str):
+        if len(value) > limit:
+            return value[:limit] + f"… (+{len(value) - limit} chars truncated)", True
+        return value, False
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        clipped = False
+        for k, v in value.items():
+            out[k], c = _truncate_strings(v, limit)
+            clipped = clipped or c
+        return out, clipped
+    if isinstance(value, list):
+        out_list: list[Any] = []
+        clipped = False
+        for v in value:
+            sv, c = _truncate_strings(v, limit)
+            out_list.append(sv)
+            clipped = clipped or c
+        return out_list, clipped
+    return value, False
+
+
+# Per-field clipping alone can still land a FEW chars over the char budget —
+# JSON quoting/escaping overhead, not runaway content — so the collapse path
+# below (which throws the shape away) only kicks in when the payload is over
+# by more than this much; otherwise the deep-per-field clip already did its
+# job and the shape (e.g. a tool's named "output" key) is worth keeping.
+_COLLAPSE_ALLOWANCE = 200
+
+
+def enforce_budget(tool: str, payload: dict) -> dict:
+    """Deep-truncate every string value in `payload` to `tool`'s char budget
+    (TOOL_BUDGETS, else DEFAULT_TOOL_BUDGET); if the whole payload's JSON form
+    is STILL far over budget afterwards (many small fields adding up — a
+    single clipped field's small quoting overhead is tolerated), collapse it
+    to one clipped string. Adds `{"truncated": true}` whenever either step
+    clipped anything; a payload already within budget passes through with its
+    original shape untouched. Pure — no I/O, so it's cheap to test."""
+    if not isinstance(payload, dict):
+        return payload
+    limit = TOOL_BUDGETS.get(tool, DEFAULT_TOOL_BUDGET)
+    shaped, clipped = _truncate_strings(payload, limit)
+    serialized = json.dumps(shaped, default=str)
+    if len(serialized) > limit + _COLLAPSE_ALLOWANCE:
+        marker = " (truncated - result exceeded the tool budget)"
+        keep = limit
+        for _ in range(4):  # converge past JSON re-escaping overhead
+            candidate = {"result": serialized[:keep] + marker, "truncated": True}
+            overshoot = len(json.dumps(candidate, default=str)) - limit
+            if overshoot <= 0 or keep <= 0:
+                shaped = candidate
+                break
+            keep = max(0, keep - overshoot)
+        else:
+            shaped = {"result": serialized[:keep] + marker, "truncated": True}
+        return shaped
+    if clipped:
+        shaped["truncated"] = True
+    return shaped
+
+
 # ---- Kubernetes shaped reads (PLAN-2 P8) ------------------------------------
 #
 # The cluster is legible through two shapes: k8s_events turns the clusterEvents

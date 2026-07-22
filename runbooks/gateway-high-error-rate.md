@@ -1,3 +1,12 @@
+---
+alert_types: [gw-5xx, Gateway 5xx rate > 2%, slo-avail-fast, SLO gateway availability — fast burn]
+tools: [tempo_query, mimir_query, kubectl_read, restart_workload]
+hypotheses:
+  - One downstream (model-proxy/retriever/embedder) is failing health checks and the gateway is surfacing its errors
+  - A single tenant is being rate-limited (429s), which is expected behavior, not an incident
+  - The model-proxy is timing out on an upstream and needs a lower timeout or a failover
+---
+
 # Gateway high error rate
 
 **Trigger:** `gateway-red` dashboard shows 5xx share above 5% for more than 5 minutes, or the burn-rate alert fires.

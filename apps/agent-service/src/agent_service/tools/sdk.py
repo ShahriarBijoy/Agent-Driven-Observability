@@ -58,10 +58,16 @@ def k8s_mcp_server() -> dict[str, Any] | None:
     return {"type": "stdio", "command": argv[0], "args": argv[1:]}
 
 
-def _text(payload: dict[str, Any]) -> dict[str, Any]:
+def _text(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The single dispatch choke point every tool result passes through: hard
+    per-tool char budget (backends.enforce_budget/TOOL_BUDGETS) applied here
+    so no backend — however it shapes or truncates its own output — can blow
+    the model's context. Existing per-tool truncation upstream is a
+    best-effort shape; this is the backstop underneath all of them."""
+    budgeted = backends.enforce_budget(name, payload)
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
-        "is_error": "error" in payload,
+        "content": [{"type": "text", "text": json.dumps(budgeted, default=str)}],
+        "is_error": "error" in budgeted,
     }
 
 
@@ -84,7 +90,8 @@ def _text(payload: dict[str, Any]) -> dict[str, Any]:
 )
 async def _loki(args: dict) -> dict:
     return _text(
-        await backends.loki_query(args["logql"], args.get("range", "1h"), int(args.get("limit", 100)))
+        "loki_query",
+        await backends.loki_query(args["logql"], args.get("range", "1h"), int(args.get("limit", 100))),
     )
 
 
@@ -104,7 +111,8 @@ async def _loki(args: dict) -> dict:
 )
 async def _tempo(args: dict) -> dict:
     return _text(
-        await backends.tempo_query(args["traceql"], args.get("range", "1h"), int(args.get("limit", 20)))
+        "tempo_query",
+        await backends.tempo_query(args["traceql"], args.get("range", "1h"), int(args.get("limit", 20))),
     )
 
 
@@ -125,7 +133,8 @@ async def _tempo(args: dict) -> dict:
 )
 async def _mimir(args: dict) -> dict:
     return _text(
-        await backends.mimir_query(args["promql"], args.get("range", ""), args.get("step", "60s"))
+        "mimir_query",
+        await backends.mimir_query(args["promql"], args.get("range", ""), args.get("step", "60s")),
     )
 
 
@@ -143,7 +152,7 @@ async def _mimir(args: dict) -> dict:
     },
 )
 async def _marquez(args: dict) -> dict:
-    return _text(await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
+    return _text("marquez_lineage", await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
 
 
 @tool(
@@ -168,7 +177,7 @@ async def _marquez(args: dict) -> dict:
     },
 )
 async def _pg(args: dict) -> dict:
-    return _text(await backends.pg_select(args["sql"], args.get("params") or []))
+    return _text("pg_select", await backends.pg_select(args["sql"], args.get("params") or []))
 
 
 @tool(
@@ -186,7 +195,7 @@ async def _pg(args: dict) -> dict:
     },
 )
 async def _grafana_get(args: dict) -> dict:
-    return _text(await backends.grafana_get_dashboard(args["query"]))
+    return _text("grafana_get_dashboard", await backends.grafana_get_dashboard(args["query"]))
 
 
 @tool(
@@ -202,7 +211,7 @@ async def _grafana_get(args: dict) -> dict:
     },
 )
 async def _grafana(args: dict) -> dict:
-    return _text(await backends.grafana_create_dashboard(args["dashboard"]))
+    return _text("grafana_create_dashboard", await backends.grafana_create_dashboard(args["dashboard"]))
 
 
 @tool(
@@ -213,7 +222,19 @@ async def _grafana(args: dict) -> dict:
     {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
 )
 async def _runbook(args: dict) -> dict:
-    return _text(await backends.runbook_read(args["path"]))
+    return _text("runbook_read", await backends.runbook_read(args["path"]))
+
+
+@tool(
+    "runbook_lookup",
+    "Find the runbook matching the firing alert's exact alertname and return its body plus "
+    "metadata (a narrowed tools list, and candidate hypotheses) — the on-call agent's fast "
+    "path to the RIGHT runbook instead of guessing a filename with runbook_read. No match "
+    "returns the available runbook names instead of a bare miss.",
+    {"type": "object", "properties": {"alertname": {"type": "string"}}, "required": ["alertname"]},
+)
+async def _runbook_lookup(args: dict) -> dict:
+    return _text("runbook_lookup", await backends.runbook_lookup(args["alertname"]))
 
 
 @tool(
@@ -236,10 +257,11 @@ async def _runbook(args: dict) -> dict:
 )
 async def _k8s_events(args: dict) -> dict:
     return _text(
+        "k8s_events",
         await backends.k8s_events(
             args.get("namespace", ""), args.get("object_name", ""), args.get("level", ""),
             args.get("range", "1h"), int(args.get("limit", 60)),
-        )
+        ),
     )
 
 
@@ -263,10 +285,11 @@ async def _k8s_events(args: dict) -> dict:
 )
 async def _kubectl(args: dict) -> dict:
     return _text(
+        "kubectl_read",
         await backends.kubectl_read(
             args["verb"], args.get("resource", ""), args.get("name", ""),
             args.get("namespace", ""), args.get("selector", ""),
-        )
+        ),
     )
 
 
@@ -285,7 +308,8 @@ async def _kubectl(args: dict) -> dict:
 )
 async def _gitea_runs(args: dict) -> dict:
     return _text(
-        await backends.gitea_ci_runs(int(args.get("limit", 5)), args.get("branch", ""))
+        "gitea_ci_runs",
+        await backends.gitea_ci_runs(int(args.get("limit", 5)), args.get("branch", "")),
     )
 
 
@@ -310,9 +334,10 @@ async def _gitea_runs(args: dict) -> dict:
 )
 async def _gitea_compare(args: dict) -> dict:
     return _text(
+        "gitea_compare",
         await backends.gitea_compare(
             args["base"], args["head"], bool(args.get("include_diff", False))
-        )
+        ),
     )
 
 
@@ -333,7 +358,8 @@ async def _gitea_compare(args: dict) -> dict:
 )
 async def _grafana_annotations(args: dict) -> dict:
     return _text(
-        await backends.grafana_annotations(args.get("range", "2h"), args.get("tags"))
+        "grafana_annotations",
+        await backends.grafana_annotations(args.get("range", "2h"), args.get("tags")),
     )
 
 
@@ -356,9 +382,10 @@ async def _grafana_annotations(args: dict) -> dict:
 )
 async def _gitea_pr(args: dict) -> dict:
     return _text(
+        "gitea_open_pr",
         await backends.gitea_open_pr(
             args["head"], args.get("base", "main"), args["title"], args.get("body", "")
-        )
+        ),
     )
 
 
@@ -378,7 +405,7 @@ async def _gitea_pr(args: dict) -> dict:
     },
 )
 async def _argo_app(args: dict) -> dict:
-    return _text(await backends.argo_app(args.get("name", "")))
+    return _text("argo_app", await backends.argo_app(args.get("name", "")))
 
 
 @tool(
@@ -397,7 +424,8 @@ async def _argo_app(args: dict) -> dict:
 )
 async def _rollout_status(args: dict) -> dict:
     return _text(
-        await backends.rollout_status(args["name"], args.get("namespace", "subject"))
+        "rollout_status",
+        await backends.rollout_status(args["name"], args.get("namespace", "subject")),
     )
 
 
@@ -418,14 +446,15 @@ async def _rollout_status(args: dict) -> dict:
 )
 async def _analysisrun(args: dict) -> dict:
     return _text(
+        "analysisrun_get",
         await backends.analysisrun_get(
             args.get("name", ""), args.get("rollout", ""), args.get("namespace", "subject")
-        )
+        ),
     )
 
 
 _STATELESS = [
-    _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook,
+    _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook, _runbook_lookup,
     _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
     _gitea_pr, _argo_app, _rollout_status, _analysisrun,
 ]
@@ -454,7 +483,7 @@ def build_mcp_server(ctx: RunContext):
             if decision == "approved"
             else "Denied by the operator. Do not proceed; stop and explain why."
         )
-        return _text({"decision": decision, "instruction": instruction})
+        return _text("request_approval", {"decision": decision, "instruction": instruction})
 
     @tool(
         "gh_open_pr",
@@ -477,9 +506,10 @@ def build_mcp_server(ctx: RunContext):
     async def _gh(args: dict) -> dict:
         repo = ctx.workspace or config.subject_repo_dir
         return _text(
+            "gh_open_pr",
             await backends.gh_open_pr(
                 repo, args["branch"], args["title"], args.get("body", ""), args.get("patch", "")
-            )
+            ),
         )
 
     @tool(
@@ -504,7 +534,7 @@ def build_mcp_server(ctx: RunContext):
         # crafted/injected name can't write a file copy outside ARTIFACTS_DIR.
         safe_name = safe_artifact_name(args.get("name"), default_name)
         if safe_name is None:
-            return _text({"error": "invalid artifact name", "name": args.get("name")})
+            return _text("save_artifact", {"error": "invalid artifact name", "name": args.get("name")})
         artifact = await ctx.add_artifact(safe_name, media, args["content"])
         # Also drop a file copy under ARTIFACTS_DIR for out-of-band inspection.
         try:
@@ -517,7 +547,7 @@ def build_mcp_server(ctx: RunContext):
                 fh.write(args["content"])
         except Exception:  # noqa: BLE001 — the DB copy is authoritative
             pass
-        return _text({"artifact_id": artifact.id, "name": safe_name})
+        return _text("save_artifact", {"artifact_id": artifact.id, "name": safe_name})
 
     return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _gh, _approval, _artifact])
 
@@ -630,6 +660,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Read-only SELECT against the lab Postgres"},
     {"name": mcp("runbook_read"), "kind": "mcp",
      "description": "Read a Markdown runbook from runbooks/"},
+    {"name": mcp("runbook_lookup"), "kind": "mcp",
+     "description": "Find the runbook matching a firing alert's name (narrows the toolset)"},
     {"name": mcp("grafana_get_dashboard"), "kind": "mcp",
      "description": "List Grafana dashboards or fetch one's JSON model"},
     {"name": mcp("grafana_create_dashboard"), "kind": "mcp",

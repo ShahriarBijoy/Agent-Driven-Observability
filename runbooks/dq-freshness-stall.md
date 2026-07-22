@@ -1,3 +1,12 @@
+---
+alert_types: [dq-high-violation, DQ high-severity violation, dq-prompt-drift, DQ prompt drift sustained]
+tools: [marquez_lineage, mimir_query, pg_select]
+hypotheses:
+  - The producing job for this dataset stopped emitting new runs
+  - The dq-runner itself crashed and stopped re-checking on schedule
+  - The source is intentionally idle (load generator/seed off), which is stale-by-design, not an incident
+---
+
 # Data-quality freshness stall
 
 **Trigger:** the `data-quality` dashboard shows `dq_freshness_minutes` climbing, or the freshness alert fires for the documents pipeline.
