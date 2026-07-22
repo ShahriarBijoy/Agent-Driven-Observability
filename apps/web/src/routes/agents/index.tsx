@@ -8,7 +8,7 @@ import { RunFeedItem } from "~/components/run-feed-item";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -29,6 +29,7 @@ import { Textarea } from "~/components/ui/textarea";
 import { feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
+import { useMountEffect } from "~/lib/use-mount-effect";
 import { cn } from "~/lib/utils";
 import { getAgentRuns } from "~/server/functions";
 
@@ -92,9 +93,17 @@ function activityLabel(parts: RunFeedPart[]): string {
 
 function AgentsPage() {
   const runsHistory = Route.useLoaderData();
+  const router = useRouter();
   const [agent, setAgent] = useState<AgentTab>("rca");
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
   const cfg = AGENT_TABS[agent];
+
+  // Live sidebar — same 2.5s poll as the run detail and on-call pages, so run
+  // statuses (running → awaiting_approval → completed) move without a reload.
+  useMountEffect(() => {
+    const timer = setInterval(() => void router.invalidate(), 2_500);
+    return () => clearInterval(timer);
+  });
 
   return (
     <div
@@ -136,21 +145,24 @@ function AgentsPage() {
 
       {openArtifact === null ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
-            <CardHeader>
+          <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1 gap-0 pb-0">
+            <CardHeader className="border-b pb-(--card-spacing)">
               <CardTitle>Recent runs</CardTitle>
+              <CardAction className="self-center text-[11px] tabular-nums text-muted-foreground">
+                {runsHistory.length}
+              </CardAction>
             </CardHeader>
-            <CardContent className="min-h-0 overflow-y-auto p-0">
+            <CardContent className="scroll-fade-b scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-0">
               {runsHistory.length === 0 ? (
-                <p className="px-3 py-2 text-xs text-muted-foreground">No runs yet.</p>
+                <p className="px-3 py-3 text-xs text-muted-foreground">No runs yet.</p>
               ) : (
-                <ul className="flex flex-col">
-                  {runsHistory.slice(0, 12).map((r) => (
+                <ul className="flex flex-col py-1.5">
+                  {runsHistory.map((r) => (
                     <li key={r.id}>
                       <Link
                         to="/agents/runs/$runId"
                         params={{ runId: r.id }}
-                        className="group block rounded-lg px-3 py-2 transition-colors hover:bg-muted"
+                        className="group block px-(--card-spacing) py-2 transition-colors hover:bg-muted/60"
                       >
                         <span className="flex items-center justify-between gap-2">
                           <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
@@ -158,7 +170,9 @@ function AgentsPage() {
                           </span>
                           <RunStatusBadge status={r.status} />
                         </span>
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <span className="truncate">{r.agent}</span>
+                          <span aria-hidden>·</span>
                           <TimeAgo iso={r.createdAt} />
                         </span>
                       </Link>

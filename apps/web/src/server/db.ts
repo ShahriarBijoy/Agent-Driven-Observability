@@ -105,6 +105,42 @@ export async function recentAgentRunsFromDb(limit = 10): Promise<AgentRunSummary
   }));
 }
 
+export interface PendingApprovalNotice {
+  runId: string;
+  approvalId: string;
+  summary: string;
+  requestedAt: string;
+  runTitle: string;
+  agent: string;
+}
+
+/**
+ * Undecided approval gates on runs still waiting for one — powers the global
+ * approval toasts. Scoped to `status = 'awaiting_approval'` for the same
+ * reason as oncallIncidentDetail: a decision-less approval row on a settled
+ * run is stale bookkeeping, not something an operator can still act on.
+ */
+export async function pendingApprovalsFromDb(): Promise<PendingApprovalNotice[]> {
+  const rows = await safeRows<Record<string, unknown>>(
+    () => sql()`
+      select ap.id as approval_id, ap.run_id, ap.summary, ap.requested_at, r.title, r.agent
+      from agent_approvals ap
+      join agent_runs r on r.id = ap.run_id
+      where ap.decision is null and r.status = 'awaiting_approval'
+      order by ap.requested_at desc
+      limit 10
+    `,
+  );
+  return rows.map((r) => ({
+    runId: String(r["run_id"]),
+    approvalId: String(r["approval_id"]),
+    summary: String(r["summary"]),
+    requestedAt: new Date(r["requested_at"] as string).toISOString(),
+    runTitle: String(r["title"]),
+    agent: String(r["agent"]),
+  }));
+}
+
 /**
  * Phase 11: the on-call brain's feed. incidents now carry an alert_key
  * (dedup), a verify_deadline/verified_at pair (did recovery actually stick),

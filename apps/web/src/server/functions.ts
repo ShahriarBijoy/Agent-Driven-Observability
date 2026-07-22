@@ -6,6 +6,7 @@ import {
   incidentById,
   oncallFeed,
   oncallIncidentDetail,
+  pendingApprovalsFromDb,
   recentIncidents,
   recentAgentRunsFromDb,
 } from "./db";
@@ -35,6 +36,14 @@ export const getAgentRun = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     return agentClient.getAgentRun(data.runId);
   });
+
+/** Undecided approval gates across all runs — polled by the global
+ * ApprovalToaster so a gate surfaces as a toast no matter what page the
+ * operator is on. Reads the DB directly (same source of truth as
+ * agent-service, and still answers when the service is down). */
+export const getPendingApprovals = createServerFn({ method: "GET" }).handler(async () => {
+  return pendingApprovalsFromDb();
+});
 
 export const decideApproval = createServerFn({ method: "POST" })
   .inputValidator(ApprovalDecisionRequestSchema)
