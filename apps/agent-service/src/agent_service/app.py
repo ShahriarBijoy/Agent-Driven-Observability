@@ -14,9 +14,11 @@ Plus triggered entrypoints added in later milestones (dashboard, webhook, etc.).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine
 
 from fastapi import FastAPI, Request
@@ -24,6 +26,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db
+from . import escalation
+from . import ingress
 from . import settings as settings_store
 from .agents.autofix import run_autofixer
 from .agents.base import AgentSessionError
@@ -35,14 +39,15 @@ from .agents.gitops import (
     run_gitops_resolution,
     subject_of,
 )
-from .agents.incident import run_incident_reporter, summarize_alert
+from .agents.incident import run_incident_chat
+from .agents.oncall import run_oncall, run_oncall_chat
 from .agents.rca import run_rca
 from .agents.runbook import run_runbook_executor
 from .config import config
 from .tools import backends
 from .context import RunContext, new_run
 from .hub import hub
-from .models import AgentChatRequest, ApprovalDecisionBody
+from .models import AgentChatRequest, ApprovalDecisionBody, new_id
 from .telemetry import init_telemetry, instrument_app
 
 # Agents reachable through the interactive /chat endpoint. Extended per milestone.
@@ -53,6 +58,8 @@ CHAT_AGENTS: dict[str, ChatAgent] = {
     "echo": run_echo,
     "rca": run_rca,
     "dashboard-generator": run_dashboard_generator,
+    "oncall": run_oncall_chat,
+    "incident-reporter": run_incident_chat,
 }
 
 
@@ -60,7 +67,11 @@ CHAT_AGENTS: dict[str, ChatAgent] = {
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_telemetry()
     await db.init_pool()
+    watcher_task = asyncio.create_task(escalation.watcher_loop())
     yield
+    watcher_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watcher_task
     await backends.close_http()
     await db.close_pool()
 
@@ -153,23 +164,91 @@ async def generate_dashboard(request: Request) -> JSONResponse:
     return JSONResponse({"runId": ctx.run_id}, status_code=202)
 
 
-@app.post("/webhook/grafana-alert")
-async def grafana_alert(request: Request) -> JSONResponse:
-    """Grafana unified-alerting contact point. A firing alert spawns the
-    incident reporter; resolved/test pings are acknowledged without a run."""
+def _safe_json(raw: bytes) -> dict:
     try:
-        payload = await request.json()
+        payload = json.loads(raw)
     except Exception:  # noqa: BLE001
         payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    info = summarize_alert(payload)
-    if info["status"] != "firing":
-        return JSONResponse({"status": "ignored", "reason": f"alert {info['status']}"})
-    ctx = new_run("incident-reporter", info["tenant"], info["alertname"])
-    await db.create_run(ctx.run, "grafana-alert")
-    asyncio.create_task(_guard_run(ctx, run_incident_reporter(ctx, payload)))
-    return JSONResponse({"runId": ctx.run_id, "status": "accepted"}, status_code=202)
+    return payload if isinstance(payload, dict) else {}
+
+
+@app.post("/webhook/alerts")
+async def webhook_alerts(request: Request) -> JSONResponse:
+    """Unified alert ingress (PLAN-2 P11): the one front door for both Grafana
+    unified-alerting webhooks and gitops-reporter notifications. Normalizes
+    both shapes to AlertEvent, dedupes against the open-incidents table keyed
+    on alertname/workload, and spawns exactly one `oncall` investigation per
+    incident (re-firings attach; a resolved notification closes it)."""
+    raw = await request.body()
+    if config.alert_webhook_secret:
+        if not ingress.verify_signature(
+            raw, request.headers.get(ingress.GRAFANA_SIG_HEADER), config.alert_webhook_secret
+        ):
+            return JSONResponse({"error": "bad signature"}, status_code=403)
+    payload = _safe_json(raw)
+    results: list[dict[str, Any]] = []
+    for ev in ingress.normalize(payload):
+        key = ingress.alert_key(ev)
+        open_inc = await db.find_open_incident_by_key(key)
+        action = ingress.ingress_decision(ev, open_inc)
+
+        async def _attach(incident_id: str) -> None:
+            await db.attach_alert(
+                incident_id, status=ev.status, alertname=ev.alertname, workload=ev.workload,
+                starts_at=ev.starts_at, fingerprint=ev.fingerprint, payload=ev.raw,
+            )
+
+        if action == "spawn":
+            incident_id = new_id("inc")
+            created = await db.create_incident(
+                incident_id, title=ev.summary, severity=ev.severity,
+                tenant=ev.tenant, alert_key=key,
+            )
+            if not created:
+                # Lost the race: another delivery for the same alert_key won
+                # the unique open-incident index between our lookup and our
+                # insert. Fall through to the same incident it just created —
+                # one alert, one brain, one incident — instead of spawning a
+                # second investigation.
+                open_inc = await db.find_open_incident_by_key(key)
+                if open_inc is None:
+                    # The winning incident was already closed between their insert
+                    # and our re-fetch. Ignore this event.
+                    results.append({
+                        "action": "ignore",
+                        "reason": "raced with an incident that already closed",
+                    })
+                    continue
+                await _attach(open_inc["id"])
+                results.append({"action": "attach", "incidentId": open_inc["id"]})
+                continue
+            await _attach(incident_id)
+            ctx = new_run("oncall", ev.tenant, ev.summary)
+            await db.create_run(ctx.run, "alert")
+            await db.link_run(incident_id, ctx.run.id, "investigation")
+            asyncio.create_task(_guard_run(ctx, run_oncall(ctx, incident_id, ev)))
+            results.append({"action": action, "incidentId": incident_id, "runId": ctx.run.id})
+        elif action == "attach":
+            await _attach(open_inc["id"])
+            results.append({"action": action, "incidentId": open_inc["id"]})
+        elif action == "close":
+            await _attach(open_inc["id"])
+            await db.close_incident(
+                open_inc["id"], datetime.now(timezone.utc),
+                summary=f"resolved notification for {ev.alertname}",
+            )
+            results.append({"action": action, "incidentId": open_inc["id"]})
+        else:
+            results.append({"action": "ignore"})
+    return JSONResponse({"results": results}, status_code=202)
+
+
+@app.post("/webhook/grafana-alert")
+async def grafana_alert(request: Request) -> JSONResponse:
+    """Back-compat shim for the previously-provisioned contact-point URL —
+    delegates to the unified /webhook/alerts ingress (PLAN-2 P11 cutover).
+    Kept so an un-migrated Grafana contact point still works."""
+    return await webhook_alerts(request)
 
 
 # One failure investigation per target per window: an abort and its

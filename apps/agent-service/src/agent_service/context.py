@@ -130,9 +130,13 @@ class RunContext:
         hub.publish(self.run_id, ev_approval(approval))
         return approval
 
-    async def request_approval(self, summary: str) -> str:
+    async def request_approval(self, summary: str) -> tuple[str, str]:
         """Block the run until the operator decides via POST /runs/:id/approve.
-        Returns 'approved' or 'denied'. Used by the mutating agents."""
+        Returns (decision, approval_id) — 'approved'/'denied' plus the id of the
+        Postgres approval row just decided, so a caller (tools/sdk.py's
+        request_approval tool) can hand that id straight back to the model: the
+        remediation execute gate (tools/remediate._execute_gate) requires it by
+        name, and the model has no other way to learn it."""
         approval = await self.add_approval(summary)
         fut = hub.make_approval(self.run_id, approval.id)
         decision = await fut
@@ -141,7 +145,7 @@ class RunContext:
         if decision == "approved":
             await db.set_status(self.run_id, "running")
             self.run.status = "running"
-        return decision
+        return decision, approval.id
 
     # ---- artifacts -----------------------------------------------------------
 

@@ -7,6 +7,7 @@ infra/compose.agents.yml (service-DNS names, internal ports).
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -88,11 +89,46 @@ class Config:
     k8s_mcp_cmd: str
     k8s_mcp_config_path: str
 
+    # Server-side-only cluster identity (PLAN-2 P11 Task 5/8): the
+    # agent-remediate kubeconfig CAN read Secrets (unlike agent-ro above), so
+    # only the precheck battery's secret_age check uses it, and only via a
+    # fixed-argv kubectl subprocess — never handed to the model as an MCP
+    # server. Minted by Task 8; until then the file is absent and the check
+    # reports "unavailable".
+    k8s_remediate_kubeconfig: str
+
+    # The lab's stand-in for a real secrets vault (PLAN-2 P11 Task 9): a
+    # host-side file `obs fail stale-secret` writes the rotated Postgres
+    # password to after rotating it in-cluster WITHOUT touching the K8s
+    # Secret. `update_db_secret` reads this (never the model, never any
+    # other tool) to sync the Secret behind one approval. Absent file = the
+    # tool reports there's nothing to sync.
+    vault_file: str
+
+    # Unified alert ingress (PLAN-2 P11): the HMAC secret Grafana's webhook
+    # contact point signs /webhook/alerts payloads with (hmacConfig.secret in
+    # contact-points.yaml). Empty = signature verification is SKIPPED (a
+    # startup warning is logged) — fine for host dev behind the tailnet, never
+    # for an endpoint reachable beyond localhost.
+    alert_webhook_secret: str
+    # Reserved for the oncall debounce/verification watcher: the minimum gap
+    # between re-firings of the same alert_key before it's treated as a fresh
+    # escalation, and the recheck cadence after a proposed fix ships.
+    oncall_debounce_seconds: int
+    oncall_verify_minutes: int
+
 
 def load_config() -> Config:
     otel = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip() or None
     model = os.environ.get("AGENT_MODEL", "").strip() or None
     subject_repo = os.environ.get("SUBJECT_REPO_DIR", "").strip() or None
+    alert_webhook_secret = os.environ.get("ALERT_WEBHOOK_SECRET", "").strip()
+    if not alert_webhook_secret:
+        logging.getLogger(__name__).warning(
+            "ALERT_WEBHOOK_SECRET is not set; /webhook/alerts will accept unsigned "
+            "payloads. Set it (and Grafana's contact-point hmacConfig.secret) before "
+            "exposing this endpoint beyond localhost."
+        )
     return Config(
         port=int(_env("AGENT_SERVICE_PORT", "8093")),
         database_url=_env(
@@ -127,6 +163,15 @@ def load_config() -> Config:
         k8s_mcp_config_path=_anchored(
             _env("K8S_MCP_CONFIG", "apps/agent-service/k8s-mcp.toml")
         ),
+        k8s_remediate_kubeconfig=_anchored(
+            _env("K8S_REMEDIATE_KUBECONFIG", "apps/agent-service/.kube/agent-remediate.yaml")
+        ),
+        vault_file=_anchored(
+            _env("VAULT_FILE", "apps/agent-service/.secrets/db-vault.txt")
+        ),
+        alert_webhook_secret=alert_webhook_secret,
+        oncall_debounce_seconds=int(_env("ONCALL_DEBOUNCE_SECONDS", "90")),
+        oncall_verify_minutes=int(_env("ONCALL_VERIFY_MINUTES", "10")),
     )
 
 

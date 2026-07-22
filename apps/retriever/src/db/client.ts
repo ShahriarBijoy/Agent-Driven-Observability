@@ -16,7 +16,7 @@ export interface DbHandle {
  * modules (schema, query helpers) without touching a live database.
  */
 export function createDb(databaseUrl: string): DbHandle {
-  const sql = postgres(databaseUrl, { max: 10 });
+  const sql = postgres(databaseUrl, { max: 10, max_lifetime: 60 });
   const db = drizzle(sql, { schema });
   return {
     db,

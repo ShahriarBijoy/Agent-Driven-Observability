@@ -99,3 +99,47 @@ CREATE TABLE IF NOT EXISTS incidents (
 );
 
 CREATE INDEX IF NOT EXISTS incidents_opened_idx ON incidents (opened_at DESC);
+
+-- Phase 11: the autonomous on-call agent attaches alerts to incidents, links
+-- investigation runs, builds a machine timeline, and verifies recovery before
+-- closing. Mirrors db.py's SCHEMA_SQL verbatim (ALTER-safe for a pre-existing
+-- volume that already has the incidents table above).
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS alert_key TEXT;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verify_deadline TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem_pr_url TEXT;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalations INT NOT NULL DEFAULT 0;
+DROP INDEX IF EXISTS incidents_alert_key_open_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS incidents_alert_key_open_uq
+  ON incidents (alert_key) WHERE status = 'open';
+
+CREATE TABLE IF NOT EXISTS incident_alerts (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+  status TEXT NOT NULL,
+  alertname TEXT NOT NULL,
+  workload TEXT NOT NULL DEFAULT '',
+  starts_at TIMESTAMPTZ,
+  fingerprint TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS incident_alerts_incident_idx ON incident_alerts (incident_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS incident_runs (
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'investigation',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (incident_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS incident_timeline (
+  id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  ts TIMESTAMPTZ NOT NULL,
+  source TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS incident_timeline_idx ON incident_timeline (incident_id, ts);

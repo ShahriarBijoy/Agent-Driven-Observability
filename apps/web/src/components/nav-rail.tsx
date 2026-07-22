@@ -4,6 +4,7 @@ import {
   BookOpenIcon,
   BotIcon,
   GaugeIcon,
+  RadioTowerIcon,
   SettingsIcon,
   SirenIcon,
   WaypointsIcon,
@@ -15,6 +16,7 @@ const NAV = [
   { to: "/lineage", label: "Lineage", icon: WaypointsIcon },
   { to: "/agents", label: "Agents", icon: BotIcon },
   { to: "/incidents", label: "Incidents", icon: SirenIcon },
+  { to: "/oncall", label: "On-call", icon: RadioTowerIcon },
   { to: "/runbooks", label: "Runbooks", icon: BookOpenIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;

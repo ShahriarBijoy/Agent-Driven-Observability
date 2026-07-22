@@ -14,7 +14,7 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -50,17 +50,51 @@ def _json_safe(value: Any) -> Any:
 # ---- Loki -------------------------------------------------------------------
 
 
-async def loki_query(logql: str, range: str = "1h", limit: int = 100) -> dict:
+def _parse_ts(value: str | int) -> datetime:
+    """Accept epoch-ns (int, or a numeric string) or an ISO-8601 string ('Z'
+    suffix accepted) and return a tz-aware UTC datetime."""
+    if isinstance(value, int):
+        return datetime.fromtimestamp(value / 1e9, tz=timezone.utc)
+    v = value.strip()
+    if re.fullmatch(r"-?\d+", v):
+        return datetime.fromtimestamp(int(v) / 1e9, tz=timezone.utc)
+    iso = v[:-1] + "+00:00" if v.endswith("Z") else v
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+async def loki_query(
+    logql: str,
+    range: str = "1h",
+    limit: int = 100,
+    *,
+    start: str | int | None = None,
+    end: str | int | None = None,
+) -> dict:
+    """Query Loki over a relative `range` from now (default, unchanged), or an
+    explicit [start, end) window via the keyword-only `start`/`end` (each ISO-
+    8601 or epoch-ns) — added so a caller needing two disjoint windows (e.g.
+    the precheck log_spike baseline) isn't forced through one relative range.
+    Omitting start/end keeps prior behavior exactly."""
     if not logql or not logql.strip():
         return {"error": "logql is required"}
-    start, end = parse_range(range)
+    try:
+        if start is not None or end is not None:
+            end_dt = datetime.now(timezone.utc) if end is None else _parse_ts(end)
+            start_dt = end_dt - timedelta(hours=1) if start is None else _parse_ts(start)
+        else:
+            start_dt, end_dt = parse_range(range)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"invalid start/end: {exc}", "query": logql}
     try:
         resp = await _http().get(
             f"{config.loki_url}/loki/api/v1/query_range",
             params={
                 "query": logql,
-                "start": str(int(start.timestamp() * 1e9)),
-                "end": str(int(end.timestamp() * 1e9)),
+                "start": str(int(start_dt.timestamp() * 1e9)),
+                "end": str(int(end_dt.timestamp() * 1e9)),
                 "limit": str(limit),
                 "direction": "backward",
             },
@@ -261,6 +295,46 @@ async def grafana_get_dashboard(query: str) -> dict:
         return {"error": f"grafana read failed: {exc}"}
 
 
+async def grafana_active_alerts(alertname: str) -> dict:
+    """Is `alertname` currently firing, per Alertmanager (through Grafana's
+    embedded Alertmanager API)? This is the machine-observed signal the
+    on-call closing step (`agents.oncall.run_oncall`) uses to decide whether
+    an incident may close — never the model's own say-so. Returns
+    {"alertname", "active": bool, "count", "since": iso|None}; "active" is
+    true iff at least one alert with this exact alertname label is in the
+    Alertmanager v2 "active" state (not resolved/suppressed); "since" is the
+    earliest startsAt among those active instances, else None. Never raises —
+    a query failure returns {"error": ...}, and callers MUST treat that as
+    "unknown, so behave as if still active" (conservative: never close an
+    incident on a backend hiccup)."""
+    name = (alertname or "").strip()
+    if not name:
+        return {"error": "alertname is required"}
+    try:
+        resp = await _http().get(
+            f"{config.grafana_url}/api/alertmanager/grafana/api/v2/alerts",
+            params={"filter": f"alertname={name}"},
+        )
+        resp.raise_for_status()
+        alerts = resp.json()
+        if not isinstance(alerts, list):
+            alerts = []
+        matching = [a for a in alerts if (a.get("labels") or {}).get("alertname") == name]
+        active_alerts = [a for a in matching if (a.get("status") or {}).get("state") == "active"]
+        since = None
+        starts = sorted(a.get("startsAt") for a in active_alerts if a.get("startsAt"))
+        if starts:
+            since = starts[0]
+        return {
+            "alertname": name,
+            "active": bool(active_alerts),
+            "count": len(active_alerts),
+            "since": since,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"grafana alert status query failed: {exc}", "alertname": name}
+
+
 def sync_provisioned_dashboard(model: dict, prov_dir: str) -> str | None:
     """If `model`'s uid belongs to a file-provisioned dashboard, write the new
     model back into its provisioning JSON and return the file name.
@@ -360,11 +434,231 @@ async def runbook_read(path: str) -> dict:
         return {"error": f"rejected: {reason}", "path": path}
     try:
         with open(target, encoding="utf-8") as fh:
-            return {"path": path, "content": fh.read()}
+            text = fh.read()
+        # The frontmatter block (alert_types/tools/hypotheses) is narrowing
+        # metadata for runbook_lookup only — agents never see it here, same
+        # stripper runbook_lookup uses (see _strip_frontmatter below).
+        return {"path": path, "content": _strip_frontmatter(text)}
     except FileNotFoundError:
         return {"error": "runbook not found", "path": path}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"read failed: {exc}", "path": path}
+
+
+# ---- Runbook metadata + lookup (PLAN-2 P11 Task 6) --------------------------
+#
+# Runbooks carry an optional YAML-ish frontmatter block (alert_types/tools/
+# hypotheses) that lets a matched runbook NARROW the on-call agent's tool
+# surface instead of handing it the whole toolbox — HolmesGPT's ~8x
+# tool-call-reduction pattern. No PyYAML dependency: the format is
+# deliberately a tiny subset (`key: [a, b]` inline lists, `- item` block
+# lists) that a ~30-line hand parser covers completely.
+
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
+_META_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
+_META_ITEM_RE = re.compile(r"^\s*-\s+(.*)$")
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop the leading `---`-delimited frontmatter block (if any) and return
+    the runbook body only. Shared by `runbook_read` (agents never see the
+    metadata block — it exists purely for `runbook_lookup`'s narrowing) and
+    `runbook_lookup` (returns the same stripped body alongside the parsed
+    `meta`)."""
+    return _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
+
+
+def parse_runbook_meta(text: str) -> dict:
+    """Parse a runbook's leading `---`-delimited frontmatter block.
+
+    Supports the list forms these runbooks use (no full YAML): inline
+    `key: [a, b, c]`; a multi-line bracketed flow sequence (what oxfmt
+    reflows a long inline list into) —
+        key:
+          [
+            a,
+            b,
+          ]
+    and a block list —
+        key:
+          - item one
+          - item two
+    `{}` if `text` has no frontmatter block. A present key always yields a
+    list (possibly empty), so callers can index it without a `.get` guard.
+    """
+    match = _FRONTMATTER_RE.match(text.lstrip("﻿"))
+    if not match:
+        return {}
+    lines = match.group(1).splitlines()
+    meta: dict[str, list[str]] = {}
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        kv = _META_KV_RE.match(stripped)
+        if not kv:
+            i += 1
+            continue
+        key, rest = kv.group(1), kv.group(2).strip()
+        i += 1
+
+        # A bare `key:` whose bracketed value opens on the next line (oxfmt
+        # reflows long inline lists this way): adopt that line as the value.
+        if not rest:
+            j = i
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and lines[j].strip().startswith("["):
+                rest = lines[j].strip()
+                i = j + 1
+
+        if rest.startswith("["):
+            # Flow sequence — inline or spanning lines until the closing `]`.
+            buf = rest
+            while "]" not in buf and i < len(lines):
+                buf += " " + lines[i].strip()
+                i += 1
+            inner = buf[buf.index("[") + 1 : (buf.rindex("]") if "]" in buf else len(buf))]
+            # `split` + the empty-token filter also drops oxfmt's trailing comma.
+            meta[key] = [_unquote(x.strip()) for x in inner.split(",") if x.strip()]
+            continue
+
+        # Bare `key:` opens a block list; a scalar on the line is a single item.
+        items = [] if not rest else [_unquote(rest)]
+        while i < len(lines):
+            item = _META_ITEM_RE.match(lines[i])
+            if item is None:
+                break
+            items.append(_unquote(item.group(1).strip()))
+            i += 1
+        meta[key] = items
+    return meta
+
+
+async def runbook_lookup(alertname: str) -> dict:
+    """Find EVERY runbook whose frontmatter `alert_types` names `alertname`
+    exactly — a tied alertname (e.g. `slo-avail-fast`/`gw-5xx` claimed by both
+    `gateway-high-error-rate.md` and `stale-secret.md`) must not silently drop
+    the second runbook's remediation tools by only returning the
+    sorted-filename first match. Returns the FIRST match's fields at the top
+    level unchanged (`runbook`/`meta`/`content` — backward compatible with
+    callers reading only those) plus `"matches"`: every match, sorted-filename
+    order, each `{"runbook", "meta", "content"}` (content frontmatter-
+    stripped). No match returns the available runbook names instead of a bare
+    miss, so the caller can retry with a real one rather than guessing."""
+    try:
+        names = sorted(
+            f for f in os.listdir(config.runbooks_dir) if f.lower().endswith(".md")
+        )
+    except OSError as exc:
+        return {"error": f"cannot list runbooks: {exc}"}
+    matches: list[dict] = []
+    for name in names:
+        try:
+            with open(os.path.join(config.runbooks_dir, name), encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        meta = parse_runbook_meta(text)
+        if alertname in (meta.get("alert_types") or []):
+            matches.append({"runbook": name, "meta": meta, "content": _strip_frontmatter(text)})
+    if not matches:
+        return {"match": None, "available": names}
+    # LOAD-BEARING, do not remove: run_oncall (agents/oncall.py) calls this
+    # backend function DIRECTLY, bypassing sdk.py's `_text` dispatch choke
+    # point where every OTHER tool result gets enforce_budget applied. With
+    # multiple matches now concatenating several runbooks' full bodies into
+    # one payload, this inner call is the only thing standing between a
+    # multi-match lookup and an unbudgeted blowout of the model's context.
+    return enforce_budget("runbook_lookup", {**matches[0], "matches": matches})
+
+
+# ---- Hard token budgets on every tool result (PLAN-2 P11 Task 6) ------------
+#
+# Per-tool truncation upstream (kubectl_read's 8000-char cap, etc.) is a
+# best-effort shape; this is the BACKSTOP applied to every tool result at the
+# sdk.py dispatch choke point, so nothing can blow the model's context no
+# matter which backend produced it or whether it remembered to truncate.
+
+TOOL_BUDGETS: dict[str, int] = {
+    "kubectl_read": 8000,
+    "gitea_compare": 12000,
+    "runbook_lookup": 8000,
+    "deploy_history": 10000,
+}
+DEFAULT_TOOL_BUDGET = 6000
+
+
+def _truncate_strings(value: Any, limit: int) -> tuple[Any, bool]:
+    """Recursively clip every string in `value` to `limit` chars. Returns
+    (shaped_value, whether anything was clipped)."""
+    if isinstance(value, str):
+        if len(value) > limit:
+            return value[:limit] + f"… (+{len(value) - limit} chars truncated)", True
+        return value, False
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        clipped = False
+        for k, v in value.items():
+            out[k], c = _truncate_strings(v, limit)
+            clipped = clipped or c
+        return out, clipped
+    if isinstance(value, list):
+        out_list: list[Any] = []
+        clipped = False
+        for v in value:
+            sv, c = _truncate_strings(v, limit)
+            out_list.append(sv)
+            clipped = clipped or c
+        return out_list, clipped
+    return value, False
+
+
+# Per-field clipping alone can still land a FEW chars over the char budget —
+# JSON quoting/escaping overhead, not runaway content — so the collapse path
+# below (which throws the shape away) only kicks in when the payload is over
+# by more than this much; otherwise the deep-per-field clip already did its
+# job and the shape (e.g. a tool's named "output" key) is worth keeping.
+_COLLAPSE_ALLOWANCE = 200
+
+
+def enforce_budget(tool: str, payload: dict) -> dict:
+    """Deep-truncate every string value in `payload` to `tool`'s char budget
+    (TOOL_BUDGETS, else DEFAULT_TOOL_BUDGET); if the whole payload's JSON form
+    is STILL far over budget afterwards (many small fields adding up — a
+    single clipped field's small quoting overhead is tolerated), collapse it
+    to one clipped string. Adds `{"truncated": true}` whenever either step
+    clipped anything; a payload already within budget passes through with its
+    original shape untouched. Pure — no I/O, so it's cheap to test."""
+    if not isinstance(payload, dict):
+        return payload
+    limit = TOOL_BUDGETS.get(tool, DEFAULT_TOOL_BUDGET)
+    shaped, clipped = _truncate_strings(payload, limit)
+    serialized = json.dumps(shaped, default=str)
+    if len(serialized) > limit + _COLLAPSE_ALLOWANCE:
+        marker = " (truncated - result exceeded the tool budget)"
+        keep = limit
+        for _ in range(4):  # converge past JSON re-escaping overhead
+            candidate = {"result": serialized[:keep] + marker, "truncated": True}
+            overshoot = len(json.dumps(candidate, default=str)) - limit
+            if overshoot <= 0 or keep <= 0:
+                shaped = candidate
+                break
+            keep = max(0, keep - overshoot)
+        else:
+            shaped = {"result": serialized[:keep] + marker, "truncated": True}
+        return shaped
+    if clipped:
+        shaped["truncated"] = True
+    return shaped
 
 
 # ---- Kubernetes shaped reads (PLAN-2 P8) ------------------------------------
@@ -925,6 +1219,58 @@ async def gitea_open_pr(head: str, base: str = "main", title: str = "", body: st
         return {"error": f"gitea PR creation failed: {exc}"}
 
 
+_BRANCH_EXISTS_HINTS = ("already exist", "already taken", "branch already")
+
+
+def _looks_like_branch_exists(resp: httpx.Response) -> bool:
+    """Best-effort read of a Gitea error body's `message` field to tell
+    'this branch/file already exists' (not fatal — the caller tries to open
+    the PR against whatever is already there) apart from any OTHER 422
+    validation failure (bad path, bad base64, ...), which must surface its
+    real message instead of being silently swallowed as if it were the
+    already-exists case."""
+    try:
+        message = str((resp.json() or {}).get("message", ""))
+    except Exception:  # noqa: BLE001 — non-JSON body: can't confirm, don't assume
+        return False
+    lowered = message.lower()
+    return any(hint in lowered for hint in _BRANCH_EXISTS_HINTS)
+
+
+async def gitea_put_file(path: str, content_b64: str, new_branch: str, message: str) -> dict:
+    """Create one file on the forge via the contents API, cutting `new_branch`
+    from the repo default in the same call — the first half of the postmortem
+    PR flow (`postmortem.open_postmortem_pr_impl`); `gitea_open_pr` above opens
+    the PR against the branch this creates. A 409 (Gitea's unambiguous
+    conflict status) always means the branch (and file) already exist from a
+    prior attempt at the same incident — not fatal here, since the caller
+    still tries to open the PR against whatever is already on that branch. A
+    422 is ambiguous (Gitea also uses it for other validation failures, e.g.
+    a malformed path or base64 payload) — only treated the same way when the
+    response body's own message actually says so; any other 422 surfaces its
+    real message as an error instead of being misreported as branch_exists."""
+    headers = _gitea_headers()
+    if headers is None:
+        return {"error": _GITEA_HELP}
+    try:
+        resp = await _http().post(
+            f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/contents/{path}",
+            headers=headers,
+            json={"content": content_b64, "new_branch": new_branch, "message": message},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"gitea file creation failed: {exc}"}
+    if resp.status_code == 409 or (resp.status_code == 422 and _looks_like_branch_exists(resp)):
+        return {"status": "branch_exists", "path": path, "branch": new_branch}
+    if resp.status_code >= 400:
+        try:
+            body_message = str((resp.json() or {}).get("message", "")) or resp.text
+        except Exception:  # noqa: BLE001 — non-JSON body: fall back to raw text
+            body_message = resp.text
+        return {"error": f"gitea file creation failed: HTTP {resp.status_code} {body_message[:300]}"}
+    return {"status": "created", "path": path, "branch": new_branch}
+
+
 # ---- Grafana annotations (deploy markers) ------------------------------------
 
 
@@ -945,7 +1291,14 @@ async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) 
         resp.raise_for_status()
         annotations = [
             {
-                "time": datetime.fromtimestamp((a.get("time") or 0) / 1000).isoformat(),
+                # tz=timezone.utc is load-bearing: without it this is a naive
+                # LOCAL-clock datetime (host UTC offset baked silently into
+                # the string) that merge_history would then parse as if it
+                # were already UTC, shifting every annotation entry's ts by
+                # the host's offset.
+                "time": datetime.fromtimestamp(
+                    (a.get("time") or 0) / 1000, tz=timezone.utc
+                ).isoformat(),
                 "tags": a.get("tags", []),
                 "text": (a.get("text") or "")[:300],
             }
@@ -956,3 +1309,229 @@ async def grafana_annotations(range: str = "2h", tags: list[str] | None = None) 
                 "count": len(annotations), "annotations": annotations}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"grafana annotations query failed: {exc}"}
+
+
+# ---- deploy_history (PLAN-2 P11 Task 7): the correlation primitive ----------
+#
+# Merges four already-shaped sources into one chronological timeline.
+# Annotations and CI runs are treated as environment-wide ("source-agnostic"):
+# always kept regardless of `workload`. Argo apps and Rollouts each carry a
+# workload identity (app/rollout name) and are filtered against `workload`
+# when given. Individual source outages are skipped and named in
+# deploy_history's "sources_unavailable" — merge_history itself is pure.
+#
+# Every historical source (annotation/ci/argo) is windowed HERE against
+# `now - window_minutes`, not just upstream (Grafana is pre-windowed by its
+# own `range` query, but that's a separate mechanism the other three sources
+# don't get) — a source that hands back entries older than the window must
+# not leak them into the merged timeline. Rollout entries are a current-state
+# snapshot, not history, so they aren't subject to the window (see
+# rollout_status's docstring / the `now` stamp in deploy_history below).
+#
+# Timestamps arrive in three different shapes (rollout `+00:00`-suffixed,
+# CI/Argo `Z`-suffixed, annotation naive-but-UTC) and are normalized by
+# `_parse_entry_ts` into tz-aware UTC datetimes for both the window cutoff
+# and the sort key, then re-serialized by `_entry`/`_format_ts` into one
+# canonical `YYYY-MM-DDTHH:MM:SSZ` form on the way out — callers never see
+# the mixed input formats.
+
+_DEPLOY_HISTORY_ROLLOUTS = ("gateway", "model-proxy")
+_DEPLOY_HISTORY_CAP = 40
+
+
+def _parse_entry_ts(value: Any) -> datetime | None:
+    """Normalize one deploy_history source's ts into a tz-aware UTC datetime.
+
+    Handles the three formats in play: rollout's `+00:00` suffix, CI/Argo's
+    `Z` suffix, and annotations' naive-but-already-UTC string (naive input is
+    ASSUMED to be UTC, never the host's local time — grafana_annotations
+    builds it with `tz=timezone.utc` explicitly for exactly this reason).
+    Returns None for anything missing/unparseable so the caller can skip a
+    malformed entry instead of the whole merge blowing up on one bad ts.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_ts(dt: datetime) -> str:
+    """Canonical serialization for every merge_history entry ts, regardless
+    of which of the three input formats it started as."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _entry(ts: datetime, source: str, summary: str, ref: str) -> dict[str, Any]:
+    """Shared constructor for merge_history's four source loops: canonical
+    UTC ts serialization + the 200-char summary cap every entry must respect,
+    in one place instead of copy-pasted four times."""
+    return {"ts": _format_ts(ts), "source": source, "summary": summary[:200], "ref": ref}
+
+
+def merge_history(
+    annotations: list,
+    ci_runs: list,
+    argo_apps: list,
+    rollouts: list,
+    window_minutes: int,
+    workload: str | None,
+    now: datetime | None = None,
+) -> dict:
+    """Pure merge of the four source shapes into one timeline, sorted
+    newest-first and capped at 40 entries. Each entry: ts (canonical
+    `YYYY-MM-DDTHH:MM:SSZ` UTC), source (annotation|ci|argo|rollout), summary
+    (<=200 chars), ref.
+
+    `now` is injectable (defaults to the real current time) purely so this
+    stays a pure, deterministically testable function — deploy_history
+    computes one `now` and passes it in. Historical sources (annotation/ci/
+    argo) older than `now - window_minutes` are excluded; rollout entries are
+    a current-state snapshot and are exempt from the window (their summary is
+    prefixed to say so instead)."""
+    needle = workload.strip().lower() if workload and workload.strip() else None
+    now = now if now is not None else datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+    scored: list[tuple[datetime, dict[str, Any]]] = []
+
+    for ann in annotations or []:
+        parsed = _parse_entry_ts(ann.get("time"))
+        if parsed is None or parsed < cutoff:
+            continue
+        text = (ann.get("text") or "").strip() or "deploy annotation"
+        tags = ann.get("tags") or []
+        scored.append((parsed, _entry(
+            parsed, "annotation", text, ",".join(str(t) for t in tags)
+        )))
+
+    for run in ci_runs or []:
+        parsed = _parse_entry_ts(run.get("started_at"))
+        if parsed is None or parsed < cutoff:
+            continue
+        status = run.get("conclusion") or run.get("status") or "unknown"
+        branch = run.get("branch") or ""
+        title = (run.get("title") or "").strip()
+        head = f"CI run #{run.get('run_number')} {status} on {branch}".strip()
+        summary = f"{head}: {title}" if title else head
+        scored.append((parsed, _entry(
+            parsed, "ci", summary, run.get("sha") or run.get("url") or ""
+        )))
+
+    for app in argo_apps or []:
+        app_name = str(app.get("app") or "")
+        if needle and needle not in app_name.lower():
+            continue
+        for h in (app.get("history") or []):
+            parsed = _parse_entry_ts(h.get("deployedAt") or h.get("deployStartedAt"))
+            if parsed is None or parsed < cutoff:
+                continue
+            revision = h.get("revision") or ""
+            scored.append((parsed, _entry(
+                parsed, "argo", f"{app_name} synced to {revision}", revision
+            )))
+
+    for ro in rollouts or []:
+        name = str(ro.get("rollout") or "")
+        if needle and needle not in name.lower():
+            continue
+        parsed = _parse_entry_ts(ro.get("ts"))
+        if parsed is None:
+            continue
+        phase = ro.get("phase") or "unknown"
+        step = ro.get("step") or ""
+        aborted = " ABORTED" if ro.get("aborted") else ""
+        # No window check: rollout_status has no per-revision history, only
+        # current phase/step, so its ts is query-time, not event-time — the
+        # "current state (as of query)" prefix below is the marker postmortem
+        # timeline consumers need to NOT treat source=="rollout" as an event.
+        summary = (
+            f"current state (as of query): {name} rollout {phase} "
+            f"(step {step}){aborted}"
+        ).strip()
+        scored.append((parsed, _entry(
+            parsed, "rollout", summary, ro.get("canaryHash") or ro.get("stableHash") or ""
+        )))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    entries = [entry for _, entry in scored[:_DEPLOY_HISTORY_CAP]]
+    return {"window_minutes": window_minutes, "entries": entries, "count": len(entries)}
+
+
+async def deploy_history(window_minutes: int = 180, workload: str | None = None) -> dict:
+    """Merged chronological deploy/change timeline across Grafana
+    annotations, CI runs, Argo sync history, and rollout revisions — check
+    this FIRST for any incident. Never raises: a source that fails is skipped
+    and named in "sources_unavailable"."""
+    window_minutes = max(1, window_minutes)
+    sources_unavailable: list[str] = []
+
+    async def _try(coro: Any) -> Any:
+        try:
+            return await coro
+        except Exception as exc:  # noqa: BLE001 — one source outage must not sink the merge
+            return {"error": str(exc)}
+
+    ann_res, ci_res, argo_slim_res = await asyncio.gather(
+        _try(grafana_annotations(range=f"{window_minutes}m")),
+        _try(gitea_ci_runs(limit=10)),
+        _try(argo_app("")),
+    )
+
+    annotations: list = []
+    if isinstance(ann_res, dict) and "error" not in ann_res:
+        annotations = ann_res.get("annotations") or []
+    else:
+        sources_unavailable.append("annotation")
+
+    ci_runs: list = []
+    if isinstance(ci_res, dict) and "error" not in ci_res:
+        ci_runs = ci_res.get("runs") or []
+    else:
+        sources_unavailable.append("ci")
+
+    argo_apps: list = []
+    if isinstance(argo_slim_res, dict) and "error" not in argo_slim_res:
+        app_names = [a.get("app") for a in (argo_slim_res.get("apps") or []) if a.get("app")]
+        if app_names:
+            per_app = await asyncio.gather(*[_try(argo_app(n)) for n in app_names])
+            argo_apps = [a for a in per_app if isinstance(a, dict) and "error" not in a]
+            if not argo_apps:
+                sources_unavailable.append("argo")
+        # else: the cluster simply has no Applications yet — not an outage.
+    else:
+        sources_unavailable.append("argo")
+
+    rollouts: list = []
+    # One `now`, used both to stamp rollout entries below AND as merge_history's
+    # window-cutoff anchor (passed through), so a snapshot taken mid-request
+    # can't drift against the cutoff it's being windowed against.
+    # rollout_status has no per-revision timestamp — the Rollout CR only
+    # exposes current phase/step, not a deploy history — so query-time is the
+    # best available approximation of "when". merge_history marks every
+    # rollout summary "current state (as of query): " precisely so a
+    # postmortem timeline consumer treats source=="rollout" as observed
+    # state, not an event time.
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    rollout_results = await asyncio.gather(
+        *[_try(rollout_status(n)) for n in _DEPLOY_HISTORY_ROLLOUTS]
+    )
+    for res in rollout_results:
+        if isinstance(res, dict) and "error" not in res:
+            rollouts.append({**res, "ts": now_iso})
+    if not rollouts:
+        sources_unavailable.append("rollout")
+
+    merged = merge_history(
+        annotations, ci_runs, argo_apps, rollouts, window_minutes, workload, now=now
+    )
+    if sources_unavailable:
+        merged["sources_unavailable"] = sources_unavailable
+    return merged

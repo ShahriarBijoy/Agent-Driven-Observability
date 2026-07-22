@@ -6,6 +6,6 @@ export type Database = ReturnType<typeof createDb>;
 
 /** Build a Drizzle client over postgres.js bound to the usage-metering schema. */
 export function createDb(databaseUrl: string) {
-  const client = postgres(databaseUrl, { max: 5 });
+  const client = postgres(databaseUrl, { max: 5, max_lifetime: 60 });
   return drizzle(client, { schema });
 }

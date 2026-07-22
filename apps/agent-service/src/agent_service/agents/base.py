@@ -32,8 +32,6 @@ from ..context import RunContext
 from ..telemetry import get_tracer
 from ..tools import sdk as toolsdk
 
-_MCP_PREFIX = f"mcp__{toolsdk.SERVER}__"
-
 # Per-run Claude session ids, so a multi-turn chat (same runId) continues the
 # same SDK session instead of starting cold. Best-effort: lost on restart, which
 # just means the next turn starts fresh.
@@ -75,12 +73,23 @@ def stop_reason(
     return f"the session ended abnormally ({subtype})"
 
 
-def _display_name(name: str) -> str:
-    if name.startswith(_MCP_PREFIX):
-        return name[len(_MCP_PREFIX):]
-    if name.startswith("mcp__"):  # other servers keep a short server prefix: k8s:pods_get
-        return name[len("mcp__"):].replace("__", ":", 1)
-    return name
+def apply_override(baseline: list[str], override: list[str] | None) -> list[str]:
+    """Narrow `baseline` down to `override`.
+
+    An override can only shrink the allow-list, never grow it: any name in
+    `override` that isn't already in `baseline` is silently dropped (a runbook
+    can't smuggle in a tool the agent kind was never granted). `None` means
+    "no narrowing requested" — the full baseline passes through unchanged.
+    """
+    if override is None:
+        return list(baseline)
+    return [t for t in override if t in baseline]
+
+
+# Display-name stripping (mcp__obslab__x -> x) lives in toolsdk.display_name
+# — shared with agents/oncall.py's runbook-match artifact — since toolsdk
+# can't import this module back (base.py already imports toolsdk).
+_display_name = toolsdk.display_name
 
 
 def _result_text(content: Any) -> str:
@@ -109,6 +118,7 @@ async def run_agent_session(
     cwd: str | None = None,
     max_turns: int | None = None,
     extra_allowed: list[str] | None = None,
+    allowed_override: list[str] | None = None,
 ) -> str:
     """Run one agent turn-set to completion; returns the final assistant text."""
     server = toolsdk.build_mcp_server(ctx)
@@ -116,6 +126,14 @@ async def run_agent_session(
     allowed = settings_store.resolve_allowed(agent_kind, stg)
     if extra_allowed:
         allowed += extra_allowed
+    # A runbook (or any other narrowing signal) may only shrink the resolved
+    # baseline, never extend it — applied last, after settings grants + extras.
+    allowed = apply_override(allowed, allowed_override)
+
+    # Information barrier: oncall gets shaped server-side tools only, regardless
+    # of operator grants. Unconditionally strip built-ins and external k8s-MCP.
+    if agent_kind == "oncall":
+        allowed = [t for t in allowed if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")]
 
     # The k8s MCP child (an npx subprocess per session) is only worth spawning
     # when this agent may actually call it — and only exists once the agent-ro

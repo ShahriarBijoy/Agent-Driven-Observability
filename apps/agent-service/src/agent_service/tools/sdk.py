@@ -14,9 +14,10 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from .. import postmortem
 from ..config import config
 from ..context import RunContext
-from . import backends
+from . import backends, remediate
 from .validation import safe_artifact_name
 
 SERVER = "obslab"
@@ -35,6 +36,22 @@ def mcp(name: str) -> str:
 
 def k8s(name: str) -> str:
     return f"mcp__{K8S_SERVER}__{name}"
+
+
+def display_name(name: str) -> str:
+    """Inverse of `mcp()`/`k8s()`: strip this server's `mcp__obslab__` prefix
+    (or shorten another MCP server's `mcp__<server>__` prefix to
+    `<server>:name`) for operator-facing display. Shared by
+    `agents/base.py`'s transcript rendering and `agents/oncall.py`'s
+    runbook-match artifact — lives here (not in `agents/base.py`) because
+    `base.py` already imports this module, and `toolsdk` importing back from
+    `agents/base.py` would be a cycle."""
+    prefix = f"mcp__{SERVER}__"
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    if name.startswith("mcp__"):  # other servers keep a short server prefix: k8s:pods_get
+        return name[len("mcp__"):].replace("__", ":", 1)
+    return name
 
 
 def k8s_mcp_server() -> dict[str, Any] | None:
@@ -58,10 +75,16 @@ def k8s_mcp_server() -> dict[str, Any] | None:
     return {"type": "stdio", "command": argv[0], "args": argv[1:]}
 
 
-def _text(payload: dict[str, Any]) -> dict[str, Any]:
+def _text(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The single dispatch choke point every tool result passes through: hard
+    per-tool char budget (backends.enforce_budget/TOOL_BUDGETS) applied here
+    so no backend — however it shapes or truncates its own output — can blow
+    the model's context. Existing per-tool truncation upstream is a
+    best-effort shape; this is the backstop underneath all of them."""
+    budgeted = backends.enforce_budget(name, payload)
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
-        "is_error": "error" in payload,
+        "content": [{"type": "text", "text": json.dumps(budgeted, default=str)}],
+        "is_error": "error" in budgeted,
     }
 
 
@@ -84,7 +107,8 @@ def _text(payload: dict[str, Any]) -> dict[str, Any]:
 )
 async def _loki(args: dict) -> dict:
     return _text(
-        await backends.loki_query(args["logql"], args.get("range", "1h"), int(args.get("limit", 100)))
+        "loki_query",
+        await backends.loki_query(args["logql"], args.get("range", "1h"), int(args.get("limit", 100))),
     )
 
 
@@ -104,7 +128,8 @@ async def _loki(args: dict) -> dict:
 )
 async def _tempo(args: dict) -> dict:
     return _text(
-        await backends.tempo_query(args["traceql"], args.get("range", "1h"), int(args.get("limit", 20)))
+        "tempo_query",
+        await backends.tempo_query(args["traceql"], args.get("range", "1h"), int(args.get("limit", 20))),
     )
 
 
@@ -125,7 +150,8 @@ async def _tempo(args: dict) -> dict:
 )
 async def _mimir(args: dict) -> dict:
     return _text(
-        await backends.mimir_query(args["promql"], args.get("range", ""), args.get("step", "60s"))
+        "mimir_query",
+        await backends.mimir_query(args["promql"], args.get("range", ""), args.get("step", "60s")),
     )
 
 
@@ -143,7 +169,7 @@ async def _mimir(args: dict) -> dict:
     },
 )
 async def _marquez(args: dict) -> dict:
-    return _text(await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
+    return _text("marquez_lineage", await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
 
 
 @tool(
@@ -168,7 +194,7 @@ async def _marquez(args: dict) -> dict:
     },
 )
 async def _pg(args: dict) -> dict:
-    return _text(await backends.pg_select(args["sql"], args.get("params") or []))
+    return _text("pg_select", await backends.pg_select(args["sql"], args.get("params") or []))
 
 
 @tool(
@@ -186,7 +212,7 @@ async def _pg(args: dict) -> dict:
     },
 )
 async def _grafana_get(args: dict) -> dict:
-    return _text(await backends.grafana_get_dashboard(args["query"]))
+    return _text("grafana_get_dashboard", await backends.grafana_get_dashboard(args["query"]))
 
 
 @tool(
@@ -202,7 +228,7 @@ async def _grafana_get(args: dict) -> dict:
     },
 )
 async def _grafana(args: dict) -> dict:
-    return _text(await backends.grafana_create_dashboard(args["dashboard"]))
+    return _text("grafana_create_dashboard", await backends.grafana_create_dashboard(args["dashboard"]))
 
 
 @tool(
@@ -213,7 +239,21 @@ async def _grafana(args: dict) -> dict:
     {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
 )
 async def _runbook(args: dict) -> dict:
-    return _text(await backends.runbook_read(args["path"]))
+    return _text("runbook_read", await backends.runbook_read(args["path"]))
+
+
+@tool(
+    "runbook_lookup",
+    "Find every runbook matching the firing alert's exact alertname and return each one's body "
+    "plus metadata (a narrowed tools list, and candidate hypotheses) — the on-call agent's fast "
+    "path to the RIGHT runbook(s) instead of guessing a filename with runbook_read. The top-"
+    "level runbook/meta/content fields hold the first match; \"matches\" holds every match "
+    "(more than one when an alertname is claimed by multiple runbooks) — consult all of them. "
+    "No match returns the available runbook names instead of a bare miss.",
+    {"type": "object", "properties": {"alertname": {"type": "string"}}, "required": ["alertname"]},
+)
+async def _runbook_lookup(args: dict) -> dict:
+    return _text("runbook_lookup", await backends.runbook_lookup(args["alertname"]))
 
 
 @tool(
@@ -236,10 +276,11 @@ async def _runbook(args: dict) -> dict:
 )
 async def _k8s_events(args: dict) -> dict:
     return _text(
+        "k8s_events",
         await backends.k8s_events(
             args.get("namespace", ""), args.get("object_name", ""), args.get("level", ""),
             args.get("range", "1h"), int(args.get("limit", 60)),
-        )
+        ),
     )
 
 
@@ -263,11 +304,24 @@ async def _k8s_events(args: dict) -> dict:
 )
 async def _kubectl(args: dict) -> dict:
     return _text(
+        "kubectl_read",
         await backends.kubectl_read(
             args["verb"], args.get("resource", ""), args.get("name", ""),
             args.get("namespace", ""), args.get("selector", ""),
-        )
+        ),
     )
+
+
+@tool(
+    "alert_status",
+    "Is this alert currently firing, per Alertmanager? Returns {alertname, active, count, "
+    "since}. Re-query this AFTER executing a remediation to see whether the fix took effect — "
+    "but note that whether the incident actually CLOSES is decided server-side from this same "
+    "signal, not by anything you report.",
+    {"type": "object", "properties": {"alertname": {"type": "string"}}, "required": ["alertname"]},
+)
+async def _alert_status(args: dict) -> dict:
+    return _text("alert_status", await backends.grafana_active_alerts(args["alertname"]))
 
 
 @tool(
@@ -285,7 +339,8 @@ async def _kubectl(args: dict) -> dict:
 )
 async def _gitea_runs(args: dict) -> dict:
     return _text(
-        await backends.gitea_ci_runs(int(args.get("limit", 5)), args.get("branch", ""))
+        "gitea_ci_runs",
+        await backends.gitea_ci_runs(int(args.get("limit", 5)), args.get("branch", "")),
     )
 
 
@@ -310,9 +365,10 @@ async def _gitea_runs(args: dict) -> dict:
 )
 async def _gitea_compare(args: dict) -> dict:
     return _text(
+        "gitea_compare",
         await backends.gitea_compare(
             args["base"], args["head"], bool(args.get("include_diff", False))
-        )
+        ),
     )
 
 
@@ -333,7 +389,32 @@ async def _gitea_compare(args: dict) -> dict:
 )
 async def _grafana_annotations(args: dict) -> dict:
     return _text(
-        await backends.grafana_annotations(args.get("range", "2h"), args.get("tags"))
+        "grafana_annotations",
+        await backends.grafana_annotations(args.get("range", "2h"), args.get("tags")),
+    )
+
+
+@tool(
+    "deploy_history",
+    "Merged chronological deploy/change timeline across Grafana annotations, CI runs, "
+    "Argo sync history, and rollout revisions — check this FIRST for any incident.",
+    {
+        "type": "object",
+        "properties": {
+            "window_minutes": {"type": "integer",
+                                "description": "lookback in minutes (default 180)"},
+            "workload": {"type": "string",
+                         "description": "narrow to one workload (gateway, model-proxy, ...); "
+                                        "omit for everything"},
+        },
+    },
+)
+async def _deploy_history(args: dict) -> dict:
+    return _text(
+        "deploy_history",
+        await backends.deploy_history(
+            int(args.get("window_minutes", 180)), args.get("workload")
+        ),
     )
 
 
@@ -356,9 +437,10 @@ async def _grafana_annotations(args: dict) -> dict:
 )
 async def _gitea_pr(args: dict) -> dict:
     return _text(
+        "gitea_open_pr",
         await backends.gitea_open_pr(
             args["head"], args.get("base", "main"), args["title"], args.get("body", "")
-        )
+        ),
     )
 
 
@@ -378,7 +460,7 @@ async def _gitea_pr(args: dict) -> dict:
     },
 )
 async def _argo_app(args: dict) -> dict:
-    return _text(await backends.argo_app(args.get("name", "")))
+    return _text("argo_app", await backends.argo_app(args.get("name", "")))
 
 
 @tool(
@@ -397,7 +479,8 @@ async def _argo_app(args: dict) -> dict:
 )
 async def _rollout_status(args: dict) -> dict:
     return _text(
-        await backends.rollout_status(args["name"], args.get("namespace", "subject"))
+        "rollout_status",
+        await backends.rollout_status(args["name"], args.get("namespace", "subject")),
     )
 
 
@@ -418,43 +501,215 @@ async def _rollout_status(args: dict) -> dict:
 )
 async def _analysisrun(args: dict) -> dict:
     return _text(
+        "analysisrun_get",
         await backends.analysisrun_get(
             args.get("name", ""), args.get("rollout", ""), args.get("namespace", "subject")
-        )
+        ),
     )
 
 
 _STATELESS = [
-    _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook,
+    _loki, _tempo, _mimir, _marquez, _pg, _grafana_get, _grafana, _runbook, _runbook_lookup,
     _k8s_events, _kubectl, _gitea_runs, _gitea_compare, _grafana_annotations,
-    _gitea_pr, _argo_app, _rollout_status, _analysisrun,
+    _gitea_pr, _argo_app, _rollout_status, _analysisrun, _deploy_history, _alert_status,
 ]
 
 
 # ---- per-run server (binds ctx into approval + artifact) ---------------------
 
 
+async def request_approval_impl(ctx: RunContext, prompt: str, action_id: str | None) -> dict:
+    """The real body behind the `request_approval` MCP tool, factored out of
+    `build_mcp_server`'s per-run closure so it's directly callable — by the
+    tool wrapper below in production, and by tests that want to exercise the
+    genuine dry-run -> approval -> approval_id flow without going through the
+    Agent SDK's MCP dispatch machinery. When `action_id` names a stashed
+    dry-run for this run, the verified diff block is appended to the prompt
+    BEFORE it's persisted, exactly as the tool contract promises."""
+    if action_id:
+        block = remediate.server_verified_block(ctx.run_id, action_id)
+        if block is None:
+            return {
+                "error": f"no dry-run on record for action_id {action_id!r} on this run — "
+                          "call the remediation tool with dry_run=true first, then pass "
+                          "the action_id it returns here",
+            }
+        prompt = f"{prompt}{block}"
+    decision, approval_id = await ctx.request_approval(prompt)
+    instruction = (
+        "Approved by the operator. Proceed."
+        if decision == "approved"
+        else "Denied by the operator. Do not proceed; stop and explain why."
+    )
+    return {"decision": decision, "approval_id": approval_id, "instruction": instruction}
+
+
 def build_mcp_server(ctx: RunContext):
     @tool(
         "request_approval",
         "Pause and ask the human operator to approve a sensitive action before proceeding. "
-        "Returns the decision. If denied, do NOT proceed — stop and explain.",
+        "Returns the decision. If denied, do NOT proceed — stop and explain. For a remediation "
+        "tool's dry_run result, pass its action_id here (do NOT paste the diff into prompt "
+        "yourself) — the server looks up the matching dry-run and appends a verified diff block "
+        "to the approval card before it's shown to the operator, so the card always reflects a "
+        "real server-side read rather than model-authored text.",
         {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "one operator-readable sentence"},
+                "action_id": {
+                    "type": "string",
+                    "description": "optional: the action_id from a remediation tool's dry-run "
+                                    "result. When given, a matching dry-run must be on record for "
+                                    "this run (call the remediation tool with dry_run=true first) "
+                                    "— the server appends its verified diff to the approval card.",
+                },
             },
             "required": ["prompt"],
         },
     )
     async def _approval(args: dict) -> dict:
-        decision = await ctx.request_approval(args["prompt"])
-        instruction = (
-            "Approved by the operator. Proceed."
-            if decision == "approved"
-            else "Denied by the operator. Do not proceed; stop and explain why."
-        )
-        return _text({"decision": decision, "instruction": instruction})
+        result = await request_approval_impl(ctx, args["prompt"], args.get("action_id"))
+        return _text("request_approval", result)
+
+    # ---- remediation tools (PLAN-2 P11 Task 8) --------------------------------
+    # Per-run (need ctx.run_id for the server-side approval gate — see
+    # remediate._execute_gate). Every one defaults to dry_run=True: that path
+    # only reads live state and returns a diff + action_id fingerprint, never
+    # mutates. Setting dry_run=false requires approval_id naming a Postgres
+    # approval row for THIS run whose summary quotes that exact action_id back
+    # — enforced server-side in remediate.py, not by anything the model says.
+
+    _REMEDIATE_COMMON = {
+        "dry_run": {
+            "type": "boolean",
+            "description": "default true: read-only, returns a diff + action_id. "
+                            "Set false only after request_approval returned 'approved' "
+                            "with this action_id, and pass approval_id.",
+        },
+        "approval_id": {
+            "type": "string",
+            "description": "the approval id from request_approval; required when dry_run=false",
+        },
+    }
+
+    def _remediate_schema(extra: dict[str, Any], required: list[str]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "workload": {
+                    "type": "string",
+                    "description": "gateway | model-proxy | retriever | embedder | load-generator",
+                },
+                **extra,
+                **_REMEDIATE_COMMON,
+            },
+            "required": ["workload", *required],
+        }
+
+    @tool(
+        "rollout_undo",
+        "Roll deployment/<workload> back to its previous revision (kubectl rollout undo). "
+        "dry_run (default true) reads the current vs previous revision and their images "
+        "without changing anything.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_undo(args: dict) -> dict:
+        return _text("rollout_undo", await remediate.rollout_undo(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "rollout_abort",
+        "Abort the Argo Rollout canary in progress for <workload> (merge-patches the Rollout's "
+        "status subresource with status.abort=true). dry_run (default true) reports the current "
+        "phase/step and the exact patch that would be applied.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_abort(args: dict) -> dict:
+        return _text("rollout_abort", await remediate.rollout_abort(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "rollout_promote",
+        "Fully promote the Argo Rollout for <workload>, skipping remaining steps/analysis "
+        "(status.promoteFull=true, clearing spec.paused). dry_run (default true) reports the "
+        "current phase/step and the exact patches that would be applied.",
+        _remediate_schema({}, []),
+    )
+    async def _rollout_promote(args: dict) -> dict:
+        return _text("rollout_promote", await remediate.rollout_promote(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "scale_deployment",
+        "Scale deployment/<workload> to `replicas` (0..6). dry_run (default true) reads the "
+        "live replica count first and returns a diff like 'spec.replicas: 2 -> 4'.",
+        _remediate_schema(
+            {"replicas": {"type": "integer", "description": "target replica count, 0..6"}},
+            ["replicas"],
+        ),
+    )
+    async def _scale_deployment(args: dict) -> dict:
+        try:
+            replicas = int(args["replicas"])
+        except (TypeError, ValueError):
+            return _text("scale_deployment", {"error": "replicas must be an integer"})
+        return _text("scale_deployment", await remediate.scale_deployment(
+            ctx, args["workload"], replicas,
+            bool(args.get("dry_run", True)), args.get("approval_id"),
+        ))
+
+    @tool(
+        "patch_memory_limit",
+        "Patch deployment/<workload>'s container memory limit to `memory_mi` MiB (64..2048). "
+        "dry_run (default true) reads the live limit first and returns a diff like "
+        "'limits.memory: 512Mi -> 1024Mi'.",
+        _remediate_schema(
+            {"memory_mi": {"type": "integer", "description": "target memory limit in MiB, 64..2048"}},
+            ["memory_mi"],
+        ),
+    )
+    async def _patch_memory_limit(args: dict) -> dict:
+        try:
+            memory_mi = int(args["memory_mi"])
+        except (TypeError, ValueError):
+            return _text("patch_memory_limit", {"error": "memory_mi must be an integer"})
+        return _text("patch_memory_limit", await remediate.patch_memory_limit(
+            ctx, args["workload"], memory_mi,
+            bool(args.get("dry_run", True)), args.get("approval_id"),
+        ))
+
+    @tool(
+        "restart_workload",
+        "Rolling-restart deployment/<workload> (stamps a restartedAt annotation; no spec "
+        "change). dry_run (default true) describes the patch without applying it.",
+        _remediate_schema({}, []),
+    )
+    async def _restart_workload(args: dict) -> dict:
+        return _text("restart_workload", await remediate.restart_workload(
+            ctx, args["workload"], bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
+
+    @tool(
+        "update_db_secret",
+        "Sync secret/subject-db-credentials from the lab vault after `obs fail stale-secret` "
+        "rotates the in-cluster Postgres password without updating the Secret. No workload "
+        "param — the target is always this one Secret. dry_run (default true) reports a masked "
+        "diff (POSTGRES_PASSWORD: ****<old-sha8> -> ****<new-sha8>); the real password is never "
+        "shown. Errors if the vault has no rotated credential to sync.",
+        {
+            "type": "object",
+            "properties": {**_REMEDIATE_COMMON},
+            "required": [],
+        },
+    )
+    async def _update_db_secret(args: dict) -> dict:
+        return _text("update_db_secret", await remediate.update_db_secret(
+            ctx, bool(args.get("dry_run", True)), args.get("approval_id")
+        ))
 
     @tool(
         "gh_open_pr",
@@ -477,9 +732,10 @@ def build_mcp_server(ctx: RunContext):
     async def _gh(args: dict) -> dict:
         repo = ctx.workspace or config.subject_repo_dir
         return _text(
+            "gh_open_pr",
             await backends.gh_open_pr(
                 repo, args["branch"], args["title"], args.get("body", ""), args.get("patch", "")
-            )
+            ),
         )
 
     @tool(
@@ -504,7 +760,7 @@ def build_mcp_server(ctx: RunContext):
         # crafted/injected name can't write a file copy outside ARTIFACTS_DIR.
         safe_name = safe_artifact_name(args.get("name"), default_name)
         if safe_name is None:
-            return _text({"error": "invalid artifact name", "name": args.get("name")})
+            return _text("save_artifact", {"error": "invalid artifact name", "name": args.get("name")})
         artifact = await ctx.add_artifact(safe_name, media, args["content"])
         # Also drop a file copy under ARTIFACTS_DIR for out-of-band inspection.
         try:
@@ -517,9 +773,47 @@ def build_mcp_server(ctx: RunContext):
                 fh.write(args["content"])
         except Exception:  # noqa: BLE001 — the DB copy is authoritative
             pass
-        return _text({"artifact_id": artifact.id, "name": safe_name})
+        return _text("save_artifact", {"artifact_id": artifact.id, "name": safe_name})
 
-    return create_sdk_mcp_server(name=SERVER, tools=[*_STATELESS, _gh, _approval, _artifact])
+    @tool(
+        "open_postmortem_pr",
+        "Close out the incident: compose the MACHINE-BUILT timeline (every remediation/"
+        "verification step, alert firing/resolved observation, deploy in the incident window, "
+        "k8s event, and the log-spike onset — never anything you report) with your narrative, "
+        "and open it as a pull request on the local Gitea forge. narrative_md should cover "
+        "Summary / Impact / Root cause / What fixed it / Lessons — do NOT include timestamps "
+        "yourself; the machine timeline is the only source of times and is prepended for you. "
+        "Call this to finish EVERY incident, resolved or not.",
+        {
+            "type": "object",
+            "properties": {
+                "narrative_md": {
+                    "type": "string",
+                    "description": "Summary / Impact / Root cause / What fixed it / Lessons — no timestamps",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "short kebab-case filename slug, e.g. gateway-oom-restart",
+                },
+            },
+            "required": ["narrative_md", "slug"],
+        },
+    )
+    async def _postmortem_pr(args: dict) -> dict:
+        return _text(
+            "open_postmortem_pr",
+            await postmortem.open_postmortem_pr_impl(ctx, args["narrative_md"], args["slug"]),
+        )
+
+    return create_sdk_mcp_server(
+        name=SERVER,
+        tools=[
+            *_STATELESS, _gh, _approval, _artifact,
+            _rollout_undo, _rollout_abort, _rollout_promote,
+            _scale_deployment, _patch_memory_limit, _restart_workload,
+            _update_db_secret, _postmortem_pr,
+        ],
+    )
 
 
 # save_artifact kind → (media type, default file name). Unit-tested; keep in
@@ -551,9 +845,12 @@ K8S_READ_TOOLS = [
 CLUSTER_READ_TOOLS = [*K8S_READ_TOOLS, mcp("k8s_events"), mcp("kubectl_read")]
 
 # Delivery history (PLAN-2 P9): deploy annotations + CI runs + diffs — the
-# "what changed right before this?" axis of an investigation.
+# "what changed right before this?" axis of an investigation. deploy_history
+# (P11 Task 7) is the merged view across this AND the gitops surface below —
+# it belongs in every toolset that already carries both.
 DELIVERY_READ_TOOLS = [
     mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
+    mcp("deploy_history"),
 ]
 
 # The gitops surface (P10): Application/Rollout/AnalysisRun CR reads —
@@ -585,7 +882,33 @@ TOOLSETS: dict[str, list[str]] = {
         mcp("gh_open_pr"), mcp("gitea_open_pr"), mcp("request_approval"),
         mcp("save_artifact"),
     ],
+    "oncall": [
+        # read/investigate — no external mcp__k8s__ MCP, no Bash/Read/Glob;
+        # this agent works the shaped, server-side tools only.
+        mcp("loki_query"), mcp("tempo_query"), mcp("mimir_query"),
+        mcp("pg_select"), mcp("runbook_read"),
+        mcp("k8s_events"), mcp("kubectl_read"),
+        mcp("grafana_annotations"), mcp("gitea_ci_runs"), mcp("gitea_compare"),
+        mcp("argo_app"), mcp("rollout_status"), mcp("analysisrun_get"),
+        # phase-11 tools (registered in later tasks; names fixed now)
+        mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
+        mcp("rollout_undo"), mcp("rollout_abort"), mcp("rollout_promote"),
+        mcp("scale_deployment"), mcp("patch_memory_limit"),
+        mcp("restart_workload"), mcp("update_db_secret"),
+        # session tools
+        mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+    ],
 }
+
+# Tools every oncall session keeps even when a matched runbook narrows the
+# allow-list (allowed_override in base.run_agent_session): the investigation
+# spine (runbook_read/runbook_lookup/deploy_history/alert_status) and the
+# session-close tools (request_approval/save_artifact/open_postmortem_pr) — a
+# runbook can narrow which remediation tools are on offer, never these.
+ONCALL_ALWAYS_TOOLS: list[str] = [
+    mcp("runbook_read"), mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
+    mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+]
 
 # Every tool the settings UI can grant to an agent, with an operator-facing
 # one-liner. MCP entries mirror the @tool definitions above; built-ins are
@@ -604,6 +927,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Read-only SELECT against the lab Postgres"},
     {"name": mcp("runbook_read"), "kind": "mcp",
      "description": "Read a Markdown runbook from runbooks/"},
+    {"name": mcp("runbook_lookup"), "kind": "mcp",
+     "description": "Find the runbook matching a firing alert's name (narrows the toolset)"},
     {"name": mcp("grafana_get_dashboard"), "kind": "mcp",
      "description": "List Grafana dashboards or fetch one's JSON model"},
     {"name": mcp("grafana_create_dashboard"), "kind": "mcp",
@@ -656,6 +981,27 @@ TOOL_CATALOG: list[dict[str, str]] = [
      "description": "Argo Rollout canary state: phase, step, hashes, replicas"},
     {"name": mcp("analysisrun_get"), "kind": "mcp",
      "description": "AnalysisRun verdicts with measurements verbatim"},
+    {"name": mcp("deploy_history"), "kind": "mcp",
+     "description": "Merged chronological deploy/change timeline (annotations+CI+Argo+rollouts)"},
+    {"name": mcp("alert_status"), "kind": "mcp",
+     "description": "Is this alert currently firing per Alertmanager (active/count/since)"},
+    {"name": mcp("rollout_undo"), "kind": "mcp",
+     "description": "Roll a deployment back to its previous revision (dry-run first, approval-gated)"},
+    {"name": mcp("rollout_abort"), "kind": "mcp",
+     "description": "Abort an in-progress Rollout canary (dry-run first, approval-gated)"},
+    {"name": mcp("rollout_promote"), "kind": "mcp",
+     "description": "Fully promote a Rollout, skipping remaining steps (dry-run first, approval-gated)"},
+    {"name": mcp("scale_deployment"), "kind": "mcp",
+     "description": "Scale a deployment's replica count 0..6 (dry-run first, approval-gated)"},
+    {"name": mcp("patch_memory_limit"), "kind": "mcp",
+     "description": "Patch a deployment's container memory limit, 64..2048Mi (dry-run first, approval-gated)"},
+    {"name": mcp("restart_workload"), "kind": "mcp",
+     "description": "Rolling-restart a deployment (dry-run first, approval-gated)"},
+    {"name": mcp("update_db_secret"), "kind": "mcp",
+     "description": "Sync the DB Secret from the lab vault after a stale-secret rotation "
+                     "(dry-run first, approval-gated, password never shown)"},
+    {"name": mcp("open_postmortem_pr"), "kind": "mcp",
+     "description": "Compose the machine timeline + your narrative and open a postmortem PR"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -773,5 +1119,40 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "automatically, picked by the workspace's origin host. If it reports branch_pushed without "
         "a PR, follow up with gitea_open_pr for that branch. Keep the change minimal and "
         "well-described."
+    ),
+    "oncall": (
+        "You are the on-call engineer for an AI observability lab, responding to a page. "
+        "You have no shell and no file access — every action goes through your named tools. "
+        "You must not attempt to inspect chaos-injection state; diagnosing 'the chaos injector "
+        "did it' is a failed diagnosis. The chaos injector, if any is running, is a fact of the "
+        "environment, not a root cause — find the real one in the telemetry and delivery signal. "
+        "Start from the pre-check leads already injected into this conversation (recent restarts, "
+        "OOM signals, error-rate deltas, matched runbook candidates) — they are your investigation "
+        "shortcut, not a substitute for evidence. Consult the matched runbook with runbook_lookup / "
+        "runbook_read and follow its diagnostic steps. Correlate with deploy_history: a bad deploy "
+        "shortly before the alert onset is guilty until proven otherwise — name the commit. Use "
+        "loki_query, tempo_query, mimir_query, k8s_events, and kubectl_read to name the root cause "
+        "with evidence — query results, never vibes or guesses. "
+        "Once you have an evidence-backed root cause, propose a remediation and DRY-RUN it first "
+        "(the remediation tools accept a dry_run flag, and default to it): the dry-run returns "
+        "an action_id. Call request_approval with a one-sentence summary AND that action_id — "
+        "do NOT paste the diff into the summary yourself, the server looks up the dry-run and "
+        "appends the verified diff to the approval card for you. Wait for the decision before "
+        "executing for real (dry_run=false with the same action_id and the approval_id "
+        "request_approval returned). If denied, stop and say so plainly — do not retry "
+        "unapproved. An approval is single-use per dry-run: if you need to execute again, "
+        "dry-run again first. "
+        "After executing the real remediation, re-query alert_status repeatedly until it reports "
+        "recovery, or until you can no longer justify continuing — in which case report the "
+        "failure to recover explicitly; never assume success without re-querying. Report the "
+        "outcome you observe, but closure of the incident is decided server-side from the same "
+        "alert_status signal, not by your report. "
+        "Finish every incident, resolved or not, by calling open_postmortem_pr with your "
+        "narrative (Summary / Impact / Root cause / What fixed it / Lessons) and a short "
+        "kebab-case slug. Do NOT include timestamps in your narrative — the machine timeline "
+        "above the fold is the only source of times; the tool composes it together with your "
+        "narrative, so a time you write yourself would only be redundant at best. "
+        "Narrate as you go: one short sentence before each round of tool calls saying what "
+        "you're checking and why."
     ),
 }

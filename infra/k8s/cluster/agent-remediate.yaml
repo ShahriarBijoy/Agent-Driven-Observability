@@ -1,0 +1,74 @@
+# Scoped writer identity for the on-call agent's remediation tools (PLAN-2
+# P11 Task 8). agent-ro (agent-ro.yaml, ClusterRole `view`) is READ-ONLY and
+# cluster-wide; this is the opposite shape on purpose - the only identity the
+# agent ever mutates the cluster with, and it is deliberately narrow on every
+# axis RBAC offers:
+#
+#   - Role, not ClusterRole: scoped to the `subject` namespace only. The
+#     agent-remediate ServiceAccount itself still lives in kube-system (same
+#     split as agent-ro) so a compromised `subject` workload can never read
+#     its own remediation credentials.
+#   - Deployments: get/list/patch on the resource (rollout undo, the
+#     restartedAt annotation patch, patch_memory_limit's container resize)
+#     plus get/patch/update on the `scale` subresource specifically
+#     (scale_deployment goes through `kubectl scale`, which is the scale
+#     subresource - not a raw spec.replicas patch).
+#   - ReplicaSets: get/list only - `kubectl rollout history`/`rollout undo`
+#     against a plain Deployment (rollout_undo's diff builder and its execute
+#     path) resolve revisions through the Deployment's ReplicaSets, so the
+#     identity needs read access to them even though it never mutates one.
+#     Rollouts (below) don't need this - Argo Rollouts tracks its own
+#     revision history on the Rollout CR, not via ReplicaSets.
+#   - Rollouts (argoproj.io): get/list/patch on both the Rollout resource and
+#     its `status` subresource - rollout_abort/rollout_promote patch
+#     `.status.abort` / `.status.promoteFull` via `--subresource=status`
+#     merge patches (verified against the kubectl-argo-rollouts plugin
+#     source: this is exactly what its `abort`/`promote --full` commands
+#     issue).
+#   - Secrets: get/patch on EXACTLY ONE named Secret (subject-db-credentials,
+#     via `resourceNames`) - not `secrets` broadly. This is for Task 9's
+#     update_db_secret tool; Task 8 does not implement that tool, but the
+#     RBAC is provisioned now so Task 9 needs no cluster change, only code.
+#     No `list`/`watch`/`create`/`delete` on secrets at all.
+#   - No verbs anywhere on pods, exec, logs, or any other resource kind - a
+#     remediation tool that needed those would be out of scope for this
+#     identity by construction, not by convention.
+#
+# Every kubectl call using this identity is still a fixed-argv subprocess
+# (tools/remediate.py's `_kubectl`, the same no-shell pattern as
+# backends.kubectl_read) with `-n subject` hard-coded - RBAC is the second
+# layer, not the only one. The kubeconfig is minted by
+# `obs k8s agent-remediate-kubeconfig` (168h token, same TTL rationale as
+# agent-ro) and is NEVER handed to the model as an MCP server - only the six
+# named remediation tools use it, server-side, behind validate_remediation's
+# hard-deny list and the approval-gated dry-run/execute flow.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: agent-remediate, namespace: kube-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: agent-remediate, namespace: subject }
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [subject-db-credentials]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, patch]
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    verbs: [get, patch, update]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+  - apiGroups: [argoproj.io]
+    resources: [rollouts, rollouts/status]
+    verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: agent-remediate, namespace: subject }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: agent-remediate }
+subjects: [{ kind: ServiceAccount, name: agent-remediate, namespace: kube-system }]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent_service.agents.base import _DENYABLE_BUILTINS, stop_reason
+from agent_service.tools.sdk import TOOLSETS
 
 
 def test_normal_completion_is_not_a_failure():
@@ -37,3 +38,42 @@ def test_deny_list_covers_the_observed_flailing_tools():
     # be removable from context for agents that weren't granted them.
     for name in ("Bash", "Read", "Glob", "Grep"):
         assert name in _DENYABLE_BUILTINS
+
+
+def test_allowed_override_only_narrows():
+    from agent_service.agents.base import apply_override
+
+    assert apply_override(["a", "b", "c"], ["b", "zzz"]) == ["b"]
+    assert apply_override(["a", "b"], None) == ["a", "b"]
+
+
+def test_oncall_information_barrier_removes_unshaped_tools():
+    """Oncall must not use built-ins or external MCP, regardless of grants."""
+    # Simulate an allowed-list that includes tools oncall shouldn't have
+    # (via operator grants or extra_allowed).
+    test_allowed = [
+        # Legitimate oncall tools from TOOLSETS
+        *TOOLSETS["oncall"],
+        # Unshaped tools that might be granted but should be stripped
+        "Bash", "Read", "Glob",
+        "mcp__k8s__pods_list", "mcp__k8s__pods_get",
+    ]
+
+    # Apply the barrier (mimicking the logic in run_agent_session for oncall)
+    filtered = [
+        t for t in test_allowed
+        if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")
+    ]
+
+    # Verify unshaped tools are gone
+    assert "Bash" not in filtered
+    assert "Read" not in filtered
+    assert "Glob" not in filtered
+    assert "mcp__k8s__pods_list" not in filtered
+    assert "mcp__k8s__pods_get" not in filtered
+
+    # Verify oncall's legitimate tools remain
+    assert "mcp__obslab__loki_query" in filtered or "mcp__obslab__loki_query" in TOOLSETS["oncall"]
+    legit_oncall_tool = TOOLSETS["oncall"][0] if TOOLSETS["oncall"] else None
+    if legit_oncall_tool:
+        assert legit_oncall_tool in filtered

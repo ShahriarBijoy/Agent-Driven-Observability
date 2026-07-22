@@ -85,3 +85,17 @@ def test_ev_artifact_shape() -> None:
     assert out["type"] == "artifact"
     assert out["artifact"]["id"] == "a1"
     assert out["artifact"]["createdAt"]
+
+
+def test_oncall_agent_kind():
+    from agent_service.models import AgentKind
+    assert AgentKind("oncall").value == "oncall"
+
+
+def test_agent_kind_f_string_rendering():
+    from agent_service.models import AgentKind
+    # StrEnum ensures f-string and str() render the enum value, not the full name
+    assert f"{AgentKind('oncall')}" == "oncall"
+    assert str(AgentKind('oncall')) == "oncall"
+    assert f"{AgentKind('rca')}" == "rca"
+    assert str(AgentKind('rca')) == "rca"

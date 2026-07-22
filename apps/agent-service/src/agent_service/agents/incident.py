@@ -96,3 +96,12 @@ async def run_incident_reporter(ctx: RunContext, payload: dict[str, Any]) -> Non
         run_id=ctx.run_id,
     )
     await ctx.end("completed", summary=f"{incident_id}: {info['alertname']}")
+
+
+async def run_incident_chat(ctx: RunContext, message: str) -> None:
+    """Ad-hoc chat entrypoint (CHAT_AGENTS) — lets an operator talk to the
+    incident reporter directly, outside the webhook-triggered path above."""
+    await ctx.begin(trigger="chat")
+    await ctx.add_user_message(message)
+    await run_agent_session(ctx, "incident-reporter", message, max_turns=24)
+    await ctx.end("completed")

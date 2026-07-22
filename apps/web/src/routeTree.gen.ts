@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunbooksRouteImport } from './routes/runbooks'
+import { Route as OncallRouteImport } from './routes/oncall'
 import { Route as LineageRouteImport } from './routes/lineage'
 import { Route as IncidentsRouteImport } from './routes/incidents'
 import { Route as IndexRouteImport } from './routes/index'
@@ -32,6 +33,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const RunbooksRoute = RunbooksRouteImport.update({
   id: '/runbooks',
   path: '/runbooks',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OncallRoute = OncallRouteImport.update({
+  id: '/oncall',
+  path: '/oncall',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LineageRoute = LineageRouteImport.update({
@@ -69,6 +75,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/incidents': typeof IncidentsRoute
   '/lineage': typeof LineageRoute
+  '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
@@ -80,6 +87,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/incidents': typeof IncidentsRoute
   '/lineage': typeof LineageRoute
+  '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
@@ -92,6 +100,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/incidents': typeof IncidentsRoute
   '/lineage': typeof LineageRoute
+  '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
@@ -105,6 +114,7 @@ export interface FileRouteTypes {
     | '/'
     | '/incidents'
     | '/lineage'
+    | '/oncall'
     | '/runbooks'
     | '/settings'
     | '/telemetry'
@@ -116,6 +126,7 @@ export interface FileRouteTypes {
     | '/'
     | '/incidents'
     | '/lineage'
+    | '/oncall'
     | '/runbooks'
     | '/settings'
     | '/telemetry'
@@ -127,6 +138,7 @@ export interface FileRouteTypes {
     | '/'
     | '/incidents'
     | '/lineage'
+    | '/oncall'
     | '/runbooks'
     | '/settings'
     | '/telemetry'
@@ -139,6 +151,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IncidentsRoute: typeof IncidentsRoute
   LineageRoute: typeof LineageRoute
+  OncallRoute: typeof OncallRoute
   RunbooksRoute: typeof RunbooksRoute
   SettingsRoute: typeof SettingsRoute
   TelemetryRoute: typeof TelemetryRoute
@@ -168,6 +181,13 @@ declare module '@tanstack/react-router' {
       path: '/runbooks'
       fullPath: '/runbooks'
       preLoaderRoute: typeof RunbooksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oncall': {
+      id: '/oncall'
+      path: '/oncall'
+      fullPath: '/oncall'
+      preLoaderRoute: typeof OncallRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lineage': {
@@ -219,6 +239,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IncidentsRoute: IncidentsRoute,
   LineageRoute: LineageRoute,
+  OncallRoute: OncallRoute,
   RunbooksRoute: RunbooksRoute,
   SettingsRoute: SettingsRoute,
   TelemetryRoute: TelemetryRoute,

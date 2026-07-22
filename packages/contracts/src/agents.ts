@@ -16,6 +16,7 @@ export const AgentKindSchema = z.enum([
   "auto-fixer",
   "dashboard-generator",
   "runbook-executor",
+  "oncall", // P11: the autonomous on-call brain (alert-triggered + chat)
 ]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 

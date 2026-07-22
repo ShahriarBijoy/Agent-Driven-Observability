@@ -39,6 +39,7 @@ AGENT_DESCRIPTIONS: dict[str, str] = {
     "dashboard-generator": "Turns a natural-language brief into a Grafana dashboard.",
     "runbook-executor": "Executes runbooks step by step behind approval gates.",
     "auto-fixer": "Edits a contained repo clone and opens approval-gated PRs.",
+    "oncall": "Autonomous on-call: investigates, remediates behind approval, verifies recovery.",
 }
 
 # Mutating agents run unattended (no human at a CLI prompt), so they can't fall

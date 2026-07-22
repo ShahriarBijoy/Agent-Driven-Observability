@@ -1,3 +1,10 @@
+---
+alert_types: []
+tools: [pg_select, save_artifact]
+hypotheses:
+  - Not alert-driven — an operator wants an on-demand point-in-time snapshot
+---
+
 # Snapshot the agent audit log
 
 **Trigger:** on-call wants a point-in-time snapshot of recent agent activity
