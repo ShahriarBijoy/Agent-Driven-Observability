@@ -73,13 +73,14 @@ function deadlineLabel(iso: string): { text: string; overdue: boolean } {
 /** Diff blocks arrive appended to the approval summary as plain text after the
  * server-verified marker (remediate.py never fences them) — wrap that tail in
  * a fenced code block so <Markdown> renders it monospace with whitespace
- * preserved, instead of collapsing it into a run-on paragraph. */
+ * preserved, instead of collapsing it into a run-on paragraph. Don't double-wrap
+ * if the block already contains embedded fences. */
 function formatApprovalSummary(summary: string): string {
   const markerIdx = summary.indexOf("--- server-verified dry-run");
   if (markerIdx === -1) return summary;
   const before = summary.slice(0, markerIdx).trimEnd();
   const block = summary.slice(markerIdx).trim();
-  if (block.startsWith("```")) return summary;
+  if (block.includes("```")) return summary;
   return `${before}\n\n\`\`\`\n${block}\n\`\`\``;
 }
 
