@@ -2,7 +2,13 @@ import { AgentSettingsUpdateSchema, ApprovalDecisionRequestSchema } from "@obs/c
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import * as agentClient from "./agent-client";
-import { incidentById, recentIncidents, recentAgentRunsFromDb } from "./db";
+import {
+  incidentById,
+  oncallFeed,
+  oncallIncidentDetail,
+  recentIncidents,
+  recentAgentRunsFromDb,
+} from "./db";
 import { serverEnv } from "./env";
 import { fetchGoldenSignals } from "./mimir";
 import { listRunbooks } from "./runbooks";
@@ -51,6 +57,20 @@ export const getIncidentInbox = createServerFn({ method: "GET" })
       selected = data.id === SAMPLE_INCIDENT.id ? SAMPLE_INCIDENT : await incidentById(data.id);
     }
     return { incidents, selected };
+  });
+
+/** Phase 11: the on-call feed — newest-first incidents with alert-storm size
+ * and linked runs. Powers the /oncall left pane and its 2.5s poll. */
+export const getOncallFeed = createServerFn({ method: "GET" }).handler(async () => {
+  return oncallFeed(50);
+});
+
+/** One incident's on-call detail: machine timeline, pre-check leads,
+ * runbook-match, and any pending approval. Null when the id is unknown. */
+export const getOncallIncident = createServerFn({ method: "GET" })
+  .inputValidator(z.object({ id: z.string().min(1) }))
+  .handler(async ({ data }) => {
+    return oncallIncidentDetail(data.id);
   });
 
 export const getRunbooks = createServerFn({ method: "GET" }).handler(async () => {
