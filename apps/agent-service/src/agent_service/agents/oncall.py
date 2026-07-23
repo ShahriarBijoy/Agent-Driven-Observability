@@ -17,8 +17,10 @@ framing both the banner and the prompt surface to the model.
 
 Pre-check injection (Task 5, `precheck.py`): before the model takes its first
 turn, the deterministic check battery runs and its leads-first report is
-prepended to the prompt (and persisted as the `prechecks.md` artifact) — the
-Grafana Sift pattern.
+prepended to the prompt — the Grafana Sift pattern. The report (and the
+runbook-match summary) ride along via `postmortem.record_run_context` and
+surface as postmortem.md's "Investigation context" section, not as the
+standalone prechecks.md / runbook-match.md artifacts they used to be.
 
 Runbook-driven narrowing (Task 6, `tools/backends.py`'s `runbook_lookup`):
 `runbook_lookup` returns EVERY runbook matching the alert's exact name, not
@@ -40,7 +42,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .. import db, precheck
+from .. import db, postmortem, precheck
 from ..config import config
 from ..context import RunContext
 from ..tools import backends, remediate
@@ -141,26 +143,30 @@ def _build_prompt(
         "conversation, consult the matched runbook, correlate with deploy_history, name the "
         "root cause with evidence, dry-run your remediation and put the diff in the "
         "request_approval summary, execute once approved, re-query alert_status until "
-        "recovery (or report failure explicitly), then close with open_postmortem_pr."
+        "recovery (or report failure explicitly), then close with open_postmortem_pr — "
+        "your narrative must include the pipeline mermaid diagram marking the failing hop, "
+        "and a report.html chart artifact when a metric carries the story."
     )
 
 
-def _runbook_artifact(match: dict, allowed_override: list[str] | None) -> str:
-    """The `runbook-match.md` artifact: EVERY runbook that matched (or none)
-    and the resulting narrowed toolset — the acceptance signal that a runbook
-    match (or a tied multi-match) visibly narrows the toolbox."""
+def _runbook_summary(match: dict, allowed_override: list[str] | None) -> str:
+    """The runbook-match summary embedded in postmortem.md's "Investigation
+    context" section (it used to be a standalone runbook-match.md artifact):
+    EVERY runbook that matched (or none) and the resulting narrowed toolset —
+    the acceptance signal that a runbook match (or a tied multi-match)
+    visibly narrows the toolbox."""
     matches = match.get("matches") or []
     if matches:
         names = ", ".join(f"`{m['runbook']}`" for m in matches)
         tools = ", ".join(sorted(_plain_name(t) for t in (allowed_override or []))) or "(none)"
         return (
-            f"# Runbook match\n\n**Matched ({len(matches)}):** {names}\n\n"
-            f"**Narrowed toolset ({len(allowed_override or [])} tools):** {tools}\n"
+            f"**Runbook match ({len(matches)}):** {names} — toolset narrowed to "
+            f"{len(allowed_override or [])} tools: {tools}"
         )
     available = ", ".join(match.get("available") or []) or "(no runbooks found)"
     return (
-        "# Runbook match\n\n**Matched:** none — no tool narrowing applied for this alert.\n\n"
-        f"**Available runbooks:** {available}\n"
+        "**Runbook match:** none — no tool narrowing applied for this alert. "
+        f"Available runbooks: {available}"
     )
 
 
@@ -233,12 +239,12 @@ async def run_oncall(
     await ctx.add_user_message(_alert_banner(alert, escalation))
 
     # Pre-check battery (Task 5): deterministic, non-agentic leads gathered
-    # BEFORE the model's first turn — persisted as an artifact and prepended
-    # to the prompt so the very first tool call the model makes is already
-    # informed by them, not a cold start.
+    # BEFORE the model's first turn — prepended to the prompt so the very
+    # first tool call the model makes is already informed by them, not a
+    # cold start. The report is no longer a standalone artifact; it folds
+    # into postmortem.md's "Investigation context" section instead.
     results = await precheck.run_prechecks(alert)
     report = precheck.render_report(results)
-    await ctx.add_artifact(name="prechecks.md", media_type="text/markdown", content=report)
 
     # Runbook match (Task 6): narrows the allow-list to the UNION of every
     # matched runbook's declared tools (a tied alertname can match more than
@@ -257,9 +263,13 @@ async def run_oncall(
         allowed_override = sorted(
             {toolsdk.mcp(name) for name in meta_tools} | set(toolsdk.ONCALL_ALWAYS_TOOLS)
         )
-    await ctx.add_artifact(
-        name="runbook-match.md", media_type="text/markdown",
-        content=_runbook_artifact(match, allowed_override),
+    # One document per incident: both reports ride along to open_postmortem_pr
+    # (which also mines the pre-check text for the log-spike onset) instead of
+    # landing as separate prechecks.md / runbook-match.md artifacts.
+    postmortem.record_run_context(
+        ctx.run_id,
+        prechecks_md=report,
+        runbook_md=_runbook_summary(match, allowed_override),
     )
 
     prompt = _build_prompt(alert, incident_id, escalation, precheck_report=report, runbook_match=match)
@@ -275,9 +285,10 @@ async def run_oncall(
         # just re-raises it unchanged once closing is done.
         await _close_incident(ctx, incident_id, alert)
         # The run is done either way — drop its dry-run stash (remediate.py's
-        # _DRYRUN_STASH) so a finished run's stashed diffs don't linger
-        # forever; nothing else ever evicts a run wholesale.
+        # _DRYRUN_STASH) and its investigation context so a finished run's
+        # state doesn't linger forever; nothing else ever evicts a run wholesale.
         remediate.clear_run_stash(ctx.run_id)
+        postmortem.clear_run_context(ctx.run_id)
     await ctx.end("completed", summary=f"{incident_id}: {alert.alertname}")
 
 
