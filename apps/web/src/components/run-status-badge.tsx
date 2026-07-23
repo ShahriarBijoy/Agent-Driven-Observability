@@ -12,9 +12,9 @@ const STYLES: Record<RunStatus, string> = {
   denied: "bg-muted text-muted-foreground",
 };
 
-export function RunStatusBadge({ status }: { status: RunStatus }) {
+export function RunStatusBadge({ status, className }: { status: RunStatus; className?: string }) {
   return (
-    <Badge variant="secondary" className={cn("shrink-0", STYLES[status])}>
+    <Badge variant="secondary" className={cn("shrink-0", STYLES[status], className)}>
       {status === "running" ? <Spinner className="size-3" /> : null}
       {status.replace("_", " ")}
     </Badge>

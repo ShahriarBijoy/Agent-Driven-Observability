@@ -116,6 +116,11 @@ async def _guard_run(ctx: RunContext, coro: Coroutine) -> None:
         await ctx.fail(f"agent crashed: {exc}")
 
 
+# A follow-up /chat turn may only attach to a settled run — resuming one that
+# is still executing would reset its live stream out from under the first turn.
+RESUMABLE_STATUSES: set[str] = {"completed", "failed", "denied"}
+
+
 @app.post("/chat", response_model=None)
 async def chat(request: Request) -> StreamingResponse | JSONResponse:
     try:
@@ -134,6 +139,19 @@ async def chat(request: Request) -> StreamingResponse | JSONResponse:
         )
 
     existing = await db.get_run(body.run_id) if body.run_id else None
+    if existing is not None:
+        if existing.status not in RESUMABLE_STATUSES:
+            return JSONResponse(
+                {"error": {"code": "conflict",
+                           "message": f"run {existing.id} is {existing.status}; "
+                           "wait for the current turn to finish"}},
+                status_code=409,
+            )
+        # The hub buffer for this run still ends with the previous turn's
+        # `done`, so a new subscriber would replay stale events and terminate
+        # before this turn produced anything. Drop the buffer — Postgres holds
+        # the durable transcript; this stream only needs the new turn.
+        hub.cleanup(existing.id)
     ctx = RunContext(existing) if existing is not None else new_run(
         body.agent, body.tenant, body.message
     )
