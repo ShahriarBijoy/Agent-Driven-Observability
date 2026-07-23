@@ -67,6 +67,9 @@ CHAT_AGENTS: dict[str, ChatAgent] = {
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_telemetry()
     await db.init_pool()
+    # A restart orphans any in-flight run; fail them now, before anything new
+    # starts, so the UI never shows a phantom "running" investigation.
+    await db.fail_orphaned_runs()
     watcher_task = asyncio.create_task(escalation.watcher_loop())
     yield
     watcher_task.cancel()

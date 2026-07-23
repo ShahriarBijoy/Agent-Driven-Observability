@@ -9,12 +9,13 @@ in-memory hub serves live streams; this module is the source of truth for
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 import asyncpg
 
 from .config import config
-from .models import AgentRun, Approval, Artifact, RunMessage, ToolCall, new_id
+from .models import AgentRun, Approval, Artifact, RunMessage, ToolCall, new_id, now_iso
 
 _pool: asyncpg.Pool | None = None
 
@@ -204,6 +205,44 @@ async def touch(run_id: str) -> None:
     await _require_pool().execute(
         "UPDATE agent_runs SET updated_at = now() WHERE id = $1", run_id
     )
+
+
+ORPHAN_NOTICE = (
+    "⚠️ Investigation stopped: agent-service restarted while this run was "
+    "in flight, so it never completed. It was marked failed at startup."
+)
+
+
+async def fail_orphaned_runs() -> list[str]:
+    """Mark runs a previous process left 'running' as failed.
+
+    Runs live inside a single process; a restart mid-flight orphans them and
+    nothing ever resumes them, so their rows would say 'running' forever.
+    Called from lifespan before any new run can start, which is why no age
+    threshold is needed: at boot, every 'running' row is an orphan. Each one
+    gets a transcript notice so the UI tells the story instead of showing a
+    phantom in-progress investigation.
+    """
+    rows = await _require_pool().fetch(
+        "SELECT id FROM agent_runs WHERE status = 'running'"
+    )
+    orphans = [str(row["id"]) for row in rows]
+    for run_id in orphans:
+        await add_message(run_id, RunMessage(
+            id=new_id("msg"), role="assistant",
+            content=ORPHAN_NOTICE, created_at=now_iso(),
+        ))
+        await set_status(
+            run_id, "failed",
+            summary="Orphaned by an agent-service restart before it could finish.",
+            ended=True,
+        )
+    if orphans:
+        logging.getLogger(__name__).warning(
+            "startup: marked %d orphaned run(s) failed: %s",
+            len(orphans), ", ".join(orphans),
+        )
+    return orphans
 
 
 async def add_message(run_id: str, msg: RunMessage) -> None:
