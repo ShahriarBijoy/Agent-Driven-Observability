@@ -608,3 +608,65 @@ async def test_open_postmortem_pr_errors_when_no_incident_linked(monkeypatch):
 
     result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "gateway-oom")
     assert "error" in result
+
+
+# ---- investigation context (folded prechecks/runbook-match) --------------------
+
+
+def test_compose_includes_investigation_context_between_evidence_and_narrative():
+    incident = {"title": "t", "status": "open", "severity": "sev2"}
+    doc = postmortem.compose(incident, [], "## Summary\nx", context_md="**Runbook match:** none")
+    assert "## Investigation context" in doc
+    assert "**Runbook match:** none" in doc
+    assert doc.index("## Evidence links") < doc.index("## Investigation context") < doc.index("## Narrative")
+
+
+def test_compose_omits_context_section_when_none():
+    doc = postmortem.compose({"title": "t"}, [], "n")
+    assert "## Investigation context" not in doc
+
+
+def test_run_context_roundtrip_formats_details_block():
+    run_id = "run-ctx-1"
+    try:
+        postmortem.record_run_context(
+            run_id, prechecks_md="## Pre-check leads\n\nstuff", runbook_md="**Runbook match:** `a.md`"
+        )
+        body = postmortem.format_run_context(run_id)
+        assert body is not None
+        # runbook line inline, prechecks folded into <details> for skimmability
+        assert body.startswith("**Runbook match:** `a.md`")
+        assert "<details>" in body and "## Pre-check leads" in body
+    finally:
+        postmortem.clear_run_context(run_id)
+    assert postmortem.format_run_context(run_id) is None
+
+
+async def test_log_spike_onset_reads_run_context_store(monkeypatch):
+    """Runs no longer persist prechecks.md artifacts — the onset must be found
+    in the in-memory run context instead (artifact path stays as fallback)."""
+    incident_id, run_id = "inc_ctx", "run_ctx"
+
+    async def _incident_runs_for(iid):
+        return [{"run_id": run_id}]
+
+    async def _get_run(rid):
+        raise AssertionError("must not need db.get_run when the store has the report")
+
+    monkeypatch.setattr(db, "incident_runs_for", _incident_runs_for)
+    monkeypatch.setattr(db, "get_run", _get_run)
+    try:
+        postmortem.record_run_context(
+            run_id,
+            prechecks_md='spike — onset: msg="boom" at 2026-07-22T10:05:30+00:00\n',
+            runbook_md="",
+        )
+        result = await postmortem._log_spike_onset(incident_id)
+    finally:
+        postmortem.clear_run_context(run_id)
+
+    assert result is not None
+    ts, source, label = result
+    assert ts == datetime(2026, 7, 22, 10, 5, 30, tzinfo=UTC)
+    assert source == "log-spike"
+    assert "boom" in label

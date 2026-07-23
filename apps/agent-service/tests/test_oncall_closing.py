@@ -161,6 +161,7 @@ class _SessionCtx:
 
     def __init__(self) -> None:
         self.ended: tuple[str, str | None] | None = None
+        self.artifacts: list[str] = []
 
     async def begin(self, trigger=None):
         pass
@@ -169,7 +170,7 @@ class _SessionCtx:
         pass
 
     async def add_artifact(self, name, media_type, content):
-        pass
+        self.artifacts.append(name)
 
     async def end(self, status, summary=None):
         self.ended = (status, summary)
@@ -216,3 +217,9 @@ async def test_run_oncall_runs_closing_step_when_session_raises(monkeypatch):
     assert calls["session_ran"] is True
     assert calls["closed_for"] == ["inc_1"]
     assert ctx.ended is None  # ctx.end never reached — the exception propagated
+    # prechecks/runbook-match no longer land as artifacts (they fold into
+    # postmortem.md), and the run's investigation context is dropped on close-out.
+    assert ctx.artifacts == []
+    from agent_service import postmortem
+
+    assert postmortem.format_run_context(ctx.run_id) is None

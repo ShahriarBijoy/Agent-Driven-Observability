@@ -5,7 +5,8 @@ owns only the narrative.
 service already has — the existing machine timeline (remediation/verification
 rows another step already wrote), the incident's raw alert-firing/-resolved
 observations, the merged deploy/change history, the curated k8s event stream,
-and the log-spike onset parsed out of the run's own `prechecks.md` artifact —
+and the log-spike onset parsed out of the run's own pre-check report (the
+in-memory run context; a legacy `prechecks.md` artifact as fallback) —
 dedupes and sorts it, persists anything new, and hands back the full ordered
 list. The model is never asked for a timestamp and could not invent one that
 would end up in the document: `compose` renders the machine timeline verbatim
@@ -104,6 +105,46 @@ def _k8s_event_ts(time_str: str, now: datetime) -> datetime | None:
     return candidate.astimezone(timezone.utc)
 
 
+# ---- per-run investigation context ----------------------------------------
+#
+# The pre-check report and runbook-match summary used to be persisted as two
+# standalone artifacts (prechecks.md / runbook-match.md) on every run. They
+# now live here, keyed by run_id, and surface as one compact "Investigation
+# context" section inside postmortem.md instead — one document per incident.
+# In-memory is enough: the postmortem is filed by the same process/run that
+# recorded the context, and an orphaned run never files one (startup marks it
+# failed). Entries are dropped in run_oncall's close-out.
+
+_RUN_CONTEXT: dict[str, dict[str, str]] = {}
+
+
+def record_run_context(run_id: str, *, prechecks_md: str, runbook_md: str) -> None:
+    _RUN_CONTEXT[run_id] = {"prechecks_md": prechecks_md, "runbook_md": runbook_md}
+
+
+def clear_run_context(run_id: str) -> None:
+    _RUN_CONTEXT.pop(run_id, None)
+
+
+def format_run_context(run_id: str) -> str | None:
+    """The postmortem's "Investigation context" body: the runbook-match line
+    inline (it's one sentence), the full pre-check report folded into a
+    <details> block so the document stays skimmable."""
+    stored = _RUN_CONTEXT.get(run_id)
+    if stored is None:
+        return None
+    parts: list[str] = []
+    if stored.get("runbook_md"):
+        parts.append(stored["runbook_md"].strip())
+    if stored.get("prechecks_md"):
+        parts.append(
+            "<details>\n<summary>Pre-check battery (as injected at run start)</summary>\n\n"
+            + stored["prechecks_md"].strip()
+            + "\n\n</details>"
+        )
+    return "\n\n".join(parts) if parts else None
+
+
 def _parse_onset(text: str) -> TimelineEntry | None:
     match = _ONSET_RE.search(text or "")
     if match is None:
@@ -119,11 +160,19 @@ def _parse_onset(text: str) -> TimelineEntry | None:
 
 
 async def _log_spike_onset(incident_id: str) -> TimelineEntry | None:
-    """The first (oldest-run-first) prechecks.md artifact on this incident
-    whose log_spike section names an onset — absent entirely just means no
-    run's pre-check battery found a spike (or none has run yet)."""
+    """The first (oldest-run-first) pre-check report on this incident whose
+    log_spike section names an onset — absent entirely just means no run's
+    pre-check battery found a spike (or none has run yet). Current runs keep
+    their report in _RUN_CONTEXT; runs from before the artifact fold-in still
+    carry a prechecks.md artifact, so that path stays as a fallback."""
     for link in await db.incident_runs_for(incident_id):
-        run = await db.get_run(link["run_id"])
+        run_id = link["run_id"]
+        stored = _RUN_CONTEXT.get(run_id)
+        if stored is not None:
+            parsed = _parse_onset(stored.get("prechecks_md", ""))
+            if parsed is not None:
+                return parsed
+        run = await db.get_run(run_id)
         if run is None:
             continue
         for artifact in run.artifacts:
@@ -246,11 +295,14 @@ _EVIDENCE_MIMIR_QUERY = (
 )
 
 
-def compose(incident: dict, timeline: list[dict], narrative_md: str) -> str:
+def compose(
+    incident: dict, timeline: list[dict], narrative_md: str, context_md: str | None = None
+) -> str:
     """Render the postmortem Markdown: machine header, machine timeline table
     (verbatim, in the order given — never sorted or reordered here, that's
-    build_timeline's job), machine-built Grafana evidence links, then the
-    model's narrative appended unmodified below."""
+    build_timeline's job), machine-built Grafana evidence links, the compact
+    investigation context (runbook match + folded pre-check report) when one
+    was recorded, then the model's narrative appended unmodified below."""
     title = incident.get("title") or "(untitled incident)"
     status = incident.get("status") or "unknown"
     severity = incident.get("severity") or "unknown"
@@ -303,6 +355,10 @@ def compose(incident: dict, timeline: list[dict], narrative_md: str) -> str:
         f"- [Loki — logs over the incident window]({loki_link})",
         f"- [Mimir — metrics over the incident window]({mimir_link})",
         "",
+    ]
+    if context_md:
+        lines += ["## Investigation context", "", context_md.strip(), ""]
+    lines += [
         "## Narrative",
         "",
         narrative_md.strip(),
@@ -364,7 +420,7 @@ async def open_postmortem_pr_impl(ctx: Any, narrative_md: str, slug: str) -> dic
     timeline = [
         {"ts": ts, "source": source, "label": label} for ts, source, label in timeline_entries
     ]
-    document = compose(incident, timeline, narrative_md)
+    document = compose(incident, timeline, narrative_md, context_md=format_run_context(ctx.run_id))
 
     opened_at = incident.get("opened_at")
     date_str = (
