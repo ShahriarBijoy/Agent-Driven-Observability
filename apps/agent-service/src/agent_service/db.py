@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 CREATE INDEX IF NOT EXISTS agent_runs_tenant_created_idx ON agent_runs (tenant, created_at DESC);
 CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs (created_at DESC);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS session_id TEXT;
 
 CREATE TABLE IF NOT EXISTS agent_messages (
   id TEXT PRIMARY KEY,
@@ -181,6 +182,22 @@ async def set_status(run_id: str, status: str, *, summary: str | None = None,
            WHERE id = $1""",
         run_id, status, summary, ended,
     )
+
+
+async def set_session_id(run_id: str, session_id: str) -> None:
+    """Record the run's Claude SDK session id so a follow-up chat turn can
+    resume the conversation even after agent-service restarts (the session
+    transcript itself lives on disk under the Claude Code home)."""
+    await _require_pool().execute(
+        "UPDATE agent_runs SET session_id = $2 WHERE id = $1", run_id, session_id
+    )
+
+
+async def get_session_id(run_id: str) -> str | None:
+    row = await _require_pool().fetchrow(
+        "SELECT session_id FROM agent_runs WHERE id = $1", run_id
+    )
+    return row["session_id"] if row else None
 
 
 async def touch(run_id: str) -> None:

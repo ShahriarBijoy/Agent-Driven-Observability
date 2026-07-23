@@ -1,7 +1,8 @@
-import type { Approval, Artifact, ToolCall } from "@obs/contracts";
+import type { AgentRun, Approval, Artifact, ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { ArrowUpIcon, BotIcon, LayoutDashboardIcon, ShieldAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
+import { z } from "zod";
 import { Shimmer } from "~/components/ai-elements/shimmer";
 import { ArtifactPanel } from "~/components/artifact-panel";
 import { RunFeedItem } from "~/components/run-feed-item";
@@ -26,15 +27,25 @@ import {
 } from "~/components/ui/message-scroller";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
+import { buildRunFeed, feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
 import { useMountEffect } from "~/lib/use-mount-effect";
 import { cn } from "~/lib/utils";
-import { getAgentRuns } from "~/server/functions";
+import { getAgentRun, getAgentRuns } from "~/server/functions";
 
 export const Route = createFileRoute("/agents/")({
-  loader: () => getAgentRuns(),
+  // ?run=<id> selects a past RCA session from the sidebar to continue it —
+  // the loader hydrates its persisted transcript into the chat surface.
+  validateSearch: z.object({ run: z.string().optional() }),
+  loaderDeps: ({ search }) => ({ run: search.run }),
+  loader: async ({ deps }) => {
+    const [runs, resume] = await Promise.all([
+      getAgentRuns(),
+      deps.run !== undefined ? getAgentRun({ data: { runId: deps.run } }) : Promise.resolve(null),
+    ]);
+    return { runs, resume };
+  },
   component: AgentsPage,
 });
 
@@ -92,10 +103,17 @@ function activityLabel(parts: RunFeedPart[]): string {
 }
 
 function AgentsPage() {
-  const runsHistory = Route.useLoaderData();
+  const { runs: runsHistory, resume } = Route.useLoaderData();
   const router = useRouter();
-  const [agent, setAgent] = useState<AgentTab>("rca");
+  const navigate = Route.useNavigate();
+  const [tab, setTab] = useState<AgentTab>("rca");
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
+
+  // A selected past session (?run=) wins over the tab state: only RCA runs
+  // resume (the one multi-turn chat agent); anything else is ignored here and
+  // stays reachable through its run detail page.
+  const resumeRun = resume !== null && resume.agent === "rca" ? resume : null;
+  const agent: AgentTab = resumeRun !== null ? "rca" : tab;
   const cfg = AGENT_TABS[agent];
 
   // Live sidebar — same 2.5s poll as the run detail and on-call pages, so run
@@ -119,18 +137,23 @@ function AgentsPage() {
           <h1 className="font-heading text-xl font-semibold tracking-tight">Agents</h1>
           <div className="flex items-center gap-0.5 rounded-lg border bg-card p-0.5">
             {TAB_ORDER.map((kind) => {
-              const tab = AGENT_TABS[kind];
-              const TabIcon = tab.icon;
+              const tabCfg = AGENT_TABS[kind];
+              const TabIcon = tabCfg.icon;
               return (
                 <Button
                   key={kind}
                   size="sm"
                   variant={agent === kind ? "secondary" : "ghost"}
                   className="h-7 gap-1.5 px-2.5 text-xs"
-                  onClick={() => setAgent(kind)}
+                  onClick={() => {
+                    setTab(kind);
+                    // Deselect any resumed session — a tab click always means
+                    // "start a fresh conversation with this agent".
+                    if (resumeRun !== null) void navigate({ search: {} });
+                  }}
                 >
                   <TabIcon className="size-3.5" />
-                  {tab.label}
+                  {tabCfg.label}
                 </Button>
               );
             })}
@@ -138,9 +161,14 @@ function AgentsPage() {
           <span className="text-xs text-muted-foreground">{cfg.tagline}</span>
         </div>
 
-        {/* key={agent}: switching tabs remounts the chat, resetting its live
-            transcript — each agent keeps its own conversation semantics. */}
-        <AgentChat key={agent} agent={agent} onOpenArtifact={setOpenArtifact} />
+        {/* The key remounts the chat when the surface changes meaning: another
+            tab, or another resumed session — each keeps its own transcript. */}
+        <AgentChat
+          key={resumeRun?.id ?? agent}
+          agent={agent}
+          resume={resumeRun ?? undefined}
+          onOpenArtifact={setOpenArtifact}
+        />
       </div>
 
       {openArtifact === null ? (
@@ -157,13 +185,9 @@ function AgentsPage() {
                 <p className="px-3 py-3 text-xs text-muted-foreground">No runs yet.</p>
               ) : (
                 <ul className="flex flex-col py-1.5">
-                  {runsHistory.map((r) => (
-                    <li key={r.id}>
-                      <Link
-                        to="/agents/runs/$runId"
-                        params={{ runId: r.id }}
-                        className="group block px-(--card-spacing) py-2 transition-colors hover:bg-muted/60"
-                      >
+                  {runsHistory.map((r) => {
+                    const row = (
+                      <>
                         <span className="flex items-center justify-between gap-2">
                           <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
                             {r.title}
@@ -175,9 +199,33 @@ function AgentsPage() {
                           <span aria-hidden>·</span>
                           <TimeAgo iso={r.createdAt} />
                         </span>
-                      </Link>
-                    </li>
-                  ))}
+                      </>
+                    );
+                    const rowClass = cn(
+                      "group block px-(--card-spacing) py-2 transition-colors hover:bg-muted/60",
+                      r.id === resumeRun?.id && "bg-muted/60",
+                    );
+                    return (
+                      <li key={r.id}>
+                        {/* RCA runs are conversations: selecting one reopens it
+                            in the chat surface so follow-ups continue the same
+                            Claude session. Other agents open the audit view. */}
+                        {r.agent === "rca" ? (
+                          <Link to="/agents" search={{ run: r.id }} className={rowClass}>
+                            {row}
+                          </Link>
+                        ) : (
+                          <Link
+                            to="/agents/runs/$runId"
+                            params={{ runId: r.id }}
+                            className={rowClass}
+                          >
+                            {row}
+                          </Link>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </CardContent>
@@ -197,14 +245,22 @@ function AgentsPage() {
   );
 }
 
+/** Statuses under which a resumed run is still executing its previous turn —
+ * the composer stays locked until it settles (the sidebar poll refreshes it). */
+const IN_FLIGHT_STATUSES = new Set(["queued", "running", "awaiting_approval"]);
+
 /** The shared chat surface: streams any chat-capable agent over the same SSE
  * pipeline. Which agent (and whether messages continue one run or each start
- * a fresh one) comes from AGENT_TABS. */
+ * a fresh one) comes from AGENT_TABS. Passing `resume` reopens a persisted
+ * multi-turn run: its transcript is hydrated and the next message continues
+ * the same Claude session. */
 function AgentChat({
   agent,
+  resume,
   onOpenArtifact,
 }: {
   agent: AgentTab;
+  resume?: AgentRun;
   onOpenArtifact: (artifact: Artifact | null) => void;
 }) {
   const cfg = AGENT_TABS[agent];
@@ -214,13 +270,25 @@ function AgentChat({
   // The live transcript is the same part list the run detail page builds from
   // a persisted run — tokens extend the trailing assistant message, tool_call
   // events upsert a tool part in place, so tools appear inline mid-stream.
-  const [parts, setParts] = useState<RunFeedPart[]>([]);
+  // A resumed run seeds it with the persisted history.
+  const [parts, setParts] = useState<RunFeedPart[]>(() =>
+    resume !== undefined ? buildRunFeed(resume) : [],
+  );
   const [approval, setApproval] = useState<Approval | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const runIdRef = useRef<string | undefined>(undefined);
+  // True once this surface has sent a message — from then on the local stream
+  // is the source of truth and the polled `resume.status` no longer locks it.
+  const [sentHere, setSentHere] = useState(false);
+  const runIdRef = useRef<string | undefined>(resume?.id);
   const nextId = useRef(0);
-  const seenArtifactIds = useRef<Set<string>>(new Set());
+  // Pre-seeded on resume so hydrated artifacts don't auto-open the panel.
+  const seenArtifactIds = useRef<Set<string>>(new Set(resume?.artifacts.map((a) => a.id)));
+
+  // A resumed run might still be mid-turn (opened from another tab, or the
+  // service is finishing after a reload) — agent-service refuses to attach a
+  // new turn to it (409), so don't offer to.
+  const locked = !sentHere && resume !== undefined && IN_FLIGHT_STATUSES.has(resume.status);
 
   function pushMessage(role: "user" | "assistant", content: string) {
     setParts((p) => [
@@ -273,9 +341,10 @@ function AgentChat({
 
   async function send() {
     const message = draft.trim();
-    if (message === "" || busy) return;
+    if (message === "" || busy || locked) return;
     setDraft("");
     setBusy(true);
+    setSentHere(true);
     setApproval(null);
     pushMessage("user", message);
 
@@ -285,7 +354,8 @@ function AgentChat({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           agent,
-          tenant,
+          // A resumed run keeps its original tenant regardless of the picker.
+          tenant: resume?.tenant ?? tenant,
           // One-shot agents (dashboard-generator) start a fresh run per
           // message; multi-turn agents continue the same Claude session.
           runId: cfg.multiTurn ? runIdRef.current : undefined,
@@ -446,7 +516,12 @@ function AgentChat({
                   void send();
                 }
               }}
-              placeholder={cfg.placeholder(tenant)}
+              placeholder={
+                locked
+                  ? "This run is still in progress — follow-ups unlock when it settles."
+                  : cfg.placeholder(resume?.tenant ?? tenant)
+              }
+              disabled={locked}
               className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
               rows={2}
             />
@@ -454,7 +529,7 @@ function AgentChat({
               type="submit"
               size="icon"
               className="rounded-lg"
-              disabled={busy || draft.trim() === ""}
+              disabled={busy || locked || draft.trim() === ""}
               aria-label="Send message"
             >
               {busy ? <Spinner /> : <ArrowUpIcon />}

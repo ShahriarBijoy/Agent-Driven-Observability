@@ -27,14 +27,15 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from .. import db
 from .. import settings as settings_store
 from ..context import RunContext
 from ..telemetry import get_tracer
 from ..tools import sdk as toolsdk
 
 # Per-run Claude session ids, so a multi-turn chat (same runId) continues the
-# same SDK session instead of starting cold. Best-effort: lost on restart, which
-# just means the next turn starts fresh.
+# same SDK session instead of starting cold. In-process cache over the
+# agent_runs.session_id column — the column is what survives a service restart.
 _sessions: dict[str, str] = {}
 
 
@@ -163,6 +164,13 @@ async def run_agent_session(
         "yourself, never via a shell."
     )
 
+    # Continue the run's Claude session on follow-up turns. The db fallback is
+    # what makes "come back later" work: the cache dies with the process, the
+    # column doesn't.
+    resume_session = _sessions.get(ctx.run_id)
+    if resume_session is None:
+        resume_session = await db.get_session_id(ctx.run_id)
+
     permission_mode = settings_store.PERMISSION_MODES.get(agent_kind, "default")
     disallowed = (
         [] if permission_mode == "bypassPermissions"
@@ -179,7 +187,7 @@ async def run_agent_session(
         model=settings_store.resolve_model(stg),
         cwd=cwd,
         max_turns=max_turns,
-        resume=_sessions.get(ctx.run_id),  # continue a multi-turn chat
+        resume=resume_session,  # continue a multi-turn chat
         # Ship every tool schema up front. The CLI defaults to deferring MCP
         # schemas behind ToolSearch, which forced 2-4 ToolSearch round-trips at
         # the start of every run and surfaced ungranted built-ins to the model.
@@ -247,6 +255,7 @@ async def run_agent_session(
                             result_detail = message.result
                         if message.session_id:
                             _sessions[ctx.run_id] = message.session_id
+                            await db.set_session_id(ctx.run_id, message.session_id)
                         if message.total_cost_usd is not None:
                             run_span.set_attribute("agent.cost_usd", message.total_cost_usd)
                         if message.num_turns is not None:

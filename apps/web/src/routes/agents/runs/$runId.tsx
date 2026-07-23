@@ -1,5 +1,12 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { ArrowLeftIcon, CheckIcon, FileTextIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  FileTextIcon,
+  MessageCircleIcon,
+  ShieldAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import type { Artifact } from "@obs/contracts";
 import { ArtifactPanel } from "~/components/artifact-panel";
@@ -111,6 +118,19 @@ function RunDetailPage() {
             <h1 className="font-heading text-lg font-semibold tracking-tight">{run.title}</h1>
             <Badge variant="secondary">{run.agent}</Badge>
             <RunStatusBadge status={run.status} />
+            {run.agent === "rca" ? (
+              // RCA runs are conversations — reopen this one in the chat
+              // surface to ask follow-ups in the same Claude session.
+              <Button
+                variant="outline"
+                size="xs"
+                nativeButton={false}
+                render={<Link to="/agents" search={{ run: run.id }} />}
+              >
+                <MessageCircleIcon data-icon="inline-start" />
+                Continue in chat
+              </Button>
+            ) : null}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             <span className="font-mono">{run.id}</span> · tenant {run.tenant} · started{" "}
