@@ -1,6 +1,13 @@
 import type { AgentRun, Approval, Artifact, ToolCall } from "@obs/contracts";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { ArrowUpIcon, BotIcon, LayoutDashboardIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  BotIcon,
+  HistoryIcon,
+  LayoutDashboardIcon,
+  PlusIcon,
+  ShieldAlertIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import { z } from "zod";
 import { Shimmer } from "~/components/ai-elements/shimmer";
@@ -9,7 +16,7 @@ import { RunFeedItem } from "~/components/run-feed-item";
 import { RunStatusBadge } from "~/components/run-status-badge";
 import { TimeAgo } from "~/components/time-ago";
 import { Button } from "~/components/ui/button";
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Frame, FrameHeader, FramePanel, FrameTitle } from "~/components/ui/frame";
 import {
   Empty,
   EmptyDescription,
@@ -27,6 +34,7 @@ import {
 } from "~/components/ui/message-scroller";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
+import { ScrollArea } from "~/components/ui/scroll-area";
 import { buildRunFeed, feedBlockKey, groupRunFeed, type RunFeedPart } from "~/lib/run-feed";
 import { readAgentStream } from "~/lib/sse";
 import { tenantStore } from "~/lib/tenant";
@@ -126,41 +134,48 @@ function AgentsPage() {
   return (
     <div
       className={cn(
-        "mx-auto grid h-full grid-cols-1 gap-4 px-6 py-6",
-        openArtifact === null
-          ? "max-w-6xl lg:grid-cols-[minmax(0,1fr)_300px]"
-          : "max-w-none lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
+        "mx-auto flex h-full w-full flex-col px-6 py-6",
+        openArtifact === null ? "max-w-6xl" : "max-w-none",
       )}
     >
-      <div className="flex min-h-0 flex-col">
-        <div className="panel-rise mb-4 flex flex-wrap items-center gap-3">
-          <h1 className="font-heading text-xl font-semibold tracking-tight">Agents</h1>
-          <div className="flex items-center gap-0.5 rounded-lg border bg-card p-0.5">
-            {TAB_ORDER.map((kind) => {
-              const tabCfg = AGENT_TABS[kind];
-              const TabIcon = tabCfg.icon;
-              return (
-                <Button
-                  key={kind}
-                  size="sm"
-                  variant={agent === kind ? "secondary" : "ghost"}
-                  className="h-7 gap-1.5 px-2.5 text-xs"
-                  onClick={() => {
-                    setTab(kind);
-                    // Deselect any resumed session — a tab click always means
-                    // "start a fresh conversation with this agent".
-                    if (resumeRun !== null) void navigate({ search: {} });
-                  }}
-                >
-                  <TabIcon className="size-3.5" />
-                  {tabCfg.label}
-                </Button>
-              );
-            })}
-          </div>
-          <span className="text-xs text-muted-foreground">{cfg.tagline}</span>
+      {/* The toolbar spans both columns so the chat frame and the sidebar
+          frame start on the same line — symmetric, like the other pages. */}
+      <div className="panel-rise mb-4 flex flex-wrap items-center gap-3">
+        <h1 className="font-heading text-xl font-semibold tracking-tight">Agents</h1>
+        <div className="flex items-center gap-0.5 rounded-lg border bg-card p-0.5">
+          {TAB_ORDER.map((kind) => {
+            const tabCfg = AGENT_TABS[kind];
+            const TabIcon = tabCfg.icon;
+            return (
+              <Button
+                key={kind}
+                size="sm"
+                variant={agent === kind ? "secondary" : "ghost"}
+                className="h-7 gap-1.5 px-2.5 text-xs"
+                onClick={() => {
+                  setTab(kind);
+                  // Deselect any resumed session — a tab click always means
+                  // "start a fresh conversation with this agent".
+                  if (resumeRun !== null) void navigate({ search: {} });
+                }}
+              >
+                <TabIcon className="size-3.5" />
+                {tabCfg.label}
+              </Button>
+            );
+          })}
         </div>
+        <span className="text-xs text-muted-foreground">{cfg.tagline}</span>
+      </div>
 
+      <div
+        className={cn(
+          "grid min-h-0 flex-1 grid-cols-1 gap-4",
+          openArtifact === null
+            ? "lg:grid-cols-[minmax(0,1fr)_300px]"
+            : "lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
+        )}
+      >
         {/* The key remounts the chat when the surface changes meaning: another
             tab, or another resumed session — each keeps its own transcript. */}
         <AgentChat
@@ -169,78 +184,89 @@ function AgentsPage() {
           resume={resumeRun ?? undefined}
           onOpenArtifact={setOpenArtifact}
         />
-      </div>
 
-      {openArtifact === null ? (
-        <div className="flex min-h-0 flex-col gap-4">
-          <Card size="sm" className="panel-rise panel-rise-2 min-h-0 flex-1 gap-0 pb-0">
-            <CardHeader className="border-b pb-(--card-spacing)">
-              <CardTitle>Recent runs</CardTitle>
-              <CardAction className="self-center text-[11px] tabular-nums text-muted-foreground">
-                {runsHistory.length}
-              </CardAction>
-            </CardHeader>
-            <CardContent className="scroll-fade-b scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-0">
-              {runsHistory.length === 0 ? (
-                <p className="px-3 py-3 text-xs text-muted-foreground">No runs yet.</p>
-              ) : (
-                <ul className="flex flex-col py-1.5">
-                  {runsHistory.map((r) => {
-                    const row = (
-                      <>
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
-                            {r.title}
-                          </span>
-                          <RunStatusBadge status={r.status} />
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                          <span className="truncate">{r.agent}</span>
-                          <span aria-hidden>·</span>
-                          <TimeAgo iso={r.createdAt} />
-                        </span>
-                      </>
-                    );
-                    const rowClass = cn(
-                      "group block px-(--card-spacing) py-2 transition-colors hover:bg-muted/60",
-                      r.id === resumeRun?.id && "bg-muted/60",
-                    );
-                    return (
-                      <li key={r.id}>
-                        {/* RCA runs are conversations: selecting one reopens it
+        {openArtifact === null ? (
+          <div className="flex min-h-0 flex-col gap-4">
+            <Frame spacing="sm" className="panel-rise panel-rise-2 min-h-0 flex-1">
+              <FrameHeader className="justify-between">
+                <FrameTitle>Recent runs</FrameTitle>
+                <span className="text-[11px] tabular-nums text-muted-foreground">
+                  {runsHistory.length}
+                </span>
+              </FrameHeader>
+              <FramePanel className="flex min-h-0 grow flex-col p-0">
+                <ScrollArea
+                  className="min-h-0 flex-1"
+                  viewportClassName="scroll-fade-b overscroll-contain"
+                >
+                  {runsHistory.length === 0 ? (
+                    <p className="px-3 py-3 text-xs text-muted-foreground">No runs yet.</p>
+                  ) : (
+                    <ul className="flex flex-col py-1.5">
+                      {runsHistory.map((r) => {
+                        const row = (
+                          <>
+                            <span className="flex items-center justify-between gap-2">
+                              <span className="truncate text-xs font-medium text-foreground/80 group-hover:text-foreground">
+                                {r.title}
+                              </span>
+                              <RunStatusBadge status={r.status} />
+                            </span>
+                            <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                              <span className="truncate">{r.agent}</span>
+                              <span aria-hidden>·</span>
+                              <TimeAgo iso={r.createdAt} />
+                            </span>
+                          </>
+                        );
+                        const rowClass = cn(
+                          "group block px-3 py-2 transition-colors outline-none hover:bg-muted/60",
+                          "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60",
+                          r.id === resumeRun?.id && "bg-muted/60",
+                        );
+                        return (
+                          <li key={r.id}>
+                            {/* RCA runs are conversations: selecting one reopens it
                             in the chat surface so follow-ups continue the same
                             Claude session. Other agents open the audit view. */}
-                        {r.agent === "rca" ? (
-                          <Link to="/agents" search={{ run: r.id }} className={rowClass}>
-                            {row}
-                          </Link>
-                        ) : (
-                          <Link
-                            to="/agents/runs/$runId"
-                            params={{ runId: r.id }}
-                            className={rowClass}
-                          >
-                            {row}
-                          </Link>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      ) : (
-        <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
-          <ArtifactPanel
-            key={openArtifact.id}
-            artifact={openArtifact}
-            onClose={() => setOpenArtifact(null)}
-            className="h-full"
-          />
-        </div>
-      )}
+                            {r.agent === "rca" ? (
+                              <Link
+                                to="/agents"
+                                search={{ run: r.id }}
+                                aria-current={r.id === resumeRun?.id ? "true" : undefined}
+                                className={rowClass}
+                              >
+                                {row}
+                              </Link>
+                            ) : (
+                              <Link
+                                to="/agents/runs/$runId"
+                                params={{ runId: r.id }}
+                                className={rowClass}
+                              >
+                                {row}
+                              </Link>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </ScrollArea>
+              </FramePanel>
+            </Frame>
+          </div>
+        ) : (
+          <div className="min-h-0 max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:bg-background max-lg:p-3">
+            <ArtifactPanel
+              key={openArtifact.id}
+              artifact={openArtifact}
+              onClose={() => setOpenArtifact(null)}
+              className="h-full"
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -424,119 +450,142 @@ function AgentChat({
   const showActivity = busy && !streamingText;
 
   return (
-    <div className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
-      <MessageScrollerProvider autoScroll>
-        <MessageScroller className="flex-1">
-          <MessageScrollerViewport>
-            <MessageScrollerContent className="gap-3 px-4 py-5">
-              {isEmpty ? (
-                <Empty className="my-auto border-0">
-                  <EmptyHeader>
-                    <EmptyMedia variant="icon">
-                      <EmptyIcon />
-                    </EmptyMedia>
-                    <EmptyTitle>{cfg.emptyTitle}</EmptyTitle>
-                    <EmptyDescription>{cfg.emptyDescription}</EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              ) : (
-                blocks.map((block, i) => (
-                  <MessageScrollerItem
-                    key={feedBlockKey(block)}
-                    messageId={feedBlockKey(block)}
-                    scrollAnchor={block.kind === "message" && block.message.role === "user"}
-                  >
-                    <RunFeedItem
-                      block={block}
-                      streaming={
-                        busy &&
-                        i === blocks.length - 1 &&
-                        block.kind === "message" &&
-                        block.message.role === "assistant"
-                      }
-                      onOpenArtifact={onOpenArtifact}
-                    />
-                  </MessageScrollerItem>
-                ))
-              )}
-
-              {showActivity ? (
-                <MessageScrollerItem messageId="msg-thinking">
-                  <div role="status" className="px-0.5">
-                    <Shimmer as="p" className="text-sm" duration={1.6}>
-                      {activityLabel(parts)}
-                    </Shimmer>
-                  </div>
-                </MessageScrollerItem>
-              ) : null}
-
-              {approval !== null ? (
-                <MessageScrollerItem messageId="msg-approval">
-                  <div className="rounded-xl border border-warning/30 bg-warning/10 px-4 py-3">
-                    <p className="flex items-center gap-2 text-sm font-medium text-warning">
-                      <ShieldAlertIcon className="size-4" />
-                      Approval required
-                    </p>
-                    <p className="mt-1 text-sm text-muted-foreground">{approval.summary}</p>
-                    {runIdRef.current !== undefined ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        nativeButton={false}
-                        className="mt-2.5"
-                        render={
-                          <Link to="/agents/runs/$runId" params={{ runId: runIdRef.current }} />
+    <Frame className="panel-rise panel-rise-1 min-h-0 flex-1">
+      {resume !== undefined ? (
+        <FrameHeader className="justify-between gap-2 py-1.5">
+          <FrameTitle className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground">
+            <HistoryIcon className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">
+              Resumed session <span className="font-mono">{resume.id}</span> · started{" "}
+              <TimeAgo iso={resume.createdAt} />
+            </span>
+          </FrameTitle>
+          <Button
+            size="xs"
+            variant="ghost"
+            nativeButton={false}
+            className="text-muted-foreground hover:text-foreground"
+            render={<Link to="/agents" search={{}} />}
+          >
+            <PlusIcon data-icon="inline-start" />
+            New chat
+          </Button>
+        </FrameHeader>
+      ) : null}
+      <FramePanel className="flex min-h-0 grow flex-col overflow-hidden p-0">
+        <MessageScrollerProvider autoScroll>
+          <MessageScroller className="flex-1">
+            <MessageScrollerViewport>
+              <MessageScrollerContent className="gap-3 px-4 py-5">
+                {isEmpty ? (
+                  <Empty className="my-auto border-0">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <EmptyIcon />
+                      </EmptyMedia>
+                      <EmptyTitle>{cfg.emptyTitle}</EmptyTitle>
+                      <EmptyDescription>{cfg.emptyDescription}</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : (
+                  blocks.map((block, i) => (
+                    <MessageScrollerItem
+                      key={feedBlockKey(block)}
+                      messageId={feedBlockKey(block)}
+                      scrollAnchor={block.kind === "message" && block.message.role === "user"}
+                    >
+                      <RunFeedItem
+                        block={block}
+                        streaming={
+                          busy &&
+                          i === blocks.length - 1 &&
+                          block.kind === "message" &&
+                          block.message.role === "assistant"
                         }
-                      >
-                        Decide on the run page
-                      </Button>
-                    ) : null}
-                  </div>
-                </MessageScrollerItem>
-              ) : null}
-            </MessageScrollerContent>
-          </MessageScrollerViewport>
-          <MessageScrollerButton />
-        </MessageScroller>
+                        onOpenArtifact={onOpenArtifact}
+                      />
+                    </MessageScrollerItem>
+                  ))
+                )}
 
-        <form
-          className="border-t p-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
-          }}
-        >
-          <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
-            <Textarea
-              value={draft}
-              onChange={(e) => setDraft(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
+                {showActivity ? (
+                  <MessageScrollerItem messageId="msg-thinking">
+                    <div role="status" className="px-0.5">
+                      <Shimmer as="p" className="text-sm" duration={1.6}>
+                        {activityLabel(parts)}
+                      </Shimmer>
+                    </div>
+                  </MessageScrollerItem>
+                ) : null}
+
+                {approval !== null ? (
+                  <MessageScrollerItem messageId="msg-approval">
+                    <div className="rounded-xl border border-warning/30 bg-warning/10 px-4 py-3">
+                      <p className="flex items-center gap-2 text-sm font-medium text-warning">
+                        <ShieldAlertIcon className="size-4" />
+                        Approval required
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">{approval.summary}</p>
+                      {runIdRef.current !== undefined ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          nativeButton={false}
+                          className="mt-2.5"
+                          render={
+                            <Link to="/agents/runs/$runId" params={{ runId: runIdRef.current }} />
+                          }
+                        >
+                          Decide on the run page
+                        </Button>
+                      ) : null}
+                    </div>
+                  </MessageScrollerItem>
+                ) : null}
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
+
+          <form
+            className="border-t p-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send();
+            }}
+          >
+            <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+              <Textarea
+                value={draft}
+                onChange={(e) => setDraft(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                placeholder={
+                  locked
+                    ? "This run is still in progress — follow-ups unlock when it settles."
+                    : cfg.placeholder(resume?.tenant ?? tenant)
                 }
-              }}
-              placeholder={
-                locked
-                  ? "This run is still in progress — follow-ups unlock when it settles."
-                  : cfg.placeholder(resume?.tenant ?? tenant)
-              }
-              disabled={locked}
-              className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
-              rows={2}
-            />
-            <Button
-              type="submit"
-              size="icon"
-              className="rounded-lg"
-              disabled={busy || locked || draft.trim() === ""}
-              aria-label="Send message"
-            >
-              {busy ? <Spinner /> : <ArrowUpIcon />}
-            </Button>
-          </div>
-        </form>
-      </MessageScrollerProvider>
-    </div>
+                disabled={locked}
+                className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
+                rows={2}
+              />
+              <Button
+                type="submit"
+                size="icon"
+                className="rounded-lg"
+                disabled={busy || locked || draft.trim() === ""}
+                aria-label="Send message"
+              >
+                {busy ? <Spinner /> : <ArrowUpIcon />}
+              </Button>
+            </div>
+          </form>
+        </MessageScrollerProvider>
+      </FramePanel>
+    </Frame>
   );
 }

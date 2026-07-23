@@ -22,6 +22,8 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "~/components/ui/empty";
+import { Frame, FramePanel } from "~/components/ui/frame";
+import { ScrollArea } from "~/components/ui/scroll-area";
 import { buildRunFeed, feedBlockKey, groupRunFeed } from "~/lib/run-feed";
 import { useMountEffect } from "~/lib/use-mount-effect";
 import { cn } from "~/lib/utils";
@@ -161,25 +163,30 @@ function RunDetailPage() {
           </div>
         ) : null}
 
-        {/* The transcript lives in a fixed-height card and scrolls internally,
+        {/* The transcript lives in a fixed-height frame and scrolls internally,
             like the live chat window — the page itself never grows. */}
-        <div className="panel-rise panel-rise-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
-          <div className="scroll-fade-b scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
-            <div className="flex flex-col gap-4">
-              {feed.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No messages recorded.</p>
-              ) : (
-                feed.map((block) => (
-                  <RunFeedItem
-                    key={feedBlockKey(block)}
-                    block={block}
-                    onOpenArtifact={setOpenArtifact}
-                  />
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+        <Frame className="panel-rise panel-rise-1 min-h-0 flex-1">
+          <FramePanel className="flex min-h-0 grow flex-col overflow-hidden p-0">
+            <ScrollArea
+              className="min-h-0 flex-1"
+              viewportClassName="scroll-fade-b overscroll-contain px-4 py-5"
+            >
+              <div className="flex flex-col gap-4">
+                {feed.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No messages recorded.</p>
+                ) : (
+                  feed.map((block) => (
+                    <RunFeedItem
+                      key={feedBlockKey(block)}
+                      block={block}
+                      onOpenArtifact={setOpenArtifact}
+                    />
+                  ))
+                )}
+              </div>
+            </ScrollArea>
+          </FramePanel>
+        </Frame>
       </div>
 
       {openArtifact !== null ? (
