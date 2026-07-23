@@ -1,0 +1,54 @@
+# Manual deploy for the subject system (Gitea UI: Actions -> deploy -> Run
+# workflow). Split out of ci.yaml so a merge to main never reaches the
+# cluster by itself - a human decides when a rollout wave is worth it.
+#
+# Trunk-based, P10 unchanged: "deploy" is still one commit bumping the
+# pinned tags in obs/obs-gitops - Argo CD notices (push webhook through the
+# k3d LB), syncs, and the Rollouts take it from there. CI never touches the
+# cluster; kubectl left the building. The bump names the source sha + run so
+# the agent can walk annotation -> gitops commit -> source commit without
+# guessing.
+name: deploy
+run-name: "${{ gitea.actor }}: deploy ${{ gitea.event.inputs.sha || 'HEAD' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "short sha to deploy (blank = HEAD of the chosen branch)"
+        required: false
+        default: ""
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bump image tags in obs-gitops
+        run: |
+          sha='${{ gitea.event.inputs.sha }}'
+          if [ -z "$sha" ]; then sha=$(git rev-parse HEAD); fi
+          sha=$(echo "$sha" | cut -c1-7)
+          # A tag that was never built would sync straight into
+          # ImagePullBackOff - i.e. a self-inflicted incident. The docker
+          # CLI talks to the VM daemon, so localhost IS the k3d registry.
+          if ! docker pull -q localhost:5010/gateway:$sha; then
+            echo "::error::no image :$sha in the registry - merge to main (or wait for build-push) first"
+            exit 1
+          fi
+          git clone "http://obs:${{ secrets.GITOPS_TOKEN }}@gitea:3000/obs/obs-gitops.git" /tmp/gitops
+          cd /tmp/gitops
+          for svc in gateway embedder retriever model-proxy load-generator; do
+            sed -i "s/newTag: .*/newTag: \"$sha\"/" services/$svc/kustomization.yaml
+          done
+          git config user.name obs-ci
+          git config user.email ci@obs-lab.local
+          git add -A
+          if git diff --cached --quiet; then
+            echo "tags already at :$sha - nothing to deploy"; exit 0
+          fi
+          git commit -m "deploy: :$sha via deploy run ${{ gitea.run_number }}" \
+                     -m "source: ${{ gitea.repository }}@$sha (manual dispatch by ${{ gitea.actor }})"
+          # One rebase-retry absorbs a racing run's bump; a real conflict
+          # (same lines) should fail loudly, not silently self-merge.
+          git push origin main || { git pull --rebase origin main && git push origin main; }

@@ -1,5 +1,9 @@
 # CI for the subject system (PLAN-2 P9). Runs on the VM's act_runner against
-# the Gitea copy of this repo (obs/obs-lab): test -> build+push -> deploy.
+# the Gitea copy of this repo (obs/obs-lab): classify -> test -> build+push.
+#
+# Deploy is NOT here anymore - it's a manual workflow_dispatch in
+# deploy.yaml. An alert->postmortem->merge->deploy-everything loop on an 8GB
+# VM produced more alerts than it resolved; now a human presses the button.
 #
 # Steps stay plain `run` commands on purpose - Gitea Actions is ~95%
 # GitHub-compatible, and marketplace actions that assume GitHub APIs are the
@@ -7,17 +11,56 @@
 #
 # The runner mounts the VM's Docker socket into job containers, so `docker
 # build/push localhost:5010/...` executes on the VM daemon - localhost IS the
-# k3d registry. The kubeconfig arrives as a repo Actions secret
-# (KUBECONFIG_B64, provisioned by scripts/ci-bootstrap.sh); its server name
-# obs-vm resolves inside job containers via the runner's --add-host.
+# k3d registry.
 name: ci
 run-name: "${{ gitea.actor }}: ${{ gitea.event.head_commit.message }}"
 
 on:
   push:
+    # The oncall agent pushes a branch per incident; those are docs-only by
+    # construction and each build competes with the cluster for the VM's RAM.
+    branches-ignore:
+      - "postmortem/**"
 
 jobs:
+  changes:
+    # Docs-only pushes (postmortem merges, plan edits) must not cost a test
+    # run or an image build - and above all must not look deployable.
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: classify changed files
+        id: diff
+        run: |
+          before='${{ gitea.event.before }}'
+          zeros='0000000000000000000000000000000000000000'
+          if [ -n "$before" ] && [ "$before" != "$zeros" ] && git cat-file -e "$before^{commit}" 2>/dev/null; then
+            base="$before"
+          else
+            # New branch or unknown base: judge a merge commit by what it
+            # brought in (diff vs first parent); root commits count as code.
+            base=$(git rev-parse HEAD^1 2>/dev/null || echo '')
+          fi
+          if [ -z "$base" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$files"
+          if [ -z "$files" ]; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          elif echo "$files" | grep -qvE '^docs/|\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +74,10 @@ jobs:
         run: bun run test
 
   build-push:
-    needs: test
+    # Only main gets images: nothing consumes feature-branch tags, and each
+    # docker build steals RAM from the cluster sharing this VM.
+    needs: [changes, test]
+    if: gitea.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,34 +91,3 @@ jobs:
             docker push -q localhost:5010/$svc:$sha
             docker push -q localhost:5010/$svc:dev
           done
-
-  deploy:
-    # Trunk-based: only main reaches the cluster. P10: "deploy" is one commit
-    # bumping the pinned tags in obs/obs-gitops - Argo CD notices (push
-    # webhook through the k3d LB), syncs, and the Rollouts take it from
-    # there. CI never touches the cluster; kubectl left the building.
-    # The bump names the source sha + run so the agent can walk
-    # annotation -> gitops commit -> source commit without guessing.
-    needs: build-push
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: bump image tags in obs-gitops
-        run: |
-          sha=$(echo "${{ github.sha }}" | cut -c1-7)
-          git clone "http://obs:${{ secrets.GITOPS_TOKEN }}@gitea:3000/obs/obs-gitops.git" /tmp/gitops
-          cd /tmp/gitops
-          for svc in gateway embedder retriever model-proxy load-generator; do
-            sed -i "s/newTag: .*/newTag: \"$sha\"/" services/$svc/kustomization.yaml
-          done
-          git config user.name obs-ci
-          git config user.email ci@obs-lab.local
-          git add -A
-          if git diff --cached --quiet; then
-            echo "tags already at :$sha - nothing to deploy"; exit 0
-          fi
-          git commit -m "deploy: :$sha via ci run ${{ github.run_number }}" \
-                     -m "source: ${{ github.repository }}@${{ github.sha }}"
-          # One rebase-retry absorbs a racing run's bump; a real conflict
-          # (same lines) should fail loudly, not silently self-merge.
-          git push origin main || { git pull --rebase origin main && git push origin main; }

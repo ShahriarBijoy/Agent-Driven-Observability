@@ -1,10 +1,18 @@
 name: CI
 
+# Docs-only changes (mirrored postmortem merges, plan edits) skip CI — they
+# can't break lint/types/tests and each mirror push was burning three jobs.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
 
 # Cancel superseded runs on the same ref (e.g. rapid PR pushes).
 concurrency:
