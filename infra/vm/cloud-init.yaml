@@ -62,6 +62,53 @@ write_files:
 
       [Install]
       WantedBy=multi-user.target
+  # k3d/compose publish their host ports on 0.0.0.0, which on a cloud VM means
+  # the public internet - and the k3d registry accepts anonymous push. Docker
+  # writes its own FORWARD/NAT rules that never traverse INPUT, so an INPUT-based
+  # firewall does nothing; DOCKER-USER is the supported seam. Keep this in sync
+  # with infra/vm/obs-lockdown.sh (this file must stay self-contained: it is
+  # pasted into the Hetzner console).
+  - path: /usr/local/sbin/obs-lockdown
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -e
+      WAN="${OBS_WAN_IF:-eth0}"
+      apply() {
+        for ipt in iptables ip6tables; do
+          "$ipt" -C DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN 2>/dev/null \
+            || "$ipt" -I DOCKER-USER 1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+          "$ipt" -C DOCKER-USER -i "$WAN" -j DROP 2>/dev/null \
+            || "$ipt" -A DOCKER-USER -i "$WAN" -j DROP
+        done
+      }
+      clear_rules() {
+        for ipt in iptables ip6tables; do
+          "$ipt" -D DOCKER-USER -i "$WAN" -j DROP 2>/dev/null || true
+          "$ipt" -D DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN 2>/dev/null || true
+        done
+      }
+      case "$1" in
+        apply) apply ;;
+        clear) clear_rules ;;
+        status) iptables -S DOCKER-USER; ip6tables -S DOCKER-USER ;;
+        *) echo "usage: obs-lockdown apply|clear|status" >&2; exit 2 ;;
+      esac
+  - path: /etc/systemd/system/obs-lockdown.service
+    content: |
+      [Unit]
+      Description=Restrict published container ports to the tailnet (obs-lab)
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/obs-lockdown apply
+      ExecStop=/usr/local/sbin/obs-lockdown clear
+
+      [Install]
+      WantedBy=multi-user.target
 
 runcmd:
   - sysctl --system
@@ -85,4 +132,5 @@ runcmd:
     tailscale up --authkey="$TS_AUTHKEY" --ssh --hostname=obs-vm;
     fi
   - systemctl daemon-reload && systemctl enable --now obs-lab-nat.service
+  - systemctl enable --now obs-lockdown.service
   - touch /etc/obs-lab/.provisioned

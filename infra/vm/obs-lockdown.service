@@ -1,0 +1,13 @@
+[Unit]
+Description=Restrict published container ports to the tailnet (obs-lab)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/obs-lockdown apply
+ExecStop=/usr/local/sbin/obs-lockdown clear
+
+[Install]
+WantedBy=multi-user.target

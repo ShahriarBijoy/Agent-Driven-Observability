@@ -1,0 +1,17 @@
+# The `subject` namespace, created here so the cluster bootstrap can apply
+# agent-remediate.yaml (whose Role and RoleBinding live IN this namespace)
+# immediately after `k3d cluster create`.
+#
+# The namespace is normally owned by GitOps (infra/gitops/platform/namespace.yaml,
+# synced by the Argo CD platform Application), but that happens several steps
+# later in `obs k8s` - so on a genuinely fresh cluster the bootstrap used to
+# fail with `namespaces "subject" not found` and exit 1. kubectl applies a
+# directory in alphabetical order, hence the 00- prefix: this must land before
+# agent-remediate.yaml.
+#
+# Keep this identical to the GitOps copy. Applying it twice is idempotent, and
+# matching it exactly means Argo never reports the namespace as drifted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: subject

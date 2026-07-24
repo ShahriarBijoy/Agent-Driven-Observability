@@ -41,6 +41,29 @@ Console: <https://console.hetzner.com> → new project (e.g. `obs-lab`) →
 | Firewall     | Create one: allow inbound **SSH (22)** only — Tailscale is outbound-only and needs nothing open |
 | Name         | `obs-vm`                                                                                        |
 
+> **The firewall is not optional, and "I'll add it later" fails open.** This VM
+> was run for a while without one. Docker and k3d published the gateway (8080),
+> the Kubernetes API (6550), the image registry (5010), Gitea (3005/2222) and
+> the ci-shim (8095) on `0.0.0.0` — all reachable from the internet. Credential
+> scanners found the gateway and were probing `/.env`, `/.aws/credentials` and
+> `/.git/config` continuously; the registry accepted **anonymous push**, which
+> is a direct path to running attacker images in the cluster.
+>
+> Three independent layers now prevent that, and you want all three:
+>
+> 1. **Hetzner Cloud Firewall** — upstream of the VM, so it holds even if the
+>    host is misconfigured. Inbound 22 only.
+> 2. **Bind addresses** — `OBS_BIND_IP` in `infra/ports.env`; `obs k8s up`
+>    resolves it to the VM's tailscale0 address and refuses to create the
+>    cluster if it cannot. The registry binds loopback.
+> 3. **`obs-lockdown.service`** — drops anything arriving on the public NIC that
+>    is headed for a container, via the `DOCKER-USER` chain. This layer exists
+>    because Docker's published ports bypass `INPUT` entirely, so `ufw` and
+>    friends do not see them.
+>
+> Check the current state any time with
+> `ssh root@obs-vm /usr/local/sbin/obs-lockdown status`.
+
 Provisioning runs ~4–6 minutes after boot. Done when `obs-vm` appears in the
 Tailscale admin console / `tailscale status` on the laptop, and
 `/etc/obs-lab/.provisioned` exists on the VM.
@@ -55,7 +78,10 @@ ssh root@obs-vm "docker version --format '{{.Server.Version}}'; k3d version; kub
 `ssh root@obs-vm` works two ways: Tailscale SSH (tailnet identity, because the
 VM ran `tailscale up --ssh`) or plain OpenSSH with the key Hetzner injected.
 Once Tailscale is confirmed you can delete the SSH rule from the Hetzner
-firewall — the tailnet path doesn't use it.
+firewall — the tailnet path doesn't use it. Deleting it is the _safest_ end
+state: an empty inbound ruleset, with every path to the VM going over the
+tailnet. Do not confuse "no rule allowing 22" with "no firewall attached" —
+the second one allows everything.
 
 ## Day-2 notes
 
