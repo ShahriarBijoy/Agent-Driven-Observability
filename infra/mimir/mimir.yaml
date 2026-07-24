@@ -67,3 +67,15 @@ limits:
   # few hundred and drive traffic. Alloy also drops the usual offenders upstream
   # (see infra/alloy/config.alloy) so this limit is a backstop, not the first line.
   max_global_series_per_user: 100000
+  # Blocks retention. Mimir's default is 0 = KEEP FOREVER, which means any
+  # cardinality mistake is permanent: the ~155 junk http_route series minted by
+  # internet credential scanners (see infra/vm/README.md) would have sat in the
+  # RED dashboard's `sum by (http_route)` panel indefinitely, because Mimir has
+  # no generally-available series-deletion API to clean them up after the fact.
+  #
+  # 30d is generous for a lab whose longest SLO window is 28d (see
+  # infra/mimir/rules/anonymous/slo-gateway.yaml — shortening this below 28d
+  # would silently starve the error-budget rules). Junk series stop being
+  # written the moment the fix ships and fully age out one retention period
+  # later.
+  compactor_blocks_retention_period: 30d

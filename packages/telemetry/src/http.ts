@@ -92,9 +92,31 @@ export function honoTelemetry(serviceName: string) {
   });
 }
 
-// The matched route template (low cardinality, e.g. "/v1/chat"); falls back to
-// the raw path if the router did not record a template (e.g. 404s).
-function routeOf(c: { req: { routePath?: string; path: string } }): string {
+/**
+ * The label used for requests that matched no route. Every unmatched path
+ * collapses into this single series.
+ *
+ * This used to fall back to the raw request path, which handed an
+ * attacker-controlled string straight to a metric label. Storage in Mimir is
+ * proportional to distinct label combinations, so a credential scanner walking
+ * /.env, /.aws/credentials, /.git/config ... mints a new series per probe — an
+ * unauthenticated cardinality bomb, and a `sum by (http_route)` panel that is
+ * unreadable for as long as retention holds.
+ *
+ * The path itself is not lost: the span still carries it as `url.path` (set
+ * before the handler runs), and Tempo is not indexed by cardinality. Metrics
+ * answer "how much unmatched traffic?"; traces answer "which paths, from whom?".
+ */
+export const UNMATCHED_ROUTE = "<unmatched>";
+
+/**
+ * The matched route template (low cardinality, e.g. "/v1/chat").
+ *
+ * Only a template the router actually recorded may become a label value. Hono
+ * reports "/*" for catch-all matches and leaves `routePath` unset when nothing
+ * matched at all; both mean "no template" and collapse to {@link UNMATCHED_ROUTE}.
+ */
+export function routeOf(c: { req: { routePath?: string; path: string } }): string {
   const tmpl = c.req.routePath;
-  return tmpl && tmpl !== "/*" ? tmpl : c.req.path;
+  return tmpl && tmpl !== "/*" ? tmpl : UNMATCHED_ROUTE;
 }
