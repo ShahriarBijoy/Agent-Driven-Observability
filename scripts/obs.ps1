@@ -862,6 +862,15 @@ Raw equivalents:
                     docker compose --env-file infra/ports.env -f infra/compose.yml stop gateway embedder retriever model-proxy seed load-generator
                     Write-Step "cluster on ${vm}: start (or create from infra/k8s/k3d.yaml)"
                     scp -q -o BatchMode=yes infra/k8s/k3d.yaml infra/ports.env "root@${vm}:/root/obs-lab/"
+                    # The kube API now binds the tailnet address only, but Ubuntu
+                    # maps the hostname to 127.0.1.1 in /etc/hosts - so VM-LOCAL
+                    # kubectl/helm (which this script runs over ssh for the
+                    # monitoring and argo installs) would dial 127.0.1.1:6550 and
+                    # get connection refused. Point the name at the tailnet IP
+                    # instead. It must stay a NAME, not an IP: k3d's API cert
+                    # carries DNS:obs-vm but no SAN for the tailscale address, so
+                    # connecting by IP fails TLS verification. Idempotent.
+                    ssh -o BatchMode=yes "root@$vm" 'TS=$(tailscale ip -4 2>/dev/null); if [ -n "$TS" ]; then sed -i "s/[[:space:]]*\bobs-vm\b//g" /etc/hosts; grep -q "^$TS[[:space:]]obs-vm$" /etc/hosts || echo "$TS obs-vm" >> /etc/hosts; fi'
                     # OBS_BIND_IP is 0.0.0.0 in ports.env (correct on the laptop,
                     # behind NAT). On the VM that would publish the gateway and
                     # the k3d API to the internet, so override it with the
