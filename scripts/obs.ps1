@@ -862,7 +862,13 @@ Raw equivalents:
                     docker compose --env-file infra/ports.env -f infra/compose.yml stop gateway embedder retriever model-proxy seed load-generator
                     Write-Step "cluster on ${vm}: start (or create from infra/k8s/k3d.yaml)"
                     scp -q -o BatchMode=yes infra/k8s/k3d.yaml infra/ports.env "root@${vm}:/root/obs-lab/"
-                    ssh -o BatchMode=yes "root@$vm" 'if k3d cluster list obs-lab >/dev/null 2>&1; then k3d cluster start obs-lab; else set -a; . /root/obs-lab/ports.env; set +a; k3d cluster create --config /root/obs-lab/k3d.yaml; fi'
+                    # OBS_BIND_IP is 0.0.0.0 in ports.env (correct on the laptop,
+                    # behind NAT). On the VM that would publish the gateway and
+                    # the k3d API to the internet, so override it with the
+                    # tailscale0 address before k3d expands the config. Fail loudly
+                    # rather than fall back: k3d's expansion has no ${VAR:-default},
+                    # so an empty value would silently bind everything again.
+                    ssh -o BatchMode=yes "root@$vm" 'if k3d cluster list obs-lab >/dev/null 2>&1; then k3d cluster start obs-lab; else set -a; . /root/obs-lab/ports.env; OBS_BIND_IP=$(tailscale ip -4 2>/dev/null); set +a; if [ -z "$OBS_BIND_IP" ]; then echo "no tailscale IPv4 - refusing to create the cluster with a public bind" >&2; exit 1; fi; k3d cluster create --config /root/obs-lab/k3d.yaml; fi'
                     if ($LASTEXITCODE -ne 0) { throw "cluster start/create failed" }
                     ssh -o BatchMode=yes "root@$vm" 'k3d kubeconfig get obs-lab' | Set-Content -Encoding ascii $kubeconfig
                     # Cluster-level bootstrap (survives nothing - reapply every up):

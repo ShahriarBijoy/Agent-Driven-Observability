@@ -23,16 +23,18 @@ kubeAPI:
   # host becomes a TLS SAN and the kubeconfig server name: the laptop reaches
   # the API as https://obs-vm:6550 over the tailnet (MagicDNS resolves it).
   host: obs-vm
-  # All VM interfaces: tailnet traffic arrives on tailscale0; the Hetzner
-  # firewall keeps the public side shut. Pinned port = kubeconfig survives
-  # cluster recreates.
-  hostIP: 0.0.0.0
+  # Bind the tailnet address only. This used to be 0.0.0.0 on the assumption
+  # that "the Hetzner firewall keeps the public side shut" - it was not shut,
+  # and the API server, registry and gateway all answered from the internet.
+  # Bind address is the control; the cloud firewall is the second layer.
+  hostIP: ${OBS_BIND_IP}
   hostPort: "${OBS_K3D_API_PORT}"
 
 ports:
   # The lab's existing port contract: :8080 answers exactly as it did under
-  # compose - now k3d LB -> Traefik :80 -> gateway Service.
-  - port: ${OBS_GATEWAY_PORT}:80
+  # compose - now k3d LB -> Traefik :80 -> gateway Service. Reachable from the
+  # laptop over the tailnet, and from nowhere else.
+  - port: "${OBS_BIND_IP}:${OBS_GATEWAY_PORT}:80"
     nodeFilters: [loadbalancer]
 
 registries:
@@ -40,9 +42,10 @@ registries:
     # Local registry for the build->push->pull path (GitOps uses it in P10).
     # Reachable as localhost:5010 on the VM (push side) and as
     # obs-registry:5010 from inside the cluster (pull side, via the
-    # registries.yaml mirror k3d generates).
+    # registries.yaml mirror k3d generates). Neither path needs an off-host
+    # listener, and this registry accepts anonymous push - so it binds loopback.
     name: obs-registry
-    host: "0.0.0.0"
+    host: "${OBS_REGISTRY_BIND_IP}"
     hostPort: "${OBS_REGISTRY_PORT}"
 
 options:
