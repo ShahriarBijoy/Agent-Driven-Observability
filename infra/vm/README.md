@@ -91,7 +91,7 @@ other.
 **Automated — `obs preflight`.** Reports which interface each VM port is bound
 to, whether `obs-lockdown.service` is up, and whether `DOCKER-USER` still has
 rules. It fails if any lab port is on `0.0.0.0` or `[::]`. That is the
-*precondition* for public exposure, and it is what silently regressed for 67
+_precondition_ for public exposure, and it is what silently regressed for 67
 days: nothing can be publicly reachable without a wildcard bind, and a wildcard
 bind is visible from inside. Run it after any change to a compose file, a k3d
 config, or `ports.env`.
@@ -128,6 +128,38 @@ Anything else open means a bind or a firewall layer is missing: re-run
 
 Worth repeating after any Hetzner firewall edit, since that layer is the
 primary control and lives outside this repo.
+
+### 5. Keep a way back in
+
+Once the Hetzner firewall drops the SSH rule, **Tailscale is the only remote
+path to this VM**. Two things have to be true or a bad day becomes a rescue
+operation:
+
+- **Node key expiry disabled.** Admin console → **Machines** → `obs-vm` → **⋯** →
+  _Disable key expiry_. A key expires by default (typically ~6 months); when it
+  does, tailscaled deauthenticates and the VM drops off the tailnet. With 22
+  firewalled, that is indistinguishable from the VM being dead. Check the
+  current value with:
+  `ssh root@obs-vm 'tailscale status --json' | jq .Self.KeyExpiry`
+- **A root password for the VNC console.** `cloud-init.yaml` generates one and
+  writes it to `/root/obs-lab/.root-console`; read it with
+  `ssh root@obs-vm cat /root/obs-lab/.root-console` and keep it somewhere off
+  this machine. Without it the Hetzner console prompts for a password nobody
+  has — the image ships none — and the only way back is Hetzner **Rescue mode**.
+  The password is console-only: sshd is `PasswordAuthentication no` +
+  `PermitRootLogin prohibit-password`, so it buys nothing over the network.
+
+Worth re-reading `PasswordAuthentication no` in that light: before the console
+password existed, no account had a hash at all, so password auth was disabled
+by accident. Now that root has one, that directive is the only thing keeping it
+off the network.
+
+The **Tailscale ACL** is what actually authorises `ssh root@obs-vm` — tailnet
+sessions are intercepted by Tailscale SSH and never reach sshd, so no sshd
+setting constrains them. Review it at
+[login.tailscale.com/admin/acls](https://login.tailscale.com/admin/acls); the
+default `dst: ["autogroup:self"]` limits SSH to devices owned by the same user,
+with `action: "check"` forcing periodic browser re-auth.
 
 ## Day-2 notes
 
