@@ -53,9 +53,14 @@ services:
       # deliveries to private addresses - ci-shim would never hear a thing.
       GITEA__webhook__ALLOWED_HOST_LIST: "private,loopback"
       GITEA__service__DISABLE_REGISTRATION: "true"
+    # Bind the tailnet address, never 0.0.0.0 — this file only ever runs on
+    # the public-facing VM. NO `:-` default on OBS_BIND_IP on purpose: an
+    # empty value would make this ":3005:3000", which Docker reads as
+    # bind-all. scripts/ci.ps1 resolves it from `tailscale ip -4` and refuses
+    # to compose without it, the same guard `obs k8s up` uses for k3d.
     ports:
-      - "${OBS_GITEA_PORT:-3005}:3000"
-      - "${OBS_GITEA_SSH_PORT:-2222}:22"
+      - "${OBS_BIND_IP}:${OBS_GITEA_PORT:-3005}:3000"
+      - "${OBS_BIND_IP}:${OBS_GITEA_SSH_PORT:-2222}:22"
     # The obs-gitops push webhook (P10) targets Argo CD THROUGH the k3d load
     # balancer: argocd.obs-vm resolves to the VM host here, lands on the LB's
     # :8080, and a Traefik Host rule routes it to argocd-server (a laptop
@@ -117,8 +122,10 @@ services:
       # time; the 1.26 webhook payload ships head_commit: null). Injected by
       # scripts/ci-bootstrap.sh from the VM-local token file.
       GITEA_TOKEN: ${OBS_CI_GITEA_TOKEN:-}
+    # Tailnet-only, same reasoning as gitea above — /webhook still trusts any
+    # POST, so reachability IS the control here until it is signed.
     ports:
-      - "${OBS_CI_SHIM_PORT:-8095}:8095"
+      - "${OBS_BIND_IP}:${OBS_CI_SHIM_PORT:-8095}:8095"
     # MagicDNS resolver (fixed anycast address, reachable through the NAT
     # unit) so the laptop's ts.net FQDN resolves; 1.1.1.1 as fallback.
     dns:
