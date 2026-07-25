@@ -8,6 +8,20 @@
 set -euo pipefail
 cd /root/obs-lab
 
+# WHICH interface `compose up runner ci-shim` below publishes on. ports.env
+# carries OBS_BIND_IP=0.0.0.0 (correct on the laptop) and arrives here
+# verbatim, so the VM's own tailscale address has to override it - a shell
+# variable beats --env-file in Compose's interpolation order. Empty would make
+# "${OBS_BIND_IP}:8095:8095" collapse to ":8095:8095", which Docker reads as
+# bind-all: refuse instead. ci.ps1 applies the same guard to its own compose
+# calls; both paths need it, since either can create the containers.
+OBS_BIND_IP=$(tailscale ip -4 2>/dev/null || true)
+if [ -z "$OBS_BIND_IP" ]; then
+  echo "no tailscale IPv4 on the VM - refusing to publish CI ports on the public NIC" >&2
+  exit 1
+fi
+export OBS_BIND_IP
+
 compose() {
   docker compose --env-file ports.env -f src/infra/compose.ci.yml "$@"
 }

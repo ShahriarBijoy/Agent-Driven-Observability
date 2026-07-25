@@ -40,9 +40,25 @@ foreach ($line in Get-Content (Join-Path $Repo 'infra\ports.env')) {
 $Vm = $Ports.OBS_VM_HOST
 $GiteaUrl = "http://${Vm}:$($Ports.OBS_GITEA_PORT)"
 
+# WHICH interface the published CI ports land on. ports.env carries
+# OBS_BIND_IP=0.0.0.0 - correct on the laptop, catastrophic here, and it ships
+# to the VM verbatim on every `up`. So the VM's own tailscale address has to
+# override it at compose time; a shell variable beats --env-file in Docker
+# Compose's interpolation order, which is what makes this work.
+#
+# Empty means tailscale is down, and "${OBS_BIND_IP}:3005:3000" would collapse
+# to ":3005:3000" - bind-all, silently. Refuse instead. Same guard `obs k8s up`
+# applies to k3d; Gitea and ci-shim were missed there because they are plain
+# compose services outside the cluster, which is how they stayed on 0.0.0.0
+# for 67 days while the k3d ports were fixed.
+$BindGuard = 'OBS_BIND_IP=$(tailscale ip -4 2>/dev/null); ' +
+             'if [ -z "$OBS_BIND_IP" ]; then ' +
+             'echo "no tailscale IPv4 on the VM - refusing to publish CI ports on the public NIC" >&2; ' +
+             'exit 1; fi; export OBS_BIND_IP;'
+
 # Everything composes against the shipped tree on the VM; ports.env rides
 # along on every up so a port remap propagates.
-$ComposeRemote = 'docker compose --env-file /root/obs-lab/ports.env -f /root/obs-lab/src/infra/compose.ci.yml'
+$ComposeRemote = "$BindGuard docker compose --env-file /root/obs-lab/ports.env -f /root/obs-lab/src/infra/compose.ci.yml"
 
 function Write-Step($msg) { Write-Host ">> $msg" -ForegroundColor Cyan }
 
