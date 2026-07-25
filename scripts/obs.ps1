@@ -238,6 +238,46 @@ function Get-NameUrls {
 
 function Invoke-Up {
     param([string[]]$Extra)
+
+    # Mode exclusivity guard. In k8s mode the subject system runs on the
+    # cluster. Starting the compose subject alongside it publishes a SECOND
+    # gateway into the same Mimir - duplicate RED series, double-counted SLO
+    # burn, and two sources for one dashboard - and this function used to
+    # silently rewrite .obs-mode back to 'compose' on the way past, so the only
+    # symptom was a lie in a file nobody reads.
+    #
+    # In k8s mode we still want the laptop-side halves: postgres/redis (Marquez
+    # and agent-audit live there under Profile A) and the observability +
+    # lineage planes. Those are started by NAME off the full merged project -
+    # not by dropping compose.yml from the file list, because the plane files
+    # extend the subject services (adding env/labels to a `retriever` whose
+    # image lives in compose.yml) and fail to parse on their own.
+    # The keep-list is derived by subtraction, so a service added later is
+    # included automatically rather than silently skipped.
+    #
+    # `obs up --force` restores the old all-in behaviour and returns to compose
+    # mode - use it when you genuinely want both subjects running.
+    $forceNames = @('--force', '-force')
+    $force = @($Extra | Where-Object { $forceNames -contains "$_".ToLower() }).Count -gt 0
+    $Extra = @($Extra | Where-Object { $forceNames -notcontains "$_".ToLower() })
+
+    if ($Mode -eq 'k8s' -and -not $force) {
+        Write-Step 'k8s mode: bringing up the laptop-side planes only'
+        Write-Host '      (the subject system runs on the cluster - see: obs k8s status)'
+        $subjectSvcs = @('gateway', 'embedder', 'retriever', 'model-proxy', 'seed', 'load-generator')
+        $allSvcs = @(docker compose @Full config --services 2>$null)
+        if (-not $allSvcs) { throw 'could not enumerate compose services' }
+        $keep = @($allSvcs | Where-Object { $subjectSvcs -notcontains $_ })
+        Write-Host "      starting: $($keep -join ', ')"
+        docker compose @Full up -d @keep @Extra
+        if ($LASTEXITCODE -ne 0) { throw "laptop-side planes failed with exit code $LASTEXITCODE" }
+        Write-Host ''
+        Write-Host "  compose subject left stopped; mode stays 'k8s'." -ForegroundColor Green
+        Write-Host "  To go back to compose mode:  obs k8s delete   (or: obs k8s down)"
+        Write-Host "  To run BOTH subjects anyway: obs up --force   (double-counts gateway metrics)"
+        return
+    }
+
     # Step 1 creates obs-lab-app + obs-lab-obs; the lineage layer declares them
     # external, so they must exist before the merged command runs.
     Write-Step "step 1/2: subject system (creates the shared networks)"
