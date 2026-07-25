@@ -53,7 +53,11 @@ compose up -d --build --wait runner ci-shim
 # scripts/ci.ps1 wires the laptop-side remote + credential).
 # obs-gitops: empty on purpose - it becomes Phase 10's desired-state repo.
 GITEA_PORT=$(grep -oP '^OBS_GITEA_PORT=\K.*' ports.env)
-API="http://localhost:${GITEA_PORT}/api/v1"
+# NOT localhost: gitea publishes on the tailnet address only now (the
+# OBS_BIND_IP guard above), so from the host's point of view there is no
+# loopback listener on this port any more - curl -sf would fail and set -e
+# would kill the bootstrap. The guard guarantees OBS_BIND_IP is non-empty.
+API="http://${OBS_BIND_IP}:${GITEA_PORT}/api/v1"
 api() { curl -sf -H "Authorization: token $(cat .gitea-token)" -H "Content-Type: application/json" "$@"; }
 
 ensure_repo() {
