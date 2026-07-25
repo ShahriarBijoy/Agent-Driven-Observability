@@ -50,6 +50,7 @@ class AlertEvent:
     starts_at: datetime | None
     fingerprint: str | None
     summary: str          # annotation summary/description or alertname
+    namespace: str = ""   # k8s `namespace` label; "" when the alert names none
     raw: dict = field(default_factory=dict)
 
 
@@ -120,6 +121,7 @@ def _normalize_grafana(payload: dict) -> list[AlertEvent]:
                 starts_at=_parse_starts_at(alert.get("startsAt")),
                 fingerprint=alert.get("fingerprint"),
                 summary=annotations.get("summary") or annotations.get("description") or alertname,
+                namespace=str(labels.get("namespace") or ""),
                 raw=alert,
             )
         )
@@ -161,6 +163,35 @@ def alert_key(ev: AlertEvent) -> str:
     """Dedupe key: incidents opened for the same alertname+workload attach
     instead of spawning a second investigation."""
     return f"{ev.alertname}/{ev.workload}"
+
+
+def is_actionable(ev: AlertEvent, namespaces: set[str]) -> bool:
+    """Whether this alert deserves an incident and an agent investigation.
+
+    The k8s rules (infra/grafana/provisioning/alerting/k8s-rules.yaml) select
+    on `cluster="obs-lab"` with no namespace filter, so one rule watches the
+    subject system AND the lab's own platform. A single k3d restart therefore
+    fired KubeDeploymentReplicasMismatch for kube-system/coredns, traefik,
+    metrics-server and local-path-provisioner, plus argocd's controllers —
+    each a distinct alert_key, so each spawned its own investigation. Those
+    are real readings but not incidents: the platform converging after a
+    restart is not something a responder should act on.
+
+    Filtering here rather than in Grafana's notification policy is deliberate.
+    The app and SLO rules (rules.yaml) aggregate with `sum(...)`/`max(...)`,
+    which drops every label — they carry no `namespace` at all, so a
+    policy-level `namespace = subject` matcher would silence exactly the
+    alerts the demos depend on. Grafana also has no blackhole receiver for
+    the alerts a matcher rejects. Keeping the rules cluster-wide means
+    Grafana still evaluates and DISPLAYS everything (nothing becomes
+    invisible); this only decides what is worth waking the agent for.
+
+    The rule: an alert that names a namespace must name one we own. An alert
+    with no namespace label is subject-scoped by construction (app/SLO/DQ) or
+    genuinely cluster-level (KubeNodeNotReady, KubeFailedScheduling), and
+    passes.
+    """
+    return not ev.namespace or ev.namespace in namespaces
 
 
 def ingress_decision(ev: AlertEvent, open_incident: dict | None) -> str:

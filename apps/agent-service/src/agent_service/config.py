@@ -116,6 +116,10 @@ class Config:
     # escalation, and the recheck cadence after a proposed fix ships.
     oncall_debounce_seconds: int
     oncall_verify_minutes: int
+    # Namespaces whose alerts are worth an incident. The k8s alert rules watch
+    # the whole cluster so Grafana still SHOWS platform trouble; this decides
+    # what wakes the agent. See ingress.is_actionable.
+    incident_namespaces: frozenset[str]
 
 
 def load_config() -> Config:
@@ -172,6 +176,9 @@ def load_config() -> Config:
         alert_webhook_secret=alert_webhook_secret,
         oncall_debounce_seconds=int(_env("ONCALL_DEBOUNCE_SECONDS", "90")),
         oncall_verify_minutes=int(_env("ONCALL_VERIFY_MINUTES", "10")),
+        incident_namespaces=frozenset(
+            ns.strip() for ns in _env("INCIDENT_NAMESPACES", "subject").split(",") if ns.strip()
+        ),
     )
 
 
