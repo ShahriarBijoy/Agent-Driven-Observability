@@ -60,7 +60,7 @@ write_files:
   # creates a boot-ordering trap where sshd starts before tailscale0 has an
   # address and fails to bind at all.
   - path: /etc/ssh/sshd_config.d/60-obs-hardening.conf
-    permissions: '0644'
+    permissions: "0644"
     content: |
       PasswordAuthentication no
       KbdInteractiveAuthentication no
@@ -161,4 +161,20 @@ runcmd:
   # Validate before reloading: a bad drop-in would otherwise leave sshd
   # refusing to start on a box whose only fallback is the Hetzner console.
   - sshd -t && systemctl reload ssh
+  # A rescue credential for that console. Without it the fallback does not
+  # exist: this image ships no root password, so the VNC console prompts for
+  # one nobody has - and with 22 firewalled and tailscale the only remote
+  # path in, a node-key expiry or a broken tailscaled leaves Hetzner Rescue
+  # mode as the sole way back. Generated on the box, never in this file:
+  # cloud-init is pasted into a web console and lives in git.
+  #
+  # It cannot be used over the network. sshd above is PasswordAuthentication
+  # no + PermitRootLogin prohibit-password, so this password is console-only.
+  # Read it with: ssh root@obs-vm cat /root/obs-lab/.root-console
+  - >
+    mkdir -p /root/obs-lab &&
+    PW=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 24) &&
+    echo "root:$PW" | chpasswd &&
+    printf 'root:%s\n' "$PW" > /root/obs-lab/.root-console &&
+    chmod 600 /root/obs-lab/.root-console
   - touch /etc/obs-lab/.provisioned
