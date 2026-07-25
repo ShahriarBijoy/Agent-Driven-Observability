@@ -3,7 +3,7 @@ workload (phase-11 Task 3, `ingress.py`). Investigates from pre-check leads
 injected into the conversation, consults the matched runbook, correlates with
 deploy history, proposes a dry-run remediation gated behind
 `request_approval`, executes it once approved, re-verifies recovery via
-`alert_status`, and closes the loop with `open_postmortem_pr`.
+`alert_status`, and closes the loop with `publish_postmortem`.
 
 `alert` (an `ingress.AlertEvent`) is typed loosely here (`Any`) so this module
 never has to import `ingress` — used only via duck-typed attribute access:
@@ -143,7 +143,7 @@ def _build_prompt(
         "conversation, consult the matched runbook, correlate with deploy_history, name the "
         "root cause with evidence, dry-run your remediation and put the diff in the "
         "request_approval summary, execute once approved, re-query alert_status until "
-        "recovery (or report failure explicitly), then close with open_postmortem_pr — "
+        "recovery (or report failure explicitly), then close with publish_postmortem — "
         "your narrative must include the pipeline mermaid diagram marking the failing hop, "
         "and a report.html chart artifact when a metric carries the story."
     )
@@ -263,7 +263,7 @@ async def run_oncall(
         allowed_override = sorted(
             {toolsdk.mcp(name) for name in meta_tools} | set(toolsdk.ONCALL_ALWAYS_TOOLS)
         )
-    # One document per incident: both reports ride along to open_postmortem_pr
+    # One document per incident: both reports ride along to publish_postmortem
     # (which also mines the pre-check text for the log-spike onset) instead of
     # landing as separate prechecks.md / runbook-match.md artifacts.
     postmortem.record_run_context(

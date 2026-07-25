@@ -17,8 +17,18 @@ run-name: "${{ gitea.actor }}: ${{ gitea.event.head_commit.message }}"
 
 on:
   push:
-    # The oncall agent pushes a branch per incident; those are docs-only by
-    # construction and each build competes with the cluster for the VM's RAM.
+    # Postmortems now commit straight to main (agent-service
+    # `postmortem.publish_postmortem_impl`), so the docs-only skip has to live
+    # on the trigger, not just in the `changes` job below: without
+    # paths-ignore every postmortem still spawns a run whose only work is a
+    # `git diff`. `changes` still earns its keep on a MIXED push that touches
+    # both code and markdown, where this trigger fires but only some files
+    # matter.
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+    # Kept for the old branch-per-incident flow: harmless, and correct until
+    # every agent-service instance is running the commit-to-main code.
     branches-ignore:
       - "postmortem/**"
 

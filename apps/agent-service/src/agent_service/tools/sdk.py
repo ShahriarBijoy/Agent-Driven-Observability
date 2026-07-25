@@ -776,11 +776,11 @@ def build_mcp_server(ctx: RunContext):
         return _text("save_artifact", {"artifact_id": artifact.id, "name": safe_name})
 
     @tool(
-        "open_postmortem_pr",
+        "publish_postmortem",
         "Close out the incident: compose the MACHINE-BUILT timeline (every remediation/"
         "verification step, alert firing/resolved observation, deploy in the incident window, "
         "k8s event, and the log-spike onset — never anything you report) with your narrative, "
-        "and open it as a pull request on the local Gitea forge. narrative_md should cover "
+        "and commit it to main on the local Gitea forge. narrative_md should cover "
         "Summary / Impact / Root cause / What fixed it / Lessons — do NOT include timestamps "
         "yourself; the machine timeline is the only source of times and is prepended for you. "
         "Call this to finish EVERY incident, resolved or not.",
@@ -799,10 +799,10 @@ def build_mcp_server(ctx: RunContext):
             "required": ["narrative_md", "slug"],
         },
     )
-    async def _postmortem_pr(args: dict) -> dict:
+    async def _publish_postmortem(args: dict) -> dict:
         return _text(
-            "open_postmortem_pr",
-            await postmortem.open_postmortem_pr_impl(ctx, args["narrative_md"], args["slug"]),
+            "publish_postmortem",
+            await postmortem.publish_postmortem_impl(ctx, args["narrative_md"], args["slug"]),
         )
 
     return create_sdk_mcp_server(
@@ -896,18 +896,18 @@ TOOLSETS: dict[str, list[str]] = {
         mcp("scale_deployment"), mcp("patch_memory_limit"),
         mcp("restart_workload"), mcp("update_db_secret"),
         # session tools
-        mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+        mcp("request_approval"), mcp("save_artifact"), mcp("publish_postmortem"),
     ],
 }
 
 # Tools every oncall session keeps even when a matched runbook narrows the
 # allow-list (allowed_override in base.run_agent_session): the investigation
 # spine (runbook_read/runbook_lookup/deploy_history/alert_status) and the
-# session-close tools (request_approval/save_artifact/open_postmortem_pr) — a
+# session-close tools (request_approval/save_artifact/publish_postmortem) — a
 # runbook can narrow which remediation tools are on offer, never these.
 ONCALL_ALWAYS_TOOLS: list[str] = [
     mcp("runbook_read"), mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
-    mcp("request_approval"), mcp("save_artifact"), mcp("open_postmortem_pr"),
+    mcp("request_approval"), mcp("save_artifact"), mcp("publish_postmortem"),
 ]
 
 # Every tool the settings UI can grant to an agent, with an operator-facing
@@ -1000,8 +1000,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
     {"name": mcp("update_db_secret"), "kind": "mcp",
      "description": "Sync the DB Secret from the lab vault after a stale-secret rotation "
                      "(dry-run first, approval-gated, password never shown)"},
-    {"name": mcp("open_postmortem_pr"), "kind": "mcp",
-     "description": "Compose the machine timeline + your narrative and open a postmortem PR"},
+    {"name": mcp("publish_postmortem"), "kind": "mcp",
+     "description": "Compose the machine timeline + your narrative and commit the postmortem to main"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -1147,7 +1147,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "failure to recover explicitly; never assume success without re-querying. Report the "
         "outcome you observe, but closure of the incident is decided server-side from the same "
         "alert_status signal, not by your report. "
-        "Finish every incident, resolved or not, by calling open_postmortem_pr with your "
+        "Finish every incident, resolved or not, by calling publish_postmortem with your "
         "narrative (Summary / Impact / Root cause / What fixed it / Lessons) and a short "
         "kebab-case slug. Your narrative MUST include a Mermaid diagram (a ```mermaid "
         "flowchart) of the delivery path this incident lives on — the request path "
