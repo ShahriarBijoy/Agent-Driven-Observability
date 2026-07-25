@@ -40,6 +40,31 @@ write_files:
   - path: /etc/docker/daemon.json
     content: |
       { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+  # sshd defaults PasswordAuthentication to yes. On the running VM that was
+  # harmless only because no account carried a password hash - a coincidence
+  # of provisioning, not a control, and the public IP saw ~91k failed attempts
+  # a day. sshd binds 0.0.0.0 by design and obs-lockdown cannot filter it (SSH
+  # arrives via INPUT; DOCKER-USER only sees FORWARD), so port 22 rests on the
+  # Hetzner firewall alone - keys-only closes the part that is ours to close.
+  #
+  # A drop-in rather than an edit to sshd_config: package upgrades rewrite that
+  # file, and it carries `Include /etc/ssh/sshd_config.d/*.conf`.
+  #
+  # This governs connections that actually reach sshd - i.e. from the PUBLIC
+  # IP. Tailnet ssh does not: `tailscale up --ssh` below makes tailscaled
+  # intercept port 22 and authorise by tailnet identity + ACL, never touching
+  # sshd. Locking sshd down therefore cannot lock the laptop out, and equally
+  # does not constrain tailnet access - that is the ACL's job.
+  #
+  # The bind stays wide on purpose: pinning sshd to the tailscale address
+  # creates a boot-ordering trap where sshd starts before tailscale0 has an
+  # address and fails to bind at all.
+  - path: /etc/ssh/sshd_config.d/60-obs-hardening.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
   - path: /etc/obs-lab/provision.env
     content: |
       K3D_VERSION=v5.9.0
@@ -133,4 +158,7 @@ runcmd:
     fi
   - systemctl daemon-reload && systemctl enable --now obs-lab-nat.service
   - systemctl enable --now obs-lockdown.service
+  # Validate before reloading: a bad drop-in would otherwise leave sshd
+  # refusing to start on a box whose only fallback is the Hetzner console.
+  - sshd -t && systemctl reload ssh
   - touch /etc/obs-lab/.provisioned

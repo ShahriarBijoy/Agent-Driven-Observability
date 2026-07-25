@@ -1,5 +1,7 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { buildTrace, type JobInfo, type RunInfo } from "./emit";
+import { verifySignature } from "./main";
 import { CallbackGauge, Counter, Histogram, Registry } from "./metrics";
 
 const run: RunInfo = {
@@ -102,5 +104,41 @@ describe("metrics registry", () => {
     expect(text).toContain('cicd_queue_seconds_bucket{le="+Inf"} 1');
     expect(text).toContain("cicd_queue_seconds_sum 5");
     expect(text).toContain("cicd_pending 3");
+  });
+});
+
+describe("webhook signature", () => {
+  const secret = "obs-lab-ci-shim-hmac";
+  const body = JSON.stringify({ action: "completed", workflow_run: { id: 1 } });
+  const sign = (b: string, s: string) => createHmac("sha256", s).update(b).digest("hex");
+
+  it("accepts a signature Gitea would produce", () => {
+    expect(verifySignature(body, sign(body, secret), secret)).toBe(true);
+  });
+
+  it("rejects a body tampered with after signing", () => {
+    const sig = sign(body, secret);
+    const forged = JSON.stringify({ action: "completed", workflow_run: { id: 999 } });
+    expect(verifySignature(forged, sig, secret)).toBe(false);
+  });
+
+  it("rejects a signature made with the wrong secret", () => {
+    expect(verifySignature(body, sign(body, "not-the-secret"), secret)).toBe(false);
+  });
+
+  it("rejects a missing header - an unsigned POST must not pass", () => {
+    expect(verifySignature(body, undefined, secret)).toBe(false);
+    expect(verifySignature(body, "", secret)).toBe(false);
+  });
+
+  it("rejects garbage and wrong-length hex without throwing", () => {
+    // timingSafeEqual throws on length mismatch, so the length guard matters.
+    expect(verifySignature(body, "zzzz", secret)).toBe(false);
+    expect(verifySignature(body, "abcd", secret)).toBe(false);
+    expect(verifySignature(body, sign(body, secret) + "00", secret)).toBe(false);
+  });
+
+  it("never verifies when no secret is configured", () => {
+    expect(verifySignature(body, sign(body, ""), "")).toBe(false);
   });
 });

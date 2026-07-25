@@ -1189,6 +1189,84 @@ current-context: agent-remediate@obs-lab
                 }
             }
 
+            # The check that was missing for 67 days. Everything above asks
+            # whether a port is FREE; none of it ever asked which interface the
+            # VM answers on. Gitea, its ssh port and ci-shim sat on 0.0.0.0
+            # facing the public internet while the report said otherwise,
+            # because the k3d fix only moved the ports k3d owns.
+            #
+            # This does NOT probe from outside - that needs an off-tailnet
+            # vantage point and is a manual step (infra/vm/README.md). It
+            # checks the precondition instead, which is what actually
+            # regressed: a wildcard bind is observable from in here, and no
+            # port can be publicly reachable without one. Cheap, no third
+            # party, and it fails the moment a compose file forgets
+            # ${OBS_BIND_IP} again.
+            $vm = $Ports.OBS_VM_HOST
+            Write-Step "VM exposure ($vm) - bind addresses, lockdown unit, DOCKER-USER"
+            $probe = @'
+echo "LISTENERS"; ss -tlnH 2>/dev/null | awk '{print $4}'
+echo "LOCKDOWN"; systemctl is-active obs-lockdown.service 2>/dev/null
+echo "LOCKENABLED"; systemctl is-enabled obs-lockdown.service 2>/dev/null
+echo "DOCKERUSER4"; iptables -S DOCKER-USER 2>/dev/null | grep -c -- '-j DROP'
+echo "DOCKERUSER6"; ip6tables -S DOCKER-USER 2>/dev/null | grep -c -- '-j DROP'
+'@
+            $raw = ssh -o BatchMode=yes -o ConnectTimeout=8 "root@$vm" $probe 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $raw) {
+                Write-Host "  --  $vm unreachable over the tailnet - skipped (fine on a laptop-only lab)"
+            } else {
+                $section = ''; $listeners = @(); $lockdown = ''; $lockEnabled = ''; $du4 = 0; $du6 = 0
+                foreach ($line in $raw) {
+                    switch -Regex ($line) {
+                        '^(LISTENERS|LOCKDOWN|LOCKENABLED|DOCKERUSER4|DOCKERUSER6)$' { $section = $line; continue }
+                        default {
+                            switch ($section) {
+                                'LISTENERS'   { if ($line.Trim()) { $listeners += $line.Trim() } }
+                                'LOCKDOWN'    { if ($line.Trim()) { $lockdown = $line.Trim() } }
+                                'LOCKENABLED' { if ($line.Trim()) { $lockEnabled = $line.Trim() } }
+                                'DOCKERUSER4' { if ($line.Trim()) { $du4 = [int]$line.Trim() } }
+                                'DOCKERUSER6' { if ($line.Trim()) { $du6 = [int]$line.Trim() } }
+                            }
+                        }
+                    }
+                }
+                # Port 22 is sshd's and is EXPECTED wide: ssh arrives via INPUT,
+                # which DOCKER-USER never sees, and pinning sshd to the
+                # tailscale address races tailscale0 having an address at boot.
+                # It is keys-only (infra/vm/cloud-init.yaml) and the Hetzner
+                # firewall is its control.
+                $wide = @($listeners | Where-Object { $_ -match '^(0\.0\.0\.0|\[::\]):(\d+)$' -and $Matches[2] -ne '22' })
+                if ($wide.Count -eq 0) {
+                    Write-Host '  ok  no lab port bound to 0.0.0.0 or [::] (22 = sshd, expected)'
+                } else {
+                    $ok = $false
+                    foreach ($w in $wide) {
+                        Write-Warning "$w on $vm is bound to ALL interfaces - published without `${OBS_BIND_IP}. Fix the compose/k3d file that publishes it, then recreate the container ('obs ci up' / 'obs k8s up') - editing config alone does not rebind a running one."
+                    }
+                }
+                # The DROP rules are the control; the unit is only the mechanism
+                # that installs them. So they get different verdicts: missing
+                # rules means exposed NOW (fail), while a unit that is enabled
+                # but not active means the rules came from somewhere other than
+                # this boot's unit run - still protected, but nothing re-applies
+                # them if docker restarts and flushes the chain (warn).
+                if ($du4 -ge 1 -and $du6 -ge 1) {
+                    Write-Host "  ok  DOCKER-USER drops public-NIC ingress (v4 + v6)"
+                } else {
+                    $ok = $false
+                    Write-Warning "DOCKER-USER has no DROP rule on $vm (v4: $du4, v6: $du6) - container ports are NOT filtered. Docker publishes through FORWARD, which ufw never sees. Run: ssh root@$vm systemctl restart obs-lockdown.service"
+                }
+                if ($lockEnabled -ne 'enabled') {
+                    $ok = $false
+                    Write-Warning "obs-lockdown.service is '$lockEnabled' on $vm - it will NOT re-apply after a reboot. Run: ssh root@$vm systemctl enable --now obs-lockdown.service"
+                } elseif ($lockdown -ne 'active') {
+                    Write-Warning "obs-lockdown.service is enabled but '$lockdown' on $vm - the rules above were applied out-of-band, so nothing will restore them if docker flushes DOCKER-USER before the next reboot. Run: ssh root@$vm systemctl start obs-lockdown.service"
+                } else {
+                    Write-Host '  ok  obs-lockdown.service enabled + active'
+                }
+                Write-Host '  --  reachability from OUTSIDE is a manual step - see infra/vm/README.md'
+            }
+
             Write-Host ''
             if ($ok) { Write-Step 'preflight PASSED' } else { Write-Warning 'preflight FAILED - fix the items above'; exit 1 }
         }

@@ -53,7 +53,11 @@ compose up -d --build --wait runner ci-shim
 # scripts/ci.ps1 wires the laptop-side remote + credential).
 # obs-gitops: empty on purpose - it becomes Phase 10's desired-state repo.
 GITEA_PORT=$(grep -oP '^OBS_GITEA_PORT=\K.*' ports.env)
-API="http://localhost:${GITEA_PORT}/api/v1"
+# NOT localhost: gitea publishes on the tailnet address only now (the
+# OBS_BIND_IP guard above), so from the host's point of view there is no
+# loopback listener on this port any more - curl -sf would fail and set -e
+# would kill the bootstrap. The guard guarantees OBS_BIND_IP is non-empty.
+API="http://${OBS_BIND_IP}:${GITEA_PORT}/api/v1"
 api() { curl -sf -H "Authorization: token $(cat .gitea-token)" -H "Content-Type: application/json" "$@"; }
 
 ensure_repo() {
@@ -80,11 +84,35 @@ fi
 # Pipelines-as-telemetry: obs-lab's workflow_run/workflow_job webhooks feed
 # ci-shim on the shared compose network. Requires the ALLOWED_HOST_LIST env
 # in compose.ci.yml - without it Gitea drops these deliveries silently.
-if ! api "$API/repos/obs/obs-lab/hooks" | grep -q 'ci-shim:8095'; then
-  api -X POST "$API/repos/obs/obs-lab/hooks" \
-    -d '{"type":"gitea","active":true,"events":["workflow_run","workflow_job"],"config":{"url":"http://ci-shim:8095/webhook","content_type":"json"}}' >/dev/null
-  echo ">> webhook wired: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
+# The hook carries the HMAC key ci-shim verifies each delivery against, so it
+# must match CI_SHIM_WEBHOOK_SECRET in compose.ci.yml or every delivery is
+# rejected 401. Updated IN PLACE when the hook already exists: hooks created
+# before signing have no secret, and re-running `obs ci up` is how they get
+# one - a create-only check would leave the shim rejecting everything.
+SHIM_SECRET=$(grep -oP '^OBS_CI_SHIM_WEBHOOK_SECRET=\K.*' ports.env || true)
+HOOK_CFG="{\"url\":\"http://ci-shim:8095/webhook\",\"content_type\":\"json\",\"secret\":\"${SHIM_SECRET}\"}"
+HOOK_ID=$(api "$API/repos/obs/obs-lab/hooks" | python3 -c '
+import json, sys
+try:
+    for h in json.load(sys.stdin):
+        if "ci-shim:8095" in (h.get("config") or {}).get("url", ""):
+            print(h["id"]); break
+except Exception:
+    pass
+')
+# Delete-then-create, NOT patch. Gitea 1.26.4 accepts config.secret on CREATE
+# but silently ignores it on PATCH - the API returns 200 and the webhook row's
+# secret column stays empty, so the hook keeps sending unsigned deliveries into
+# a shim that rejects them and CI telemetry goes quiet with nothing saying why.
+# Verified directly against the sqlite row on this version. Losing the hook's
+# delivery history is the price of the secret actually being stored.
+if [ -n "$HOOK_ID" ]; then
+  api -X DELETE "$API/repos/obs/obs-lab/hooks/$HOOK_ID" >/dev/null
+  echo ">> removed hook $HOOK_ID (its secret cannot be set by PATCH on Gitea 1.26)"
 fi
+api -X POST "$API/repos/obs/obs-lab/hooks" \
+  -d "{\"type\":\"gitea\",\"active\":true,\"events\":[\"workflow_run\",\"workflow_job\"],\"config\":${HOOK_CFG}}" >/dev/null
+echo ">> webhook wired + signed: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
 
 # P10: the deploy job is a commit to obs-gitops, so CI needs the Gitea token
 # (not cluster access - Argo CD holds the only deploy credential now).

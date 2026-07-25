@@ -122,8 +122,11 @@ services:
       # time; the 1.26 webhook payload ships head_commit: null). Injected by
       # scripts/ci-bootstrap.sh from the VM-local token file.
       GITEA_TOKEN: ${OBS_CI_GITEA_TOKEN:-}
-    # Tailnet-only, same reasoning as gitea above — /webhook still trusts any
-    # POST, so reachability IS the control here until it is signed.
+      # Must match the `secret` on the obs-lab hook that ci-bootstrap.sh
+      # registers, or every delivery is rejected with 401. Empty = signature
+      # checking is SKIPPED and the shim logs a startup warning.
+      CI_SHIM_WEBHOOK_SECRET: ${OBS_CI_SHIM_WEBHOOK_SECRET:-}
+    # Tailnet-only, same reasoning as gitea above.
     ports:
       - "${OBS_BIND_IP}:${OBS_CI_SHIM_PORT:-8095}:8095"
     # MagicDNS resolver (fixed anycast address, reachable through the NAT
