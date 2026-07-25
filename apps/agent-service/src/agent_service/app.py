@@ -209,6 +209,16 @@ async def webhook_alerts(request: Request) -> JSONResponse:
     payload = _safe_json(raw)
     results: list[dict[str, Any]] = []
     for ev in ingress.normalize(payload):
+        if not ingress.is_actionable(ev, config.incident_namespaces):
+            # Platform trouble (kube-system/argocd converging after a restart)
+            # is still visible in Grafana; it just doesn't get an incident and
+            # an investigation. Reported rather than dropped silently so the
+            # response shows WHY nothing happened.
+            results.append({
+                "action": "ignore",
+                "reason": f"namespace {ev.namespace!r} is not an incident namespace",
+            })
+            continue
         key = ingress.alert_key(ev)
         open_inc = await db.find_open_incident_by_key(key)
         action = ingress.ingress_decision(ev, open_inc)

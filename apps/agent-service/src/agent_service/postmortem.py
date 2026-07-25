@@ -317,6 +317,23 @@ _EVIDENCE_MIMIR_QUERY = (
 )
 
 
+# A Markdown table row is ONE line: any newline inside a cell ends the table,
+# and every row after it renders as a paragraph of literal pipes. Gitea's
+# run-name is the full commit message and k8s event messages wrap, so this is
+# reached in practice — it took out an entire ~80-row timeline. Escaping `|`
+# alone (what this used to do) does not prevent it.
+_CELL_MAX = 240
+
+
+def _cell(value: Any) -> str:
+    """One Markdown table cell: no newline can escape it, no pipe can split
+    it, and no single event can run away with the column."""
+    text = " ".join(str(value).split())
+    if len(text) > _CELL_MAX:
+        text = text[: _CELL_MAX - 1].rstrip() + "…"
+    return text.replace("\\", "\\\\").replace("|", "\\|")
+
+
 def compose(
     incident: dict, timeline: list[dict], narrative_md: str, context_md: str | None = None
 ) -> str:
@@ -358,9 +375,9 @@ def compose(
     lines.append("| Time (UTC) | Source | Event |")
     lines.append("| --- | --- | --- |")
     for row in timeline:
-        time_cell = _row_time(row.get("ts"), anchor_date)
-        source = str(row.get("source", ""))
-        label = str(row.get("label", "")).replace("|", "\\|")
+        time_cell = _cell(_row_time(row.get("ts"), anchor_date))
+        source = _cell(row.get("source", ""))
+        label = _cell(row.get("label", ""))
         lines.append(f"| {time_cell} | {source} | {label} |")
     lines.append("")
 

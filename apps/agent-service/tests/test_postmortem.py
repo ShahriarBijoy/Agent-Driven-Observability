@@ -7,14 +7,15 @@ stamped at query time, not an event — the Task 7 caveat) and dedupe on
 (ts, source, label). `compose` renders whatever timeline it's given verbatim,
 in the given order, and appends the model's narrative unmodified below it —
 it never sorts or reorders. `grafana_explore_link` builds a URL-encoded
-Grafana Explore deep link. `open_postmortem_pr_impl` is the per-run tool:
-compose + push to a new Gitea branch + open a PR, gracefully handling an
-already-existing branch/PR."""
+Grafana Explore deep link. `publish_postmortem_impl` is the per-run tool:
+compose + commit the document to main on Gitea, resolving filename collisions
+under an incident-suffixed name."""
 
 from __future__ import annotations
 
 import dataclasses
 import json as jsonlib
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -445,7 +446,7 @@ async def test_log_spike_onset_wiring_skips_missing_runs(monkeypatch):
     assert source == "log-spike"
 
 
-# ---- open_postmortem_pr_impl: Gitea REST flow ----------------------------------
+# ---- publish_postmortem_impl: Gitea REST flow ----------------------------------
 
 
 class _FakeCtx:
@@ -707,3 +708,60 @@ async def test_log_spike_onset_reads_run_context_store(monkeypatch):
     assert ts == datetime(2026, 7, 22, 10, 5, 30, tzinfo=UTC)
     assert source == "log-spike"
     assert "boom" in label
+
+
+# ---- timeline table cells ------------------------------------------------------
+
+
+def _timeline_rows(md: str) -> list[str]:
+    """Body rows of the timeline table — header and separator excluded."""
+    return [
+        ln for ln in md.splitlines()
+        if ln.startswith("| ") and not ln.startswith("| --- ")
+        and not ln.startswith("| Time (UTC) ")
+    ]
+
+
+def _compose_with(labels: list[str]) -> str:
+    incident = {"title": "t", "status": "open", "severity": "sev2",
+                "opened_at": datetime(2026, 7, 22, 23, 0, 0, tzinfo=UTC)}
+    timeline = [
+        {"ts": datetime(2026, 7, 22, 23, index, 0, tzinfo=UTC), "source": "deploy:ci", "label": lb}
+        for index, lb in enumerate(labels)
+    ]
+    return postmortem.compose(incident, timeline, "## Summary\nnarrative\n")
+
+
+def test_multiline_label_cannot_break_the_timeline_table():
+    """The real failure: a Gitea run-name is the whole commit MESSAGE, so a
+    commit body put a newline inside a cell, ended the table, and dumped the
+    ~80 rows below it into one paragraph of literal pipes."""
+    commit = ("CI run #83 success on security/vm-public-exposure: obs: telemetry: collapse "
+              "unmatched routes into one http_route series\n\nrouteOf fell back to the raw "
+              "request path whenever the matcher missed.")
+    md = _compose_with([commit, "k8s | Pod/gateway: Scheduled"])
+    rows = _timeline_rows(md)
+    # Both events are still rows - the second was the one that used to vanish.
+    assert len(rows) == 2, md
+    assert all(row.count("\n") == 0 for row in rows)
+    assert "routeOf fell back" in rows[0]
+    assert "Pod/gateway: Scheduled" in rows[1]
+
+
+def test_pipe_in_a_label_is_escaped_not_column_splitting():
+    md = _compose_with(["reason=Failed msg=\"a | b | c\""])
+    row, = _timeline_rows(md)
+    assert row.count("\\|") == 2
+    # 3 real columns -> 4 unescaped delimiters, no more.
+    assert len(re.findall(r"(?<!\\)\|", row)) == 4
+
+
+def test_runaway_label_is_capped():
+    md = _compose_with(["x" * 900])
+    row, = _timeline_rows(md)
+    assert "…" in row and len(row) < 400
+
+
+def test_cell_collapses_all_whitespace():
+    assert postmortem._cell("a\n\nb\tc   d") == "a b c d"
+    assert postmortem._cell(None) == "None"

@@ -1420,7 +1420,10 @@ def merge_history(
             continue
         status = run.get("conclusion") or run.get("status") or "unknown"
         branch = run.get("branch") or ""
-        title = (run.get("title") or "").strip()
+        # ci.yaml sets run-name to the head commit MESSAGE, which carries the
+        # whole body — subject line only, or one timeline row becomes a wall
+        # of text (and used to break the postmortem table outright).
+        title = (run.get("title") or "").strip().split("\n", 1)[0].strip()
         head = f"CI run #{run.get('run_number')} {status} on {branch}".strip()
         summary = f"{head}: {title}" if title else head
         scored.append((parsed, _entry(

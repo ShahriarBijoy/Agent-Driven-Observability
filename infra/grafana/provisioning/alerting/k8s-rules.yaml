@@ -55,7 +55,7 @@ groups:
                       - 0
         noDataState: OK
         execErrState: Error
-        for: 60s
+        for: 3m
         labels:
           severity: page
         annotations:
@@ -86,7 +86,7 @@ groups:
                       - 0
         noDataState: OK
         execErrState: Error
-        for: 90s
+        for: 3m
         labels:
           severity: page
         annotations:
@@ -117,11 +117,11 @@ groups:
                       - 0
         noDataState: OK
         execErrState: Error
-        for: 120s
+        for: 4m
         labels:
           severity: page
         annotations:
-          summary: "{{ $labels.namespace }}/{{ $labels.pod }} has been not-ready for 2 minutes (readiness probe or startup trouble)"
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} has been not-ready for 4 minutes (readiness probe or startup trouble)"
       - uid: k8s-deploy-replicas-mismatch
         title: KubeDeploymentReplicasMismatch
         condition: C
@@ -148,11 +148,11 @@ groups:
                       - 0
         noDataState: OK
         execErrState: Error
-        for: 120s
+        for: 8m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.namespace }}/{{ $labels.deployment }} available replicas != spec for 2 minutes"
+          summary: "{{ $labels.namespace }}/{{ $labels.deployment }} available replicas != spec for 8 minutes"
       - uid: k8s-oomkilled
         title: KubeContainerOOMKilled
         condition: C
@@ -210,7 +210,7 @@ groups:
                       - 0
         noDataState: OK
         execErrState: Error
-        for: 60s
+        for: 8m
         labels:
           severity: page
         annotations:
@@ -242,7 +242,7 @@ groups:
                       - 2
         noDataState: OK
         execErrState: Error
-        for: 60s
+        for: 5m
         labels:
           severity: warning
         annotations:
@@ -273,7 +273,7 @@ groups:
                       - 15
         noDataState: OK
         execErrState: Error
-        for: 120s
+        for: 10m
         labels:
           severity: warning
         annotations:
