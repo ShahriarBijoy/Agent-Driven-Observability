@@ -9,6 +9,7 @@
 // Metrics are exposed at /metrics (Prometheus text) and scraped by the
 // laptop's Alloy over the tailnet; see src/metrics.ts for why scrape > push
 // for sparse CI events.
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { buildTrace, type JobInfo, postTrace, type RunInfo } from "./emit";
 import { CallbackGauge, Counter, Histogram, Registry } from "./metrics";
@@ -17,7 +18,15 @@ const port = Number(process.env.CI_SHIM_PORT ?? "8095");
 const otlpUrl = process.env.OTLP_URL ?? "http://localhost:4318";
 const giteaUrl = process.env.GITEA_URL ?? "http://gitea:3000";
 const giteaToken = process.env.GITEA_TOKEN ?? "";
+const webhookSecret = process.env.CI_SHIM_WEBHOOK_SECRET ?? "";
 const startedAt = Date.now();
+
+if (!webhookSecret) {
+  console.warn(
+    "[ci-shim] CI_SHIM_WEBHOOK_SECRET is not set; /webhook accepts UNSIGNED posts. " +
+      "Anything that can reach this port can forge DORA metrics and CI traces.",
+  );
+}
 
 // Gitea 1.26's workflow_run payload ships head_commit: null, so the DORA
 // lead-time clock (commit -> deploy) needs one API round-trip per deploy.
@@ -214,6 +223,30 @@ async function handleWorkflowRun(action: string, body: Record<string, unknown>):
   }
 }
 
+// --- webhook signature --------------------------------------------------------
+// Gitea signs each delivery with HMAC-SHA256 of the RAW body under the hook's
+// configured secret, hex-encoded in X-Gitea-Signature. Verifying it is what
+// makes this endpoint's numbers trustworthy: /webhook feeds DORA counters and
+// deploy traces, so an unsigned endpoint lets anything that can reach the port
+// invent delivery history. Binding to the tailnet shrank who can reach it; it
+// never made an unsigned POST distinguishable from a real one.
+//
+// Exported for the tests - the signing side is trivial, the failure modes
+// (wrong secret, tampered body, absent header) are the part worth pinning.
+export function verifySignature(rawBody: string, header: string | undefined, secret: string) {
+  if (!header || !secret) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest();
+  let received: Buffer;
+  try {
+    received = Buffer.from(header, "hex");
+  } catch {
+    return false;
+  }
+  // timingSafeEqual throws on a length mismatch rather than returning false.
+  if (received.length !== expected.length) return false;
+  return timingSafeEqual(expected, received);
+}
+
 // --- http --------------------------------------------------------------------
 const app = new Hono();
 
@@ -225,7 +258,24 @@ app.get("/metrics", (c) => c.text(registry.render()));
 
 app.post("/webhook", async (c) => {
   const event = c.req.header("x-gitea-event") ?? c.req.header("x-github-event") ?? "unknown";
-  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  // Raw text first: the HMAC covers the exact bytes Gitea sent, so re-encoding
+  // a parsed object would not reproduce it.
+  const raw = await c.req.text().catch(() => "");
+  if (webhookSecret) {
+    const sig = c.req.header("x-gitea-signature") ?? c.req.header("x-hub-signature-256");
+    if (!verifySignature(raw, sig, webhookSecret)) {
+      webhookErrors.inc({ stage: "signature" });
+      console.warn(`[ci-shim] rejected unsigned/bad-signature webhook event=${event}`);
+      return c.json({ error: "bad signature" }, 401);
+    }
+  }
+  const body = (() => {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
   if (!body) {
     webhookErrors.inc({ stage: "parse" });
     return c.json({ error: "bad payload" }, 400);
