@@ -83,6 +83,52 @@ state: an empty inbound ruleset, with every path to the VM going over the
 tailnet. Do not confuse "no rule allowing 22" with "no firewall attached" —
 the second one allows everything.
 
+### 4. Verify the VM is not reachable from the internet
+
+Two checks, and they answer different questions. Do not treat either as the
+other.
+
+**Automated — `obs preflight`.** Reports which interface each VM port is bound
+to, whether `obs-lockdown.service` is up, and whether `DOCKER-USER` still has
+rules. It fails if any lab port is on `0.0.0.0` or `[::]`. That is the
+*precondition* for public exposure, and it is what silently regressed for 67
+days: nothing can be publicly reachable without a wildcard bind, and a wildcard
+bind is visible from inside. Run it after any change to a compose file, a k3d
+config, or `ports.env`.
+
+It cannot tell you about **reachability**. The laptop is on the tailnet, so it
+reaches the VM whatever the firewall says.
+
+**Manual — probe the public IPs from off-tailnet.** The only check that proves
+reachability, and it cannot be automated from here without an off-tailnet
+vantage point.
+
+1. Disconnect Tailscale (tray icon → Disconnect), then confirm:
+   `tailscale status` reports stopped, and
+   `Test-NetConnection obs-vm -Port 3005 -InformationLevel Quiet` is `False`.
+   If that is `True` you are still on the tailnet and the rest is meaningless.
+2. Probe both public addresses:
+
+```powershell
+foreach ($ip in '167.233.217.0','2a01:4f8:c013:50ef::1') {
+  "== $ip =="
+  foreach ($p in 22,2222,3005,5010,6550,8080,8095) {
+    $r = Test-NetConnection $ip -Port $p -InformationLevel Quiet -WarningAction SilentlyContinue
+    '{0,-6} {1}' -f $p, $(if ($r) { 'OPEN  <-- investigate' } else { 'closed' })
+  }
+}
+```
+
+3. Reconnect Tailscale.
+
+Every port should be `closed`. Port 22 open means the Hetzner firewall is not
+blocking ssh — survivable (sshd is keys-only) but not the intended end state.
+Anything else open means a bind or a firewall layer is missing: re-run
+`obs preflight` to find out which.
+
+Worth repeating after any Hetzner firewall edit, since that layer is the
+primary control and lives outside this repo.
+
 ## Day-2 notes
 
 - **Pause for weeks**: snapshot the server in the Hetzner console, delete it,
