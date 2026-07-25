@@ -811,7 +811,7 @@ def build_mcp_server(ctx: RunContext):
             *_STATELESS, _gh, _approval, _artifact,
             _rollout_undo, _rollout_abort, _rollout_promote,
             _scale_deployment, _patch_memory_limit, _restart_workload,
-            _update_db_secret, _postmortem_pr,
+            _update_db_secret, _publish_postmortem,
         ],
     )
 
