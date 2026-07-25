@@ -389,7 +389,7 @@ function IncidentDetailPanel({ incident }: { incident: OncallIncidentDetail }) {
             render={<a href={incident.postmortemPrUrl} target="_blank" rel="noreferrer" />}
           >
             <ExternalLinkIcon data-icon="inline-start" />
-            Postmortem PR
+            Postmortem
           </Button>
         </FrameFooter>
       ) : null}

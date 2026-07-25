@@ -12,9 +12,17 @@ list. The model is never asked for a timestamp and could not invent one that
 would end up in the document: `compose` renders the machine timeline verbatim
 and appends the model's narrative below it, unmodified.
 
-`open_postmortem_pr_impl` is the per-run tool `open_postmortem_pr` (registered
+`publish_postmortem_impl` is the per-run tool `publish_postmortem` (registered
 in `tools/sdk.py`) delegates to: build the timeline, compose the document,
-push it to a new branch on the local Gitea forge, open a PR, record the URL.
+commit it to main on the local Gitea forge, record the URL.
+
+It used to open a PR per incident. Every alert — including the cluster-restart
+noise (coredns/traefik/metrics-server replica flaps) — then produced a PR
+carrying one markdown file, and the review they implied never happened. The
+documents now land on main directly. Code changes are unaffected and still
+require review: the auto-fixer goes through `backends.gh_open_pr` behind
+`request_approval`, and this path is guarded to `postmortems/*.md` so it can
+never be used to push anything else.
 """
 
 from __future__ import annotations
@@ -38,6 +46,20 @@ _SLUG_RE = re.compile(r"^[a-z0-9-]{1,60}\Z")
 
 def _valid_slug(slug: str) -> bool:
     return bool(slug) and bool(_SLUG_RE.match(slug))
+
+
+# The branch postmortems land on, and the only shape of path this module is
+# allowed to write. The slug is already validated above and the date is
+# machine-derived, so a bad path can't be reached from the tool arguments
+# today — the guard is here so that stays true if either ever changes. This
+# codepath commits to main without review; what it can write must be provably
+# limited to postmortem documents.
+_POSTMORTEM_BRANCH = "main"
+_POSTMORTEM_PATH_RE = re.compile(r"^postmortems/[a-z0-9][a-z0-9._-]{0,90}\.md\Z")
+
+
+def _valid_postmortem_path(path: str) -> bool:
+    return ".." not in path and bool(_POSTMORTEM_PATH_RE.match(path))
 
 
 # ---- timeline merge -----------------------------------------------------------
@@ -396,13 +418,13 @@ def grafana_explore_link(datasource: str, query: str, from_ts: datetime, to_ts: 
     return f"{config.grafana_url}/explore?{urlencode(params)}"
 
 
-# ---- Gitea PR -------------------------------------------------------------------
+# ---- Gitea publish --------------------------------------------------------------
 
 
-async def open_postmortem_pr_impl(ctx: Any, narrative_md: str, slug: str) -> dict:
-    """The `open_postmortem_pr` tool: build the machine timeline, compose the
-    document, push it to a new branch on the local Gitea forge, open a PR
-    against main, record the URL, and keep a copy as a run artifact."""
+async def publish_postmortem_impl(ctx: Any, narrative_md: str, slug: str) -> dict:
+    """The `publish_postmortem` tool: build the machine timeline, compose the
+    document, commit it to main on the local Gitea forge, record the URL, and
+    keep a copy as a run artifact."""
     if not _valid_slug(slug):
         return {"error": f"invalid slug {slug!r} — must match [a-z0-9-]{{1,60}}"}
 
@@ -428,28 +450,36 @@ async def open_postmortem_pr_impl(ctx: Any, narrative_md: str, slug: str) -> dic
         if isinstance(opened_at, datetime)
         else datetime.now(timezone.utc).strftime("%Y-%m-%d")
     )
-    filename = f"postmortems/{date_str}-{slug}.md"
-    branch = f"postmortem/{incident_id}"
-    title = incident.get("title") or incident_id
-
+    # Everything shares one branch now, so same-day slug collisions are real
+    # where separate branches used to hide them. Fall back to a name carrying
+    # the incident id, which is unique per incident — so a collision on the
+    # SUFFIXED name can only be this same incident publishing twice (a retry),
+    # never a different one, and is reported as success rather than an error.
     content_b64 = base64.b64encode(document.encode("utf-8")).decode("ascii")
-    put_result = await backends.gitea_put_file(
-        filename, content_b64, branch, f"postmortem: {slug}"
-    )
-    if "error" in put_result:
-        return {"error": put_result["error"]}
-    # status == "branch_exists" (409/422 from a prior attempt) is not fatal —
-    # fall through and try opening the PR against whatever is already there.
+    candidates = [
+        f"postmortems/{date_str}-{slug}.md",
+        f"postmortems/{date_str}-{slug}-{incident_id[-6:]}.md",
+    ]
+    filename = ""
+    for index, candidate in enumerate(candidates):
+        is_last = index == len(candidates) - 1
+        if not _valid_postmortem_path(candidate):
+            return {"error": f"refusing to write outside postmortems/: {candidate!r}"}
+        put_result = await backends.gitea_put_file(
+            candidate, content_b64, _POSTMORTEM_BRANCH, f"postmortem: {slug}"
+        )
+        if "error" in put_result:
+            # Save the composed markdown as an artifact even on failure — the
+            # document is not lost, and it aids debugging.
+            await ctx.add_artifact(
+                name="postmortem.md", media_type="text/markdown", content=document
+            )
+            return {"error": put_result["error"], "file": candidate}
+        if put_result.get("status") == "created" or is_last:
+            filename = candidate
+            break
 
-    pr_result = await backends.gitea_open_pr(branch, "main", f"Postmortem: {title}", "")
-    if "error" in pr_result:
-        # Still save the composed markdown as artifact even on PR-open failure — aids debugging.
-        await ctx.add_artifact(name="postmortem.md", media_type="text/markdown", content=document)
-        # Surfaced gracefully, same as gitea_open_pr's own callers do: an
-        # existing PR (or nothing to diff) is reported, not raised.
-        return {"error": pr_result["error"], "file": filename}
-
-    pr_url = pr_result.get("pr_url")
-    await db.set_postmortem_pr(incident_id, pr_url)
+    url = f"{config.gitea_url}/{config.gitea_repo}/src/branch/{_POSTMORTEM_BRANCH}/{filename}"
+    await db.set_postmortem_pr(incident_id, url)
     await ctx.add_artifact(name="postmortem.md", media_type="text/markdown", content=document)
-    return {"pr_url": pr_url, "file": filename}
+    return {"url": url, "file": filename, "branch": _POSTMORTEM_BRANCH}

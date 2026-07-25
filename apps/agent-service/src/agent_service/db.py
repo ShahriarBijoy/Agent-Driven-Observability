@@ -88,6 +88,10 @@ CREATE INDEX IF NOT EXISTS incidents_opened_idx ON incidents (opened_at DESC);
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS alert_key TEXT;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verify_deadline TIMESTAMPTZ;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+-- Stale name: since postmortems commit straight to main rather than opening a
+-- PR (postmortem.publish_postmortem_impl), this holds a link to the file on
+-- main. Kept as-is deliberately — renaming costs a migration against live rows
+-- for a column whose meaning (where to read the postmortem) never changed.
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem_pr_url TEXT;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalations INT NOT NULL DEFAULT 0;
 DROP INDEX IF EXISTS incidents_alert_key_open_idx;

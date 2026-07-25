@@ -472,19 +472,21 @@ class _FakeResponse:
 
 class _FakeGiteaClient:
     """Stand-in for backends._http(): records every POST and answers the
-    contents-create and pulls-create calls with configurable status codes."""
+    contents-create calls with a configurable status per call (so a filename
+    collision followed by a success can be exercised). Opening a PR is a hard
+    failure — postmortems commit to main, and only code changes get PRs."""
 
-    def __init__(self, put_status=201, pr_status=201, pr_payload=None):
-        self.put_status = put_status
-        self.pr_status = pr_status
-        self.pr_payload = pr_payload or {"html_url": "http://gitea.local/obs/obs-lab/pulls/7"}
+    def __init__(self, put_statuses=(201,)):
+        self.put_statuses = list(put_statuses)
         self.calls: list[tuple[str, dict]] = []
 
     async def post(self, url, headers=None, json=None):
         self.calls.append((url, json))
         if url.endswith("/pulls"):
-            return _FakeResponse(self.pr_status, self.pr_payload if self.pr_status < 400 else {})
-        return _FakeResponse(self.put_status, {})
+            raise AssertionError("publish_postmortem must never open a PR")
+        status = self.put_statuses.pop(0) if self.put_statuses else 201
+        body = {"message": "file already exists"} if status >= 400 else {}
+        return _FakeResponse(status, body)
 
 
 def _wire_incident(monkeypatch, *, incident=None, alert_row=None, timeline=None):
@@ -514,99 +516,134 @@ def _wire_incident(monkeypatch, *, incident=None, alert_row=None, timeline=None)
 
 
 def _wire_gitea(monkeypatch, client):
-    monkeypatch.setattr(
-        backends, "config",
-        dataclasses.replace(
-            backends.config, gitea_token="tok", gitea_url="http://gitea.local",
-            gitea_repo="obs/obs-lab",
-        ),
+    wired = dataclasses.replace(
+        backends.config, gitea_token="tok", gitea_url="http://gitea.local",
+        gitea_repo="obs/obs-lab",
     )
+    monkeypatch.setattr(backends, "config", wired)
+    # postmortem.py builds the file URL from its OWN config import, not backends'.
+    monkeypatch.setattr(postmortem, "config", wired)
     monkeypatch.setattr(backends, "_http", lambda: client)
 
 
-async def test_open_postmortem_pr_happy_path(monkeypatch):
+def _stub_set_postmortem_pr(monkeypatch) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+
+    async def _set(incident_id, url):
+        calls.append((incident_id, url))
+
+    monkeypatch.setattr(db, "set_postmortem_pr", _set)
+    return calls
+
+
+async def test_publish_postmortem_commits_to_main_without_opening_a_pr(monkeypatch):
     client = _FakeGiteaClient()
     _wire_gitea(monkeypatch, client)
-    set_calls = []
-
-    async def _set_postmortem_pr(incident_id, url):
-        set_calls.append((incident_id, url))
-
-    monkeypatch.setattr(db, "set_postmortem_pr", _set_postmortem_pr)
+    set_calls = _stub_set_postmortem_pr(monkeypatch)
     _wire_incident(monkeypatch, alert_row={"workload": "gateway"})
 
     ctx = _FakeCtx()
-    result = await postmortem.open_postmortem_pr_impl(ctx, "## Summary\nfixed it\n", "gateway-oom")
+    result = await postmortem.publish_postmortem_impl(ctx, "## Summary\nfixed it\n", "gateway-oom")
 
+    url = "http://gitea.local/obs/obs-lab/src/branch/main/postmortems/2026-07-22-gateway-oom.md"
     assert result == {
-        "pr_url": "http://gitea.local/obs/obs-lab/pulls/7",
+        "url": url,
         "file": "postmortems/2026-07-22-gateway-oom.md",
+        "branch": "main",
     }
-    assert set_calls == [("inc_1", "http://gitea.local/obs/obs-lab/pulls/7")]
+    assert set_calls == [("inc_1", url)]
     assert ctx.artifacts and ctx.artifacts[0][0] == "postmortem.md"
     assert "## Summary\nfixed it" in ctx.artifacts[0][2]
 
-    put_call, pr_call = client.calls
-    assert put_call[0].endswith("/contents/postmortems/2026-07-22-gateway-oom.md")
-    assert put_call[1]["new_branch"] == "postmortem/inc_1"
-    assert pr_call[0].endswith("/pulls")
-    assert pr_call[1]["head"] == "postmortem/inc_1"
-    assert pr_call[1]["title"] == "Postmortem: Gateway high error rate"
+    # Exactly one call, and it commits onto main rather than cutting a branch.
+    # _FakeGiteaClient raises on /pulls, so "no PR" is enforced, not just asserted.
+    (put_url, put_body), = client.calls
+    assert put_url.endswith("/contents/postmortems/2026-07-22-gateway-oom.md")
+    assert put_body["branch"] == "main"
+    assert "new_branch" not in put_body
 
 
-async def test_open_postmortem_pr_rejects_invalid_slug():
-    result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "../evil")
+async def test_publish_postmortem_rejects_invalid_slug():
+    result = await postmortem.publish_postmortem_impl(_FakeCtx(), "narrative", "../evil")
     assert "error" in result
 
 
-async def test_open_postmortem_pr_surfaces_existing_pr_gracefully(monkeypatch):
-    client = _FakeGiteaClient(pr_status=409)
+def test_postmortem_path_guard_rejects_anything_outside_postmortems():
+    """The guard, not the slug regex, is what keeps this unreviewed commit-to-main
+    path from being able to write code."""
+    assert postmortem._valid_postmortem_path("postmortems/2026-07-22-gateway-oom.md")
+    for bad in (
+        "postmortems/../apps/gateway/src/index.ts",
+        "apps/gateway/src/index.ts",
+        "postmortems/evil.ts",
+        "postmortems/nested/dir.md",
+        ".gitea/workflows/ci.yaml",
+        "postmortems/.md",
+    ):
+        assert not postmortem._valid_postmortem_path(bad), bad
+
+
+async def test_publish_postmortem_falls_back_to_suffixed_name_on_collision(monkeypatch):
+    """Two incidents, same day, same slug: the second lands under a name
+    carrying its incident id instead of failing or overwriting."""
+    client = _FakeGiteaClient(put_statuses=(409, 201))
+    _wire_gitea(monkeypatch, client)
+    set_calls = _stub_set_postmortem_pr(monkeypatch)
+    _wire_incident(monkeypatch)
+
+    result = await postmortem.publish_postmortem_impl(_FakeCtx(), "narrative", "gateway-oom")
+
+    assert result["file"] == "postmortems/2026-07-22-gateway-oom-inc_1.md"
+    assert result["url"].endswith("postmortems/2026-07-22-gateway-oom-inc_1.md")
+    assert set_calls == [("inc_1", result["url"])]
+    assert len(client.calls) == 2
+
+
+async def test_publish_postmortem_is_idempotent_when_both_names_exist(monkeypatch):
+    """The suffixed name is unique per incident, so a collision on IT can only
+    mean this same incident already published — success, not an error."""
+    client = _FakeGiteaClient(put_statuses=(409, 409))
+    _wire_gitea(monkeypatch, client)
+    set_calls = _stub_set_postmortem_pr(monkeypatch)
+    _wire_incident(monkeypatch)
+
+    result = await postmortem.publish_postmortem_impl(_FakeCtx(), "narrative", "gateway-oom")
+
+    assert "error" not in result
+    assert result["file"] == "postmortems/2026-07-22-gateway-oom-inc_1.md"
+    assert set_calls == [("inc_1", result["url"])]
+
+
+async def test_publish_postmortem_saves_artifact_even_when_the_commit_fails(monkeypatch):
+    client = _FakeGiteaClient(put_statuses=(500,))
     _wire_gitea(monkeypatch, client)
     _wire_incident(monkeypatch)
 
     ctx = _FakeCtx()
-    result = await postmortem.open_postmortem_pr_impl(ctx, "narrative", "gateway-oom")
+    result = await postmortem.publish_postmortem_impl(ctx, "narrative", "gateway-oom")
 
-    assert "error" in result and "already exists" in result["error"]
+    assert "error" in result
     assert result["file"] == "postmortems/2026-07-22-gateway-oom.md"
-    # Artifact saved even on PR-open failure (aids debugging)
+    # The document is not lost when the forge is unreachable.
     assert ctx.artifacts and ctx.artifacts[0][0] == "postmortem.md"
 
 
-async def test_open_postmortem_pr_tolerates_branch_already_existing(monkeypatch):
-    """A 409/422 from the file-create call (branch already there from a prior
-    attempt) is not fatal — the flow still tries to open the PR."""
-    client = _FakeGiteaClient(put_status=409)
-    _wire_gitea(monkeypatch, client)
-    _wire_incident(monkeypatch)
-
-    async def _set_postmortem_pr(incident_id, url):
-        pass
-
-    monkeypatch.setattr(db, "set_postmortem_pr", _set_postmortem_pr)
-
-    result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "gateway-oom")
-
-    assert result["pr_url"] == "http://gitea.local/obs/obs-lab/pulls/7"
-    assert len(client.calls) == 2  # still attempted the PR open
-
-
-async def test_open_postmortem_pr_reports_missing_token(monkeypatch):
+async def test_publish_postmortem_reports_missing_token(monkeypatch):
     monkeypatch.setattr(backends, "config", dataclasses.replace(backends.config, gitea_token=""))
     _wire_incident(monkeypatch)
 
-    result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "gateway-oom")
+    result = await postmortem.publish_postmortem_impl(_FakeCtx(), "narrative", "gateway-oom")
 
     assert result["error"] == backends._GITEA_HELP
 
 
-async def test_open_postmortem_pr_errors_when_no_incident_linked(monkeypatch):
+async def test_publish_postmortem_errors_when_no_incident_linked(monkeypatch):
     async def _incident_for_run(run_id):
         return None
 
     monkeypatch.setattr(db, "incident_for_run", _incident_for_run)
 
-    result = await postmortem.open_postmortem_pr_impl(_FakeCtx(), "narrative", "gateway-oom")
+    result = await postmortem.publish_postmortem_impl(_FakeCtx(), "narrative", "gateway-oom")
     assert "error" in result
 
 

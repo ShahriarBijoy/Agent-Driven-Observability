@@ -1219,36 +1219,39 @@ async def gitea_open_pr(head: str, base: str = "main", title: str = "", body: st
         return {"error": f"gitea PR creation failed: {exc}"}
 
 
-_BRANCH_EXISTS_HINTS = ("already exist", "already taken", "branch already")
+_ALREADY_EXISTS_HINTS = ("already exist", "already taken", "branch already")
 
 
-def _looks_like_branch_exists(resp: httpx.Response) -> bool:
+def _looks_like_already_exists(resp: httpx.Response) -> bool:
     """Best-effort read of a Gitea error body's `message` field to tell
-    'this branch/file already exists' (not fatal — the caller tries to open
-    the PR against whatever is already there) apart from any OTHER 422
-    validation failure (bad path, bad base64, ...), which must surface its
-    real message instead of being silently swallowed as if it were the
-    already-exists case."""
+    'this file already exists' (not fatal — the caller resolves the collision
+    itself) apart from any OTHER 422 validation failure (bad path, bad
+    base64, ...), which must surface its real message instead of being
+    silently swallowed as if it were the already-exists case."""
     try:
         message = str((resp.json() or {}).get("message", ""))
     except Exception:  # noqa: BLE001 — non-JSON body: can't confirm, don't assume
         return False
     lowered = message.lower()
-    return any(hint in lowered for hint in _BRANCH_EXISTS_HINTS)
+    return any(hint in lowered for hint in _ALREADY_EXISTS_HINTS)
 
 
-async def gitea_put_file(path: str, content_b64: str, new_branch: str, message: str) -> dict:
-    """Create one file on the forge via the contents API, cutting `new_branch`
-    from the repo default in the same call — the first half of the postmortem
-    PR flow (`postmortem.open_postmortem_pr_impl`); `gitea_open_pr` above opens
-    the PR against the branch this creates. A 409 (Gitea's unambiguous
-    conflict status) always means the branch (and file) already exist from a
-    prior attempt at the same incident — not fatal here, since the caller
-    still tries to open the PR against whatever is already on that branch. A
-    422 is ambiguous (Gitea also uses it for other validation failures, e.g.
-    a malformed path or base64 payload) — only treated the same way when the
-    response body's own message actually says so; any other 422 surfaces its
-    real message as an error instead of being misreported as branch_exists."""
+async def gitea_put_file(path: str, content_b64: str, branch: str, message: str) -> dict:
+    """Create one file on the forge via the contents API, committing straight
+    onto an EXISTING `branch` — the whole of the postmortem publish flow
+    (`postmortem.publish_postmortem_impl`). It used to cut a branch per
+    incident (`new_branch`) so the postmortem could be opened as a PR; that
+    produced a PR per alert for documents nobody reviewed, so postmortems now
+    land on main directly and only code changes (`gh_open_pr`, behind
+    `request_approval`) still get a PR.
+
+    A 409 (Gitea's unambiguous conflict status) means the file already exists
+    at this path — not fatal, since the caller resolves the collision by
+    retrying under an incident-suffixed name. A 422 is ambiguous (Gitea also
+    uses it for other validation failures, e.g. a malformed path or base64
+    payload) — only treated the same way when the response body's own message
+    actually says so; any other 422 surfaces its real message as an error
+    instead of being misreported as file_exists."""
     headers = _gitea_headers()
     if headers is None:
         return {"error": _GITEA_HELP}
@@ -1256,19 +1259,19 @@ async def gitea_put_file(path: str, content_b64: str, new_branch: str, message: 
         resp = await _http().post(
             f"{config.gitea_url}/api/v1/repos/{config.gitea_repo}/contents/{path}",
             headers=headers,
-            json={"content": content_b64, "new_branch": new_branch, "message": message},
+            json={"content": content_b64, "branch": branch, "message": message},
         )
     except Exception as exc:  # noqa: BLE001
         return {"error": f"gitea file creation failed: {exc}"}
-    if resp.status_code == 409 or (resp.status_code == 422 and _looks_like_branch_exists(resp)):
-        return {"status": "branch_exists", "path": path, "branch": new_branch}
+    if resp.status_code == 409 or (resp.status_code == 422 and _looks_like_already_exists(resp)):
+        return {"status": "file_exists", "path": path, "branch": branch}
     if resp.status_code >= 400:
         try:
             body_message = str((resp.json() or {}).get("message", "")) or resp.text
         except Exception:  # noqa: BLE001 — non-JSON body: fall back to raw text
             body_message = resp.text
         return {"error": f"gitea file creation failed: HTTP {resp.status_code} {body_message[:300]}"}
-    return {"status": "created", "path": path, "branch": new_branch}
+    return {"status": "created", "path": path, "branch": branch}
 
 
 # ---- Grafana annotations (deploy markers) ------------------------------------
