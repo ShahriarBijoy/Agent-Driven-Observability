@@ -100,15 +100,19 @@ try:
 except Exception:
     pass
 ')
+# Delete-then-create, NOT patch. Gitea 1.26.4 accepts config.secret on CREATE
+# but silently ignores it on PATCH - the API returns 200 and the webhook row's
+# secret column stays empty, so the hook keeps sending unsigned deliveries into
+# a shim that rejects them and CI telemetry goes quiet with nothing saying why.
+# Verified directly against the sqlite row on this version. Losing the hook's
+# delivery history is the price of the secret actually being stored.
 if [ -n "$HOOK_ID" ]; then
-  api -X PATCH "$API/repos/obs/obs-lab/hooks/$HOOK_ID" \
-    -d "{\"active\":true,\"events\":[\"workflow_run\",\"workflow_job\"],\"config\":${HOOK_CFG}}" >/dev/null
-  echo ">> webhook secret refreshed: obs-lab -> ci-shim (hook $HOOK_ID)"
-else
-  api -X POST "$API/repos/obs/obs-lab/hooks" \
-    -d "{\"type\":\"gitea\",\"active\":true,\"events\":[\"workflow_run\",\"workflow_job\"],\"config\":${HOOK_CFG}}" >/dev/null
-  echo ">> webhook wired: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
+  api -X DELETE "$API/repos/obs/obs-lab/hooks/$HOOK_ID" >/dev/null
+  echo ">> removed hook $HOOK_ID (its secret cannot be set by PATCH on Gitea 1.26)"
 fi
+api -X POST "$API/repos/obs/obs-lab/hooks" \
+  -d "{\"type\":\"gitea\",\"active\":true,\"events\":[\"workflow_run\",\"workflow_job\"],\"config\":${HOOK_CFG}}" >/dev/null
+echo ">> webhook wired + signed: obs-lab -> http://ci-shim:8095/webhook (workflow_run, workflow_job)"
 
 # P10: the deploy job is a commit to obs-gitops, so CI needs the Gitea token
 # (not cluster access - Argo CD holds the only deploy credential now).
