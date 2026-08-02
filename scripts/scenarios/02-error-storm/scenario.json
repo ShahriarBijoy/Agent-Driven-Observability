@@ -1,0 +1,11 @@
+{
+  "id": "02-error-storm",
+  "title": "Error storm - retriever fails 30% of calls, gateway 502s",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 120 },
+  "expected_time_to_alert_s": 180,
+  "exam": true
+}
