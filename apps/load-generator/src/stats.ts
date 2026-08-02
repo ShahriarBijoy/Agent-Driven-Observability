@@ -29,7 +29,9 @@ export function emptyCounts(): BucketCounts {
  */
 export function percentile(values: readonly number[], p: number): number {
   if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
+  // Sort in place: percentile() runs three times per summary and the defensive
+  // copy showed up in the run loop's profile.
+  const sorted = (values as number[]).sort((a, b) => a - b);
   const rank = Math.ceil((p / 100) * sorted.length);
   const idx = Math.min(Math.max(rank, 1), sorted.length) - 1;
   const value = sorted[idx];
