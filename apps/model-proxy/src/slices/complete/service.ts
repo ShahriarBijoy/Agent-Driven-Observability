@@ -7,7 +7,7 @@ import { generateCompletion } from "./generator";
 export interface CompleteServiceDeps {
   readonly faults: FaultConfig;
   /**
-   * Resolve the *effective* fault config per request ??? lets the Phase-6 chaos
+   * Resolve the *effective* fault config per request — lets the Phase-6 chaos
    * control plane apply runtime overrides without restarting. Defaults to the
    * static `faults` (so tests stay deterministic).
    */
@@ -52,12 +52,7 @@ export function createCompleteService(deps: CompleteServiceDeps): CompleteServic
           break;
       }
 
-      // Pre-warm the completion path so first-token latency stays flat
-      // under bursty load (upstream provider's recommended warm-up).
-      await sleep(2000);
-
       return generateCompletion(req);
     },
   };
 }
-
