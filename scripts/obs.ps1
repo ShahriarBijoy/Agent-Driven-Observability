@@ -1088,7 +1088,13 @@ current-context: agent-remediate@obs-lab
                     # the (out-of-order) samples the cluster ships to it.
                     try {
                         $wslEpoch = [int64](wsl -e date +%s 2>$null)
-                        $hostEpoch = [int64][Math]::Floor((Get-Date -UFormat %s))
+                        # NOT Get-Date -UFormat %s: on Windows PowerShell 5.1 that
+                        # returns a LOCAL-time epoch, so it reads high by exactly the
+                        # UTC offset (7200s on CEST) and reported a two-hour drift on
+                        # a perfectly synced clock - sending you to 'wsl --shutdown'
+                        # for nothing. WSL's date +%s is a true UTC epoch; compare
+                        # against one.
+                        $hostEpoch = [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
                         $drift = [Math]::Abs($hostEpoch - $wslEpoch)
                         if ($drift -gt 30) { Write-Warning "WSL2 clock is ${drift}s off the host - Mimir will reject samples. Fix: wsl --shutdown (then restart Docker Desktop)" }
                         else { Write-Host "  ok  WSL2 clock drift ${drift}s" }
