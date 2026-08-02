@@ -82,8 +82,9 @@ function Show-ScenarioTable {
     }
     Write-Host ''
     Write-Host "group '-' = retained drill, not an exam question."
-    Write-Host "inject_mode: git = ships through CI/gitops (Argo stays Synced); live ="
-    Write-Host "out-of-band - patched resources show OutOfSync in Argo (part of the signature)."
+    Write-Host "inject_mode: git = ships through CI/gitops, so the change IS the desired state and"
+    Write-Host "Argo stays Synced; live = out-of-band. A live inject shows OutOfSync only when it"
+    Write-Host "MODIFIES a field git declares - Argo's diff ignores fields git never mentioned."
 }
 
 function Test-Scenario {
@@ -95,7 +96,15 @@ function Test-Scenario {
 
        The second verify is the one that catches a weak scenario: if verify
        still passes after revert it is asserting something that was already
-       true, so it would never have proved the fault was live. #>
+       true, so it would never have proved the fault was live.
+
+       A scenario declaring "transient": true is exempt from that one gate, and
+       from nothing else. pod-kill is the only such scenario: deleting a pod is
+       over the instant it happens, its evidence is the recovery itself, and
+       there is no state a revert could undo. Demanding that its verify stop
+       passing after a no-op revert would be demanding that the scenario forget
+       what just happened. The exemption is declared per scenario rather than
+       inferred, so a genuinely broken verify cannot quietly claim it. #>
     param([Parameter(Mandatory)][string]$Id)
 
     Write-Step "[selftest] $Id : inject"
@@ -117,10 +126,14 @@ function Test-Scenario {
         return $false
     }
 
-    Write-Step "[selftest] $Id : verify (expect FAIL - the fault is gone)"
-    if ((Invoke-ScenarioStep $Id 'verify') -eq 0) {
-        Write-Warning "[selftest] $Id : verify still sees the fault after revert"
-        return $false
+    if ((Get-Scenario $Id).transient) {
+        Write-Step "[selftest] $Id : skipping the post-revert verify (transient scenario - nothing to undo)"
+    } else {
+        Write-Step "[selftest] $Id : verify (expect FAIL - the fault is gone)"
+        if ((Invoke-ScenarioStep $Id 'verify') -eq 0) {
+            Write-Warning "[selftest] $Id : verify still sees the fault after revert"
+            return $false
+        }
     }
 
     Write-Step "[selftest] $Id : revert again (idempotence)"

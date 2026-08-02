@@ -6,6 +6,13 @@
   "inject_mode": "live",
   "needs": ["k8s"],
   "load": { "profile": "steady", "qps": 120 },
+  "drill_dwell_s": 300,
   "expected_time_to_alert_s": 180,
-  "exam": true
+  "exam": true,
+  "chaos": {
+    "service": "retriever",
+    "knobs": { "errorRate": 0.3 },
+    "confirm": { "knob": "errorRate", "at_least": 0.3 },
+    "signal": { "kind": "server-errors", "at_least": 3, "probes": 24 }
+  }
 }

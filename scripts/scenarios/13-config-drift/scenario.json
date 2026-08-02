@@ -1,0 +1,18 @@
+{
+  "id": "13-config-drift",
+  "title": "Config drift - a live ConfigMap edit that Git never saw",
+  "layer": "gitops",
+  "group": "delivery",
+  "inject_mode": "live",
+  "needs": ["k8s", "gitops"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 300,
+  "expected_time_to_alert_s": 120,
+  "exam": true,
+  "k8s": {
+    "argo_app": "platform",
+    "configmap": "subject-telemetry",
+    "key": "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "drifted_value": "http://drifted.invalid:4318"
+  }
+}

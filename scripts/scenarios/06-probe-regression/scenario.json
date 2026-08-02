@@ -1,0 +1,13 @@
+{
+  "id": "06-probe-regression",
+  "title": "Probe regression - a new revision ships a wrong readiness path",
+  "layer": "k8s / delivery",
+  "group": "delivery",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 420,
+  "expected_time_to_alert_s": 360,
+  "exam": true,
+  "k8s": { "app": "gateway", "argo_app": "gateway", "bad_path": "/definitely-not-ready" }
+}

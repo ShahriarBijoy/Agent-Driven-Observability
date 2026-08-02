@@ -13,22 +13,17 @@
   The pair still differs in BOTH service and signal, which is what the exam
   needs, and the answer key matches what ships.
 
+  The mechanism moved into _lib/knob-scenario.ps1 once six more scenarios
+  wanted the same three steps with different knobs; what stays here is the
+  story and the numbers in scenario.json.
+
   Idempotent: re-injecting merges the same override again.
 #>
 
-. (Join-Path $PSScriptRoot '..\_lib\chaos-plane.ps1')
+. (Join-Path $PSScriptRoot '..\_lib\knob-scenario.ps1')
 
-if (-not (Test-ChaosPlaneReachable 'retriever')) { exit 1 }
-
-Write-Step '02-error-storm: retriever errorRate -> 0.30'
-$snapshot = Set-ChaosKnobs -Service 'retriever' -Knobs @{ errorRate = 0.3 }
-
-# Trust the plane's own snapshot, not the HTTP status: a 200 with the knob
-# unset would leave the exam grading an agent on a fault that never happened.
-if ($null -eq $snapshot.errorRate -or $snapshot.errorRate -lt 0.3) {
-    Write-Warning "the plane accepted the POST but reports errorRate=$($snapshot.errorRate)"
-    exit 1
+if (Invoke-KnobInject $PSScriptRoot) {
+    Write-Step 'injected. Gateway 502s should appear within ~30s; the 5xx alert fires ~2-3 min in.'
+    exit 0
 }
-
-Write-Step 'injected. Gateway 502s should appear within ~30s; the 5xx alert fires ~2-3 min in.'
-exit 0
+exit 1

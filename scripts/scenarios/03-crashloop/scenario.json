@@ -1,0 +1,13 @@
+{
+  "id": "03-crashloop",
+  "title": "CrashLoop - a bad env value on gateway kills it at startup",
+  "layer": "k8s / config",
+  "group": "resources",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 420,
+  "expected_time_to_alert_s": 300,
+  "exam": true,
+  "k8s": { "app": "gateway", "argo_app": "gateway", "env_var": "GATEWAY_PORT" }
+}

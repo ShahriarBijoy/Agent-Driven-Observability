@@ -1,0 +1,18 @@
+{
+  "id": "brownout",
+  "title": "Brownout drill - retriever fails a fifth of calls, quiet error-budget burn",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 360,
+  "expected_time_to_alert_s": 240,
+  "exam": false,
+  "chaos": {
+    "service": "retriever",
+    "knobs": { "errorRate": 0.2 },
+    "confirm": { "knob": "errorRate", "at_least": 0.2 },
+    "signal": { "kind": "server-errors", "at_least": 3, "probes": 30 }
+  }
+}

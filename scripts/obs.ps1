@@ -23,12 +23,13 @@
                              DQ drift alert (KS > 0.4 for 10m). Default 1200s.
     obs load  abuse [secs]   Abuser-tenant-heavy mix -> per-tenant 429 storm. The agent
                              should call it rate limiting, NOT a service fault. Default 300s.
-    obs fail  [scenario] [qps]     Inject a failure while driving baseline traffic (default
-                             40 qps). Runtime chaos, k8s-native faults, the git-mode
-                             delivery scenarios (bad-deploy, canary-bad-image, sync-fail,
-                             config-drift), and the credential-rotation scenario
-                             (stale-secret - no scripted revert, the agent's remediation IS
-                             the fix). No argument lists them all with inject_mode.
+    obs fail  [id] [qps] [--hold]  Run one scenario pack entry as a DRILL: baseline traffic,
+                             inject, hold for the scenario's own dwell, revert. --hold skips
+                             the timed revert (for scenarios an agent is meant to fix).
+                             Pre-pack names (latency, crashloop, imagepull, ...) still work as
+                             aliases. No argument lists every scenario.
+    obs fail  full           The composite timeline: latency -> error storm -> outage, in one
+                             load window (~20 min).
     obs chaos [clear]        Show (or clear) the /admin/chaos state on model-proxy + retriever.
     obs chaos list [group]   List every scenario in the pack with its group and inject_mode.
     obs chaos inject <id>    Inject one scenario's fault. Starts NO load, schedules NO revert.
@@ -98,15 +99,21 @@ param(
     [string[]]$Rest = @()
 )
 
+# The scenario pack is the single definition of chaos in this lab (P12): every
+# fault has exactly one inject, one verify and one revert, in
+# scripts/scenarios/<id>/. `obs fail`, `obs chaos` and `obs exam` are all
+# callers of it, so a drill and an exam question cannot drift apart.
+
 # Repo root is one level up from this script (scripts/ -> repo).
 $Repo = Split-Path -Parent $PSScriptRoot
 
 # The address book, the mode flag, the derived URLs and the small shared
-# helpers (Write-Step, Test-Up, Get-ObsToken, Get-LabKubeconfig,
-# Disable-AutoSync/Restore-AutoSync) all live in the scenario pack's _lib, so
-# that `obs chaos inject <id>` and a bare `& scripts/scenarios/<id>/inject.ps1`
-# resolve the lab identically. P12 made the pack the single definition of
-# chaos; this is the other half of that - one address book, no drift.
+# helpers (Write-Step, Test-Up, Get-ObsToken, Wait-Until) live in the pack's
+# _lib/env.ps1, so that `obs chaos inject <id>` and a bare
+# `& scripts/scenarios/<id>/inject.ps1` resolve the lab identically - one
+# address book, no drift. Cluster helpers live in _lib/k8s.ps1 and are pulled in
+# by the scenarios that need them, not from here: this CLI no longer touches the
+# cluster to inject anything.
 . (Join-Path $PSScriptRoot 'scenarios\_lib\pack.ps1')
 
 # The three compose files that make up the full lab, in layer order. The
@@ -251,44 +258,91 @@ function Invoke-Load {
     bun --cwd=apps/load-generator run start
 }
 
-# Failure-injection scenarios: name -> chaos/<name>.yaml + a one-line story.
-# Each schedule starts with a healthy baseline, injects one failure mode, and
-# cools down so SLIs recover. See the YAML headers for sizing rationale.
-$FailScenarios = [ordered]@{
-    latency  = 'model-proxy slow, zero errors -> p95 > 2s alert + latency SLO burn   (~14 min)'
-    errors   = 'model-proxy 500s -> gateway 502s -> 5xx > 2% pages                   (~8 min)'
-    timeout  = 'model-proxy stalls past the 8s upstream timeout -> gateway 504s      (~9 min)'
-    outage   = 'retriever hard-down -> every request 502s                            (~8 min)'
-    brownout = 'retriever fails ~10% of calls -> quiet error-budget burn             (~10 min)'
-    flaky    = 'model-proxy "bad minutes" -> flapping 5xx bursts, healthy in between (~14 min)'
-    throttle = 'model-proxy sheds 50% with 429s -> users degraded, NOTHING pages     (~8 min)'
-    full     = 'the whole Plan-p6 cycle: latency -> errors -> retriever outage       (~26 min)'
-    'pod-kill' = 'k8s only: delete every gateway pod mid-traffic -> 5xx blip -> reschedule (~5 min)'
-    oomkill    = 'k8s only: retriever memory limit -> 64Mi under load -> OOMKilled sawtooth (~7 min)'
-    imagepull  = 'k8s only: gateway image -> tag that never existed -> ImagePullBackOff     (~7 min)'
-    crashloop  = 'k8s only: retriever DATABASE_URL -> garbage -> CrashLoopBackOff at boot   (~7 min)'
-    'readiness-break' = 'k8s only: gateway probe -> wrong path -> Running but never Ready   (~7 min)'
-    'bad-deploy' = 'k8s+ci: bad commit merges -> CI deploys 2s latency into model-proxy -> p95 page; agent walks alert -> deploy annotation -> CI run -> diff (~18 min)'
-    'canary-bad-image' = 'k8s+ci+gitops: commit makes gateway 500 -> CI ships it -> canary takes 25% -> error-rate AnalysisRun FAILS vs Mimir -> auto-abort + webhook; agent quotes the measurements (~15 min)'
-    'config-drift' = 'k8s+gitops: live kubectl edit of the subject-telemetry ConfigMap -> platform OutOfSync + on-out-of-sync webhook; agent names the drifted key (~6 min)'
-    'sync-fail' = 'gitops: broken manifest lands on obs-gitops main -> the sync FAILS + on-sync-failed webhook; agent quotes the apply error and the commit (~8 min)'
-    'stale-secret' = 'k8s only: rotate the subject Postgres password without updating the K8s Secret -> auth failures build as pooled connections recycle (~5 min, no scripted revert - the agent syncs the Secret from the vault)'
+function Invoke-Drill {
+    <# `obs fail <id>` - the operator-facing drill built on the scenario pack.
+       Baseline load, inject, dwell, revert, with the fault's own timings taken
+       from its scenario.json.
+
+       The dwell timer lives HERE and nowhere else. The pack itself reverts only
+       on command, because a timed auto-revert races a remediating agent and
+       makes remediation tests non-deterministic - the defect the 2026-07-23
+       crashloop test found. A human watching a drill wants the lab to clean
+       itself up afterwards; an exam must not have that happen behind its back.
+       Same scenario, same revert path, one difference in who decides when. #>
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [string]$Qps = '',
+        [switch]$Hold,
+        [switch]$SkipLoad
+    )
+    $s = Get-Scenario $Id
+    # Not $qps: PowerShell variable names are case-insensitive, so that would
+    # quietly reassign the $Qps parameter mid-function.
+    $rate = if ($Qps) { $Qps } else { "$($s.load.qps)" }
+    $dwell = [int]$s.drill_dwell_s
+    # `drill_hold` marks a scenario whose remediation IS the exercise
+    # (15-stale-secret): reverting it on a clock would take the fix away from
+    # whoever - or whatever - is meant to be performing it.
+    $hold = $Hold -or $s.drill_hold
+
+    if (-not $SkipLoad) {
+        # 60s of healthy baseline first (so "before" is visible on every
+        # dashboard), then the fault, then a cooldown long enough for the SLIs
+        # to recover and the alerts to resolve.
+        $duration = 60 + $dwell + 180
+        Write-Step "$Id : ${duration}s of baseline load @ $rate qps in its own window"
+        $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$rate'; `$env:DURATION_SECONDS='$duration'; bun run start"
+        Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
+        Start-Sleep -Seconds 60
+    }
+
+    Write-Step "$Id : $($s.title)"
+    if ((Invoke-ScenarioStep $Id 'inject') -ne 0) {
+        Write-Warning "inject failed - reverting"
+        Invoke-ScenarioStep $Id 'revert' | Out-Null
+        return $false
+    }
+
+    Write-Step "watch: Grafana $GrafanaUrl | incidents $WebUrl/incidents"
+    Write-Host "  revert at any time:  obs chaos revert $Id"
+    if ($hold) {
+        Write-Host ''
+        Write-Step "$Id is HELD live - this drill has no timed revert"
+        Write-Host "  its remediation is the exercise; clean up with: obs chaos revert $Id"
+        return $true
+    }
+
+    Write-Step "fault is live for ${dwell}s, then auto-revert"
+    Start-Sleep -Seconds $dwell
+
+    Write-Step "$Id : reverting"
+    if ((Invoke-ScenarioStep $Id 'revert') -ne 0) {
+        Write-Warning "revert FAILED - the lab may still be broken. Retry: obs chaos revert $Id"
+        return $false
+    }
+    Write-Step "$Id : reverted. Check the incident inbox for the postmortem ($WebUrl/incidents)."
+    return $true
 }
 
-# inject_mode (P10): how each scenario enters the system. git = through the
-# pipeline / gitops repos, so Argo stays Synced (the change IS the desired
-# state); live = out-of-band mutation - every live inject that patches a
-# TRACKED RESOURCE adds "Argo flags the app OutOfSync" to its expected
-# signature (runtime /admin/chaos and pod deletion touch no spec, so they
-# stay invisible to Argo by design).
-$FailInjectMode = [ordered]@{
-    latency = 'live'; errors = 'live'; timeout = 'live'; outage = 'live'
-    brownout = 'live'; flaky = 'live'; throttle = 'live'; full = 'live'
-    'pod-kill' = 'live'; oomkill = 'live'; imagepull = 'live'
-    crashloop = 'live'; 'readiness-break' = 'live'
-    'bad-deploy' = 'git'; 'canary-bad-image' = 'git'
-    'config-drift' = 'live'; 'sync-fail' = 'git'
-    'stale-secret' = 'live'
+# The one composite drill, kept out of the pack on purpose: it is a TIMELINE of
+# three scenarios rather than a fault of its own, and the pack's unit is a fault
+# with one inject, one signal and one revert.
+$FullDrill = @('01-latency', '02-error-storm', 'outage')
+
+# The names `obs fail` answered to before the pack existed. They are kept as
+# aliases rather than retired: they are in the demo scripts, in the docs and in
+# muscle memory, and a rename is a poor reason to break any of those. The pack's
+# ids are the real names - matrix-numbered, so the omissions are self-evident.
+$LegacyFailNames = [ordered]@{
+    latency             = '01-latency'
+    errors              = '02-error-storm'
+    oomkill             = '04-oomkill'
+    imagepull           = '05-phantom-tag'
+    crashloop           = '03-crashloop'
+    'readiness-break'   = '06-probe-regression'
+    'canary-bad-image'  = '12-bad-canary'
+    'config-drift'      = '13-config-drift'
+    'stale-secret'      = '15-stale-secret'
 }
 
 Push-Location $Repo
@@ -386,340 +440,66 @@ try {
         }
 
         'fail' {
-            $scenario = if ($Rest.Count -ge 1) { $Rest[0].ToLower() } else { '' }
-            if (-not $FailScenarios.Contains($scenario)) {
-                if ($scenario) { Write-Warning "unknown fail scenario '$scenario'" }
-                Write-Host "usage: obs fail <scenario> [baseline-qps]   (baseline default: 40 qps)"
-                Write-Host ""
-                foreach ($name in $FailScenarios.Keys) {
-                    Write-Host ("  {0,-17} {1,-4} {2}" -f $name, $FailInjectMode[$name], $FailScenarios[$name])
-                }
-                Write-Host ""
-                Write-Host "inject_mode: git = ships through CI/gitops (Argo stays Synced); live ="
-                Write-Host "out-of-band - patched resources show OutOfSync in Argo (part of the signature)."
-                Write-Host ""
-                Write-Host "Each drives baseline traffic the whole time; chaos is applied/cleared on a"
-                Write-Host "clock and always reset on exit. Watch Grafana (:$($Ports.OBS_GRAFANA_PORT)) and the incident inbox"
-                Write-Host "(:$($Ports.OBS_WEB_PORT)/incidents); the agent-service (:$($Ports.OBS_AGENTS_PORT)) must be up to get postmortems."
-                break
-            }
-            $qps = if ($Rest.Count -ge 2) { $Rest[1] } else { '40' }
+            # A composition over the scenario pack, not a second implementation.
+            # Everything that defines a fault - how to inject it, what proves it
+            # is live, how to undo it - lives in scripts/scenarios/<id>/. What
+            # stays here is the drill-shaped part: baseline traffic, a dwell, and
+            # a revert on a clock, for a human who wants to watch the whole arc
+            # and have the lab tidy itself up afterwards.
+            $flags = @('--hold', '-hold')
+            $hold = @($Rest | Where-Object { $flags -contains "$_".ToLower() }).Count -gt 0
+            $positional = @($Rest | Where-Object { $flags -notcontains "$_".ToLower() })
+            $name = if ($positional.Count -ge 1) { "$($positional[0])" } else { '' }
+            $qps = if ($positional.Count -ge 2) { "$($positional[1])" } else { '' }
 
-            if ($scenario -eq 'pod-kill') {
-                # The first Kubernetes-native failure: no /admin/chaos knob,
-                # the orchestrator itself is the failure domain.
-                if ($Mode -ne 'k8s') { Write-Warning "pod-kill needs k8s mode (obs k8s up) - the compose subject has no pods"; break }
-                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
-                $dur = '300'
-                Write-Step "pod-kill: ${dur}s of baseline load @ $qps qps; gateway pods die at t=60s"
-                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
+            # Pre-pack names still work - see $LegacyFailNames.
+            $key = $name.ToLower()
+            $id = if ($LegacyFailNames.Contains($key)) { $LegacyFailNames[$key] } else { $name }
+
+            if ($key -eq 'full') {
+                # The composite: one load window, three faults back to back. It
+                # is a timeline rather than a fault, which is why it is the one
+                # drill with no scenario directory of its own.
+                $q = if ($qps) { $qps } else { '40' }
+                $dur = 60 + 180
+                foreach ($step in $FullDrill) { $dur += [int](Get-Scenario $step).drill_dwell_s + 30 }
+                Write-Step "full: ${dur}s of baseline load @ $q qps; $($FullDrill -join ' -> ')"
+                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$q'; `$env:DURATION_SECONDS='$dur'; bun run start"
                 Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
                 Start-Sleep -Seconds 60
-                Write-Step 'kubectl delete pod -l app=gateway (all replicas, mid-traffic)'
-                kubectl --kubeconfig $kubeconfig -n subject delete pod -l app=gateway
-                Write-Step 'pods rescheduling - watch the 5xx blip on Grafana, then recovery:'
-                kubectl --kubeconfig $kubeconfig -n subject get pods -l app=gateway
-                Write-Step "load keeps running ~4 more minutes. Ask the RCA agent about the blip - with its kubectl grant it should conclude 'transient pod restart, no code regression'."
-                break
-            }
-
-            if ($scenario -in 'oomkill', 'imagepull', 'crashloop', 'readiness-break') {
-                # P8's k8s-native faults. Every injection edits the POD
-                # TEMPLATE, so all four share ONE paired revert: rollout undo
-                # restores the previous ReplicaSet exactly (image, env,
-                # resources, probes - no drift, no state to remember).
-                if ($Mode -ne 'k8s') { Write-Warning "$scenario needs k8s mode (obs k8s up) - the compose subject has no pod specs to break"; break }
-                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
-                $target = if ($scenario -in 'oomkill', 'crashloop') { 'deployment/retriever' } else { 'deployment/gateway' }
-                $app = ($target -split '/')[1]
-                $dur = '420'
-                Write-Step "${scenario}: ${dur}s baseline load @ $qps qps; fault at t=45s, auto-revert ~t=360s"
-                Write-Host "  manual revert any time: kubectl --kubeconfig `"$kubeconfig`" -n subject rollout undo $target"
-                # P10 re-baseline: these are LIVE injects against a tracked
-                # Deployment - Argo flags the app OutOfSync (expected in the
-                # signature) and must NOT heal it. selfHeal=false alone is not
-                # enough on Argo CD v3: auto-sync fires for any drift while
-                # the target revision is newer than the last attempted one
-                # (caught live), so the guard removes `automated` entirely for
-                # the inject window; revert re-applies the committed CR.
-                Disable-AutoSync $app $kubeconfig
-                if ($app -eq 'gateway') {
-                    Write-Host "  NOTE gateway is a Rollout now: the patch starts a CANARY that wedges (stable pods keep serving); expect rollout-stuck + app OutOfSync, not a full outage."
+                foreach ($step in $FullDrill) {
+                    Invoke-Drill -Id $step -Qps $q -SkipLoad | Out-Null
+                    # A gap between faults so each one's alert resolves before
+                    # the next fires - overlapping incidents are a different
+                    # (and much harder) exercise than this drill intends.
+                    Start-Sleep -Seconds 30
                 }
-                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
-                Start-Sleep -Seconds 45
-                switch ($scenario) {
-                    'oomkill' {
-                        # The demo the phase unlocks: working set flat-tops at
-                        # the new limit; the agent reads it off last_terminated_
-                        # reason + the sawtooth and recommends the exact revert.
-                        Write-Step 'retriever memory: requests 384Mi -> 48Mi, limit 512Mi -> 64Mi'
-                        kubectl --kubeconfig $kubeconfig -n subject set resources deployment/retriever --requests=memory=48Mi --limits=memory=64Mi
-                    }
-                    'imagepull' {
-                        Write-Step 'gateway image -> obs-registry:5010/gateway:phantom (a tag that never existed)'
-                        kubectl --kubeconfig $kubeconfig -n subject set image deployment/gateway gateway=obs-registry:5010/gateway:phantom
-                    }
-                    'crashloop' {
-                        # Verified fail-fast: postgres client throws
-                        # ERR_INVALID_URL at module load, exit 1 before bind.
-                        Write-Step 'retriever DATABASE_URL -> "garbage" (crashes at boot, old pod keeps serving)'
-                        kubectl --kubeconfig $kubeconfig -n subject set env deployment/retriever DATABASE_URL=garbage
-                    }
-                    'readiness-break' {
-                        Write-Step 'gateway readiness probe -> /definitely-not-ready (pod Running, never Ready)'
-                        kubectl --kubeconfig $kubeconfig -n subject patch deployment gateway --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/definitely-not-ready"}]'
-                    }
-                }
-                kubectl --kubeconfig $kubeconfig -n subject get pods
-                Write-Step "fault active ~5 min. Watch 'Lab Alerts - K8s' + the events dashboard; the incident inbox gets the postmortem ($WebUrl/incidents)."
-                Start-Sleep -Seconds 315
-                Write-Step "auto-revert: rollout undo $target"
-                kubectl --kubeconfig $kubeconfig -n subject rollout undo $target
-                kubectl --kubeconfig $kubeconfig -n subject rollout status $target --timeout=180s
-                # Restore the committed Application policy (undoes the
-                # self-heal patch above; a rollback-to-stable template also
-                # clears the OutOfSync the inject caused).
-                kubectl --kubeconfig $kubeconfig apply -f (Join-Path $Repo "infra\k8s\argocd\apps\$app.yaml") | Out-Null
-                Write-Step 'reverted and rolled out. The postmortem should name the exact spec change - check the inbox.'
+                Write-Step 'full drill complete - three faults injected and reverted'
                 break
             }
 
-            if ($scenario -eq 'bad-deploy') {
-                # P9's flagship: the failure ships through the DELIVERY PIPELINE
-                # itself. A plausible-looking commit lands on gitea main; CI
-                # tests it (they pass - the sleep is parallel-safe), builds it,
-                # deploys it; p95 breaches the 2s page alert; the agent walks
-                # alert -> deploy annotation -> CI run -> compare diff to the
-                # exact commit and line. Auto-reverts via a second commit, so
-                # the fix ALSO ships through the pipeline.
-                if ($Mode -ne 'k8s') { Write-Warning "bad-deploy needs k8s mode (obs k8s up)"; break }
-                $vm = $Ports.OBS_VM_HOST
-                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
-                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
-                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
-
-                $dur = '1500'
-                Write-Step "bad-deploy: ${dur}s baseline load @ $qps qps; bad commit pushes now, CI deploys it (~4 min), revert commit at ~t+12m"
-                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
-
-                # Fresh shallow clone of gitea main - never the working tree.
-                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
-                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
-                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
-                $auth = "http.${giteaBase}/.extraheader"
-                $tmp = Join-Path $env:TEMP 'obs-bad-deploy'
-                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-                git -c "$auth=Authorization: Basic $b64" clone -q --depth 5 --branch main "$giteaBase/obs/obs-lab.git" $tmp
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of gitea main failed'; break }
-                git -C $tmp config $auth "Authorization: Basic $b64"
-                git -C $tmp config user.email 'dev@obs-lab.local'
-                git -C $tmp config user.name 'Lab Dev'
-
-                # The bad change: an innocent-looking "warm-up" that serialises
-                # 2s into every completion. (.gitattributes normalises the CRLF
-                # this write introduces, so the diff is just the inserted lines.)
-                $svcFile = Join-Path $tmp 'apps\model-proxy\src\slices\complete\service.ts'
-                $anchor = '      return generateCompletion(req);'
-                $replacement = "      // Pre-warm the completion path so first-token latency stays flat`r`n" +
-                               "      // under bursty load (upstream provider's recommended warm-up).`r`n" +
-                               "      await sleep(2000);`r`n`r`n" +
-                               "      return generateCompletion(req);"
-                $content = Get-Content $svcFile -Raw
-                if ($content -notmatch [regex]::Escape($anchor)) { Write-Warning "anchor line not found in service.ts - source drifted"; break }
-                $content.Replace($anchor, $replacement) | Set-Content -Encoding ascii $svcFile
-                git -C $tmp commit -qam "model-proxy: pre-warm the completion path before generating"
-                git -C $tmp push -q origin main
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to gitea main failed'; break }
-                $badSha = (git -C $tmp rev-parse --short HEAD).Trim()
-                Write-Step "bad commit $badSha is on main. Watch: CI $giteaBase/obs/obs-lab/actions | Grafana $GrafanaUrl (Gateway RED + CI/CD Delivery)"
-                Write-Step 'timeline: deploy ~t+4m, p95 page alert ~t+11m, incident inbox gets the postmortem; revert commit at t+12m, fix deployed ~t+16m'
-
-                Start-Sleep -Seconds 720
-                Write-Step 'auto-revert: reverting the bad commit (the fix ships through CI too)'
-                git -C $tmp revert --no-edit HEAD | Out-Null
-                git -C $tmp push -q origin main
-                Write-Step "revert pushed. Ask the RCA agent: 'p95 latency paged just now - what shipped in the last hour, and which exact change is responsible?'"
+            if (-not $id) {
+                Write-Host "usage: obs fail <scenario-id> [baseline-qps] [--hold]"
+                Write-Host ""
+                Show-ScenarioTable
+                Write-Host "Each drill drives baseline traffic, injects one fault, holds it for the"
+                Write-Host "scenario's own dwell, then reverts. --hold skips the timed revert (use it when"
+                Write-Host "an agent is meant to do the fixing); 'obs chaos revert <id>' cleans up."
+                Write-Host "Also: obs fail full   (latency -> error storm -> outage, in one window)"
+                Write-Host ""
+                Write-Host "Watch Grafana (:$($Ports.OBS_GRAFANA_PORT)) and the incident inbox (:$($Ports.OBS_WEB_PORT)/incidents);"
+                Write-Host "the agent-service (:$($Ports.OBS_AGENTS_PORT)) must be up to get postmortems."
                 break
             }
 
-            if ($scenario -eq 'canary-bad-image') {
-                # P10's flagship: the failure ships through the FULL delivery
-                # chain - commit -> CI build -> gitops bump -> Argo sync ->
-                # canary - and the lab's own SLIs kill it: the canary pod 500s
-                # on /v1/chat, the error-rate AnalysisRun fails against Mimir,
-                # Rollouts auto-aborts (stable keeps serving), and
-                # on-rollout-aborted spawns the gitops-reporter with the
-                # failing measurements. The revert also ships through CI, and
-                # its completed rollout triggers the resolution note.
-                if ($Mode -ne 'k8s') { Write-Warning "canary-bad-image needs k8s mode (obs k8s up)"; break }
-                $vm = $Ports.OBS_VM_HOST
-                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
-                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
-                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
-
-                $dur = '1500'
-                Write-Step "canary-bad-image: ${dur}s baseline load @ $qps qps; bad commit pushes now; CI ~4m -> canary ~t+6m -> AUTO-ABORT ~t+9m; revert at t+12m"
-                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
-
-                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
-                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
-                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
-                $auth = "http.${giteaBase}/.extraheader"
-                $tmp = Join-Path $env:TEMP 'obs-canary-bad-image'
-                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-                git -c "$auth=Authorization: Basic $b64" clone -q --depth 5 --branch main "$giteaBase/obs/obs-lab.git" $tmp
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of gitea main failed'; break }
-                git -C $tmp config $auth "Authorization: Basic $b64"
-                git -C $tmp config user.email 'dev@obs-lab.local'
-                git -C $tmp config user.name 'Lab Dev'
-
-                # The bad change: a plausible "fail closed" guard that only
-                # bites where MODEL_PROXY_URL is set as an env var - the k8s
-                # pods. CI's unit tests (config-default env) stay green.
-                $svcFile = Join-Path $tmp 'apps\gateway\src\slices\inference\service.ts'
-                $anchor = '      const runId = newRunId();'
-                $replacement = "      const runId = newRunId();`r`n" +
-                               "      // Fail closed when the provider contract ack is missing - the gateway`r`n" +
-                               "      // must not forward requests it cannot attribute (OBS-1123; providers`r`n" +
-                               "      // roll the contract next week).`r`n" +
-                               "      if (process.env.MODEL_PROXY_URL && !process.env.PROVIDER_CONTRACT_V2) {`r`n" +
-                               "        throw new Error(`"provider contract v2 not acknowledged`");`r`n" +
-                               "      }"
-                $content = Get-Content $svcFile -Raw
-                if ($content -notmatch [regex]::Escape($anchor)) { Write-Warning 'anchor line not found in service.ts - source drifted'; break }
-                $content.Replace($anchor, $replacement) | Set-Content -Encoding ascii $svcFile
-                git -C $tmp commit -qam "gateway: fail closed when the provider contract ack is missing"
-                git -C $tmp push -q origin main
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to gitea main failed'; break }
-                $badSha = (git -C $tmp rev-parse --short HEAD).Trim()
-                Write-Step "bad commit $badSha is on main. Watch: rollouts UI (obs rollouts), argo UI (obs argocd), CI $giteaBase/obs/obs-lab/actions"
-                Write-Step 'expected: canary takes 25%, ~25% of /v1/chat 500s for ~2 min, error-rate AnalysisRun fails, canary scales to ZERO, stable keeps serving; incident inbox gets the abort postmortem'
-
-                Start-Sleep -Seconds 720
-                Write-Step 'auto-revert: reverting the bad commit (the fix ships through CI + a fresh healthy canary)'
-                git -C $tmp revert --no-edit HEAD | Out-Null
-                git -C $tmp push -q origin main
-                Write-Step "revert pushed. When its rollout completes, the agent posts the resolution note on the open incident."
+            try { Get-Scenario $id | Out-Null }
+            catch {
+                Write-Warning "unknown scenario '$name'"
+                Write-Host ''
+                Show-ScenarioTable
                 break
             }
-
-            if ($scenario -eq 'config-drift') {
-                # P10: out-of-band change to a TRACKED resource. Argo compares
-                # live vs git, flips platform OutOfSync, the on-out-of-sync
-                # notification hits /webhook/gitops, and (after the agent's
-                # deliberate 30s still-drifted re-check) the gitops-reporter
-                # names the drifted key. Self-heal is off, so nothing reverts
-                # it but us.
-                if ($Mode -ne 'k8s') { Write-Warning "config-drift needs k8s mode (obs k8s up)"; break }
-                $kubeconfig = Join-Path $env:USERPROFILE '.kube\obs-lab.yaml'
-                $orig = (kubectl --kubeconfig $kubeconfig -n subject get configmap subject-telemetry -o jsonpath='{.data.OTEL_EXPORTER_OTLP_ENDPOINT}')
-                if (-not $orig) { Write-Warning 'subject-telemetry ConfigMap not found - is the platform app synced?'; break }
-                Disable-AutoSync 'platform' $kubeconfig
-                Write-Step "config-drift: OTEL_EXPORTER_OTLP_ENDPOINT -> http://drifted.invalid:4318 (was $orig)"
-                # --patch-file, not -p: PS 5.1 native-arg quoting strips the
-                # embedded double quotes out of inline JSON.
-                $patchFile = Join-Path $env:TEMP 'obs-config-drift.json'
-                Set-Content -Encoding ascii -Path $patchFile -Value '{"data":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://drifted.invalid:4318"}}'
-                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $patchFile | Out-Null
-                Write-Step 'platform flips OutOfSync in ~30s; the webhook + 30s re-check spawn the gitops-reporter in ~2 min'
-                Write-Host "  the sting: NOTHING breaks yet - pods only read this at startup. The next rollout would ship blind telemetry. That stale-config story is the point."
-                Start-Sleep -Seconds 300
-                Write-Step 'auto-revert: restoring the committed value'
-                $restoreFile = Join-Path $env:TEMP 'obs-config-drift-restore.json'
-                @{ data = @{ OTEL_EXPORTER_OTLP_ENDPOINT = $orig } } | ConvertTo-Json -Compress |
-                    Set-Content -Encoding ascii -Path $restoreFile
-                kubectl --kubeconfig $kubeconfig -n subject patch configmap subject-telemetry --type merge --patch-file $restoreFile | Out-Null
-                kubectl --kubeconfig $kubeconfig apply -f (Join-Path $Repo 'infra\k8s\argocd\apps\platform.yaml') | Out-Null
-                Write-Step 'live matches git again (auto-sync restored) - platform returns Synced on the next refresh. Check the incident inbox for the drift report.'
-                break
-            }
-
-            if ($scenario -eq 'sync-fail') {
-                # P10: the desired state ITSELF is broken. A schema-plausible
-                # but API-invalid manifest lands on obs-gitops main; the
-                # webhook-triggered auto-sync FAILS (live objects untouched),
-                # on-sync-failed hits the agent, and the postmortem quotes the
-                # apply error plus the guilty commit. Reverted through git,
-                # like everything in this phase.
-                $vm = $Ports.OBS_VM_HOST
-                $giteaBase = "http://${vm}:$($Ports.OBS_GITEA_PORT)"
-                try { Invoke-RestMethod "$giteaBase/api/healthz" -TimeoutSec 5 | Out-Null }
-                catch { Write-Warning "gitea is not answering at $giteaBase - run 'obs ci up' first"; break }
-                $tok = (ssh -o BatchMode=yes "root@$vm" 'cat /root/obs-lab/.gitea-token').Trim()
-                if (-not $tok) { Write-Warning 'no gitea token on the VM (obs ci up)'; break }
-                $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("obs:$tok"))
-                $auth = "http.${giteaBase}/.extraheader"
-                $tmp = Join-Path $env:TEMP 'obs-sync-fail'
-                if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-                git -c "$auth=Authorization: Basic $b64" clone -q --branch main "$giteaBase/obs/obs-gitops.git" $tmp
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'clone of obs-gitops failed'; break }
-                git -C $tmp config $auth "Authorization: Basic $b64"
-                git -C $tmp config user.email 'dev@obs-lab.local'
-                git -C $tmp config user.name 'Lab Dev'
-                $depFile = Join-Path $tmp 'services\retriever\deployment.yaml'
-                (Get-Content $depFile -Raw).Replace('  replicas: 1', '  replicas: -1') | Set-Content -Encoding ascii $depFile
-                git -C $tmp commit -qam 'retriever: scale tuning for the new memory envelope'
-                git -C $tmp push -q origin main
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'push to obs-gitops failed'; break }
-                Write-Step "broken manifest pushed ($( (git -C $tmp rev-parse --short HEAD).Trim() )). Auto-sync fails in ~30s; on-sync-failed spawns the agent. Live retriever keeps running untouched."
-                Start-Sleep -Seconds 300
-                Write-Step 'auto-revert: git revert (the fix is a commit, like the break)'
-                git -C $tmp revert --no-edit HEAD | Out-Null
-                git -C $tmp push -q origin main
-                Write-Step 'revert pushed - the next sync goes green. Check the incident inbox.'
-                break
-            }
-
-            if ($scenario -eq 'stale-secret') {
-                # P11's flagship credential-rotation incident: the in-cluster
-                # Postgres password changes but the K8s Secret does not.
-                # Pooled connections keep working until max_lifetime (60s on
-                # both gateway and retriever) recycles them, then auth starts
-                # failing. There is no scripted revert - the oncall agent's
-                # remediation (update_db_secret: reads the rotated password
-                # from the lab vault below, patches the Secret, one
-                # approval, the password is never shown) IS the fix.
-                if ($Mode -ne 'k8s') { Write-Warning "stale-secret needs k8s mode (obs k8s up) - the compose subject has no live Postgres to rotate against"; break }
-                $vm = $Ports.OBS_VM_HOST
-                $dur = '300'
-                Write-Step "stale-secret: ${dur}s of baseline load @ $qps qps; Postgres password rotates now, the Secret is left stale"
-                $loadCmd = "`$env:GATEWAY_URL='$GatewayUrl'; `$env:TARGET_QPS='$qps'; `$env:DURATION_SECONDS='$dur'; bun run start"
-                Start-Process powershell -WorkingDirectory (Join-Path $Repo 'apps\load-generator') -ArgumentList '-NoExit', '-Command', $loadCmd
-
-                $pw = "rotated-$(Get-Random)"
-                Write-Step 'rotating the in-cluster lab Postgres password (the K8s Secret is NOT touched)'
-                # Pipe the SQL via stdin: inline -c quoting does not survive the
-                # PowerShell -> ssh -> kubectl exec argv layers on Windows.
-                $sql = "ALTER USER lab WITH PASSWORD '$pw';"
-                $sql | ssh -o BatchMode=yes "root@$vm" 'kubectl exec -i -n subject deploy/postgres -- psql -U lab -d observability_lab'
-                if ($LASTEXITCODE -ne 0) { Write-Warning 'password rotation over ssh failed'; break }
-
-                $vaultDir = Join-Path $Repo 'apps\agent-service\.secrets'
-                New-Item -ItemType Directory -Force -Path $vaultDir | Out-Null
-                $vaultFile = Join-Path $vaultDir 'db-vault.txt'
-                Set-Content -Path $vaultFile -Value $pw
-                Write-Step "rotated credential written to the lab vault: $vaultFile"
-                Write-Step 'the K8s Secret is now stale; expect auth failures within ~60s as pooled connections recycle'
-                Write-Step "ask the oncall agent to fix it: it should call update_db_secret (reads the vault, patches the Secret behind one approval, never prints the password) then flag that gateway+retriever need a restart"
-                break
-            }
-
-            $env:CHAOS_SCHEDULE = "chaos/$scenario.yaml"
-            $env:CHAOS_TARGET_QPS = $qps
-            # Stall/latency drills hold connections open; give the driver headroom.
-            if (-not $env:CHAOS_CONCURRENCY) { $env:CHAOS_CONCURRENCY = '128' }
-            # Chaos driver targets, mode-aware and from the map: in k8s mode
-            # the bases are the /chaos/* ingress routes on the VM.
-            if (-not $env:GATEWAY_URL) { $env:GATEWAY_URL = $GatewayUrl }
-            if (-not $env:MODEL_PROXY_URL) { $env:MODEL_PROXY_URL = $ChaosBase['model-proxy'] }
-            if (-not $env:RETRIEVER_URL) { $env:RETRIEVER_URL = $ChaosBase['retriever'] }
-            Write-Step "fail '$scenario': $($FailScenarios[$scenario])"
-            Write-Step "watch: Grafana $GrafanaUrl | incidents $WebUrl/incidents"
-            bun --cwd=apps/load-generator run chaos
+            Invoke-Drill -Id $id -Qps $qps -Hold:$hold | Out-Null
         }
 
         'chaos' {
@@ -754,27 +534,33 @@ try {
                 break
             }
 
-            $planes = [ordered]@{}
-            foreach ($n in $ChaosBase.Keys) { $planes[$n] = "$($ChaosBase[$n])/admin/chaos" }
-            foreach ($name in $planes.Keys) {
-                try {
-                    if ($action -eq 'clear') {
-                        Invoke-RestMethod -Method Delete -Uri $planes[$name] -TimeoutSec 3 | Out-Null
-                        Write-Step "cleared chaos on $name"
-                        continue
-                    }
-                    $state = Invoke-RestMethod -Uri $planes[$name] -TimeoutSec 3
-                    # model-proxy reports { base, override, effective }; retriever is flat.
-                    $active = if ($null -ne $state.override) { $state.override } else { $state }
-                    $knobs = @($active.PSObject.Properties | Where-Object { $_.Value -ne 0 -and $_.Value -ne $false })
+            # Status and clear, per INSTANCE. Both go through the pack's helpers
+            # rather than hitting the service address once, because the override
+            # is per-process state: model-proxy runs four replicas, so a single
+            # request through the ingress reads (or clears) exactly one of them
+            # and reports for all four. A status view that can say "healthy"
+            # while three quarters of the traffic is faulty is worse than none.
+            . (Join-Path $PSScriptRoot 'scenarios\_lib\chaos-plane.ps1')
+            foreach ($name in $ChaosBase.Keys) {
+                if ($action -eq 'clear') {
+                    Clear-ChaosKnobs -Service $name | Out-Null
+                    Assert-ChaosCleared -Service $name | Out-Null
+                    continue
+                }
+                $snaps = @(Get-ChaosSnapshots -Service $name)
+                if ($snaps.Count -eq 0) {
+                    Write-Warning "$name unreachable (mode=$Mode) - is the lab up?"
+                    continue
+                }
+                foreach ($snap in $snaps) {
+                    $knobs = @($snap.Override.PSObject.Properties | Where-Object { $_.Value -ne 0 -and $_.Value -ne $false })
+                    $where = if ($snap.Target -eq 'compose') { $name } else { "$name/$($snap.Target)" }
                     if ($knobs.Count -eq 0) {
-                        Write-Host ("  {0,-12} healthy (no chaos active)" -f $name)
+                        Write-Host ("  {0,-34} healthy (no chaos active)" -f $where)
                     } else {
                         $desc = ($knobs | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' '
-                        Write-Host ("  {0,-12} CHAOS ACTIVE: {1}" -f $name, $desc)
+                        Write-Host ("  {0,-34} CHAOS ACTIVE: {1}" -f $where, $desc)
                     }
-                } catch {
-                    Write-Warning "$name unreachable at $($planes[$name]) - is the lab up?"
                 }
             }
         }

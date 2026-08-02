@@ -1,0 +1,18 @@
+{
+  "id": "04-oomkill",
+  "title": "OOMKill - retriever memory limit lowered under load",
+  "layer": "k8s / resources",
+  "group": "resources",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 420,
+  "expected_time_to_alert_s": 180,
+  "exam": true,
+  "k8s": {
+    "app": "retriever",
+    "argo_app": "retriever",
+    "requests_memory": "48Mi",
+    "limits_memory": "64Mi"
+  }
+}

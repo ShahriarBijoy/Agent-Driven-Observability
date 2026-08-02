@@ -1,0 +1,19 @@
+{
+  "id": "bad-deploy",
+  "title": "Bad deploy drill - a plausible commit puts 2s into every completion",
+  "layer": "ci / app",
+  "group": "cicd",
+  "inject_mode": "git",
+  "needs": ["k8s", "ci"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 900,
+  "expected_time_to_alert_s": 660,
+  "exam": false,
+  "git": {
+    "repo": "obs-lab",
+    "file": "apps/model-proxy/src/slices/complete/service.ts",
+    "subject": "model-proxy: pre-warm the completion path before generating",
+    "marker": "Pre-warm the completion path",
+    "anchor": "      return generateCompletion(req);"
+  }
+}

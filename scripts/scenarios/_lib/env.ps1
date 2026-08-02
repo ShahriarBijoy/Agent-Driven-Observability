@@ -7,6 +7,10 @@
   address book, the mode flag and the small shared helpers live here, and
   obs.ps1 dot-sources this file rather than keeping its own copies.
 
+  This file is machine-agnostic: it knows addresses, not clusters. Anything
+  that shells out to kubectl lives in k8s.ps1, so a scenario that never touches
+  the cluster does not drag a kubeconfig requirement in with it.
+
   Dot-source it from anywhere:
       . "$PSScriptRoot\..\_lib\env.ps1"
 #>
@@ -56,6 +60,29 @@ if ($Mode -eq 'k8s') {
 
 function Write-Step($msg) { Write-Host ">> $msg" -ForegroundColor Cyan }
 
+function Wait-Until {
+    <# Poll until $Condition returns $true, or the timeout expires; returns
+       whether it was ever met.
+
+       Every signal assertion in the pack needs this, because no signal is
+       instant: a CrashLoopBackOff needs a first crash plus a backoff, an
+       OOMKill needs the working set to climb, and a Mimir series needs a
+       scrape. Polling with a deadline is also what keeps a verify honest - the
+       alternative, one sleep long enough for the slowest case, hides how long
+       the fault actually took to show. #>
+    param(
+        [Parameter(Mandatory)][scriptblock]$Condition,
+        [int]$TimeoutSec = 90,
+        [int]$IntervalSec = 5
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ($true) {
+        if (& $Condition) { return $true }
+        if ((Get-Date) -ge $deadline) { return $false }
+        Start-Sleep -Seconds $IntervalSec
+    }
+}
+
 function Test-Up($url) {
     try { Invoke-WebRequest -Uri $url -TimeoutSec 2 -UseBasicParsing | Out-Null; return $true }
     catch { return $false }
@@ -75,12 +102,6 @@ function Get-ObsToken {
     return $null
 }
 
-function Get-LabKubeconfig {
-    # The read-write operator kubeconfig minted by `obs k8s up`. Agents get the
-    # scoped agent-ro / agent-remediate ones instead - never this.
-    return (Join-Path $env:USERPROFILE '.kube\obs-lab.yaml')
-}
-
 function Assert-K8sMode {
     # Every pod/rollout/gitops scenario needs the cluster. Fail loudly rather
     # than injecting into a compose stack that has no pod specs to break.
@@ -92,23 +113,3 @@ function Assert-K8sMode {
     return $true
 }
 
-function Disable-AutoSync {
-    # Live-inject guard (P10): drop `automated` from one Application so an
-    # injected fault shows as OutOfSync WITHOUT being healed. selfHeal=false
-    # is not sufficient - v3 auto-sync retriggers on drift whenever the
-    # target revision is newer than the last attempted sync.
-    param([string]$App, [string]$Kubeconfig)
-    $f = Join-Path $env:TEMP 'obs-autosync-off.json'
-    Set-Content -Encoding ascii -Path $f -Value '{"spec":{"syncPolicy":{"automated":null}}}'
-    kubectl --kubeconfig $Kubeconfig -n argocd patch application $App --type merge --patch-file $f 2>$null | Out-Null
-}
-
-function Restore-AutoSync {
-    # The paired restore for Disable-AutoSync: re-apply the committed
-    # Application CR, which puts `automated` back exactly as Git has it.
-    # Every revert.ps1 that called Disable-AutoSync must call this.
-    param([string]$App, [string]$Kubeconfig)
-    $cr = Join-Path $Repo "infra\k8s\argocd\apps\$App.yaml"
-    if (-not (Test-Path $cr)) { Write-Warning "no committed Application CR at $cr"; return }
-    kubectl --kubeconfig $Kubeconfig apply -f $cr 2>$null | Out-Null
-}

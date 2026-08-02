@@ -1,0 +1,14 @@
+{
+  "id": "pod-kill",
+  "title": "Pod kill drill - every gateway pod deleted mid-traffic",
+  "layer": "k8s",
+  "group": "resources",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 240,
+  "expected_time_to_alert_s": 0,
+  "exam": false,
+  "transient": true,
+  "k8s": { "app": "gateway", "fresh_pod_window_s": 180 }
+}
