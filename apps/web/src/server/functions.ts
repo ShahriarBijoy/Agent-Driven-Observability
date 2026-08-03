@@ -82,6 +82,23 @@ export const getOncallIncident = createServerFn({ method: "GET" })
     return oncallIncidentDetail(data.id);
   });
 
+/**
+ * Phase 12: every exam run with its result rows, for /scorecard.
+ *
+ * Read through agent-service rather than straight off Postgres like the
+ * on-call feed: `score` is a computed field on the Python model (the judge
+ * returns booleans and never a number), so the DB has no score column to read.
+ * Both lists are fetched whole — an exam run holds at most ten rows and the
+ * page needs the trend across runs anyway.
+ */
+export const getScorecard = createServerFn({ method: "GET" }).handler(async () => {
+  const [runs, results] = await Promise.all([
+    agentClient.listExamRuns(),
+    agentClient.listExamResults(),
+  ]);
+  return { runs, results };
+});
+
 export const getRunbooks = createServerFn({ method: "GET" }).handler(async () => {
   return listRunbooks();
 });

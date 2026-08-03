@@ -175,3 +175,71 @@ export const AgentSettingsUpdateSchema = z.object({
   toolGrants: z.record(z.string(), z.array(z.string())).optional(),
 });
 export type AgentSettingsUpdate = z.infer<typeof AgentSettingsUpdateSchema>;
+
+/**
+ * The chaos exam (P12) — mirrors `agent_service.models.ExamRun/ExamResult`,
+ * which `scripts/exam.ps1` writes and `/scorecard` reads.
+ *
+ * Every optional field is `.optional()` and never `.nullable()`: agent-service
+ * dumps with `exclude_none=True`, so an unset field is ABSENT from the JSON
+ * rather than null. A `.nullable()` here would reject the real wire shape.
+ */
+
+export const ExamStatusSchema = z.enum([
+  "graded", // the agent answered and the judge returned a verdict
+  "not_run", // the Claude session died — the question was never asked
+  "no_alert", // nothing fired in time: an observability finding, not a wrong answer
+  "error", // inject/verify/revert/judge failed; the scenario is unusable
+]);
+export type ExamStatus = z.infer<typeof ExamStatusSchema>;
+
+/** One invocation of `obs exam` — a group, a single scenario, or `--all`. */
+export const ExamRunSchema = z.object({
+  id: z.string(),
+  group: z.string(),
+  startedAt: z.iso.datetime(),
+  /** Absent while a run is in flight, and on a run the operator interrupted. */
+  finishedAt: z.iso.datetime().optional(),
+  // Server-side default is "", so it is always emitted — defaulted here anyway
+  // so one odd row can't fail the parse and blank the whole page.
+  gitSha: z.string().default(""),
+  notes: z.string().optional(),
+});
+export type ExamRun = z.infer<typeof ExamRunSchema>;
+
+/**
+ * One scenario's outcome inside an exam run. Only `scenarioId` and `status`
+ * are guaranteed: a row exists even when the question was never asked, and
+ * `not_run`/`no_alert`/`error` rows carry no verdict and no score.
+ */
+export const ExamResultSchema = z.object({
+  scenarioId: z.string(),
+  status: ExamStatusSchema,
+  id: z.string().optional(),
+  examRunId: z.string().optional(),
+  incidentId: z.string().optional(),
+  agentRunId: z.string().optional(),
+  judgeRunId: z.string().optional(),
+  componentCorrect: z.boolean().optional(),
+  causeCategoryCorrect: z.boolean().optional(),
+  evidenceCited: z.boolean().optional(),
+  remediationAppropriate: z.boolean().optional(),
+  /** True collapses `score` to 0 server-side however good the reasoning was. */
+  cheated: z.boolean().optional(),
+  timeToAlertS: z.number().int().optional(),
+  timeToDiagnosisS: z.number().int().optional(),
+  turns: z.number().int().optional(),
+  toolCalls: z.number().int().optional(),
+  inputTokens: z.number().int().optional(),
+  outputTokens: z.number().int().optional(),
+  costUsd: z.number().optional(),
+  judgeRationale: z.string().optional(),
+  createdAt: z.iso.datetime().optional(),
+  /**
+   * DERIVED server-side from the four booleans (ADR-006: the judge answers
+   * booleans and never awards itself a number), so it is absent unless
+   * `status` is "graded". 0-4.
+   */
+  score: z.number().int().min(0).max(4).optional(),
+});
+export type ExamResult = z.infer<typeof ExamResultSchema>;
