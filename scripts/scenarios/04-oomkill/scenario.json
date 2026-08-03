@@ -8,6 +8,7 @@
   "load": { "profile": "steady", "qps": 40 },
   "drill_dwell_s": 420,
   "expected_time_to_alert_s": 180,
+  "alert": { "match": ["%container retriever was OOMKilled%"] },
   "exam": true,
   "k8s": {
     "app": "retriever",

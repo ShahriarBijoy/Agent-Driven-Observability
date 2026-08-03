@@ -8,6 +8,9 @@
   "load": { "profile": "steady", "qps": 40 },
   "drill_dwell_s": 600,
   "expected_time_to_alert_s": 600,
+  "alert": {
+    "match": ["gateway p95 latency above%", "gateway latency error budget burning fast%"]
+  },
   "exam": true,
   "chaos": {
     "service": "model-proxy",

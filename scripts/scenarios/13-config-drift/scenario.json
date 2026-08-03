@@ -8,6 +8,7 @@
   "load": { "profile": "steady", "qps": 40 },
   "drill_dwell_s": 300,
   "expected_time_to_alert_s": 120,
+  "alert": { "match": ["on-out-of-sync%"] },
   "exam": true,
   "k8s": {
     "argo_app": "platform",

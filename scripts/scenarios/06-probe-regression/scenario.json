@@ -8,6 +8,7 @@
   "load": { "profile": "steady", "qps": 40 },
   "drill_dwell_s": 420,
   "expected_time_to_alert_s": 360,
+  "alert": { "match": ["subject/gateway-%not-ready for 4 minutes%", "rollout gateway %"] },
   "exam": true,
   "k8s": { "app": "gateway", "argo_app": "gateway", "bad_path": "/definitely-not-ready" }
 }

@@ -8,6 +8,7 @@
   "load": { "profile": "steady", "qps": 120 },
   "drill_dwell_s": 900,
   "expected_time_to_alert_s": 600,
+  "alert": { "match": ["rollout gateway %", "on-rollout-aborted%", "on-analysis-run-failed%"] },
   "exam": true,
   "git": {
     "repo": "obs-gitops",

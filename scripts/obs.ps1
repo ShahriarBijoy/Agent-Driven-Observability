@@ -37,6 +37,14 @@
     obs chaos revert <id>    Undo it. On command only, idempotent, safe on a healthy lab.
     obs chaos selftest <id>  inject -> verify -> revert -> verify -> revert. The gate every
                              scenario must pass before it is trusted in an exam.
+    obs exam  <group>        THE EXAM (P12): inject a known fault, let the on-call agent
+                             investigate blind, grade its report against a hidden key.
+                             Groups: inference | resources | delivery | cicd | config.
+    obs exam  <id>           One question (ids are always NN-name).
+    obs exam  --all [--from <id>]  Every group in sequence; --from resumes after an
+                             interruption. A full sweep is ~2 h and a real token budget.
+                             Bare `obs exam` prints the plan without running anything.
+                             Results land in exam_results; read them at /scorecard.
     obs fixes [clean]        List auto-fixer workspaces (.artifacts/autofix) with sizes and fix
                              branches; `clean` deletes them all. The working clone is already
                              auto-removed after each run — what remains is the ~1 MB origin.git
@@ -563,6 +571,14 @@ try {
                     }
                 }
             }
+        }
+
+        'exam' {
+            # The third caller of the pack, after `obs fail` (drill) and
+            # `obs chaos` (single step). Everything exam-shaped - the alert
+            # deadline, the statuses, the judge, the result rows - lives in
+            # exam.ps1; what stays here is the name.
+            & (Join-Path $PSScriptRoot 'exam.ps1') @Rest
         }
 
         'demo' {
