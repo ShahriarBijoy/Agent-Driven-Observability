@@ -31,10 +31,18 @@ function Test-GiteaUp {
 }
 
 function Get-GiteaToken {
-    # The token the CI layer minted, kept on the VM. Never in git.
+    <# The token the CI layer minted, kept on the VM. Never in git.
+
+       Cached for the life of the caller. Reading it costs an ssh round-trip,
+       and 14-red-pipeline polls the runs API every 20s for up to fifteen
+       minutes while a pipeline finishes - a fresh ssh per poll turns a signal
+       check into a hundred logins, and any one of them timing out would fail a
+       verify for reasons that have nothing to do with the fault. #>
+    if ($script:GiteaTokenCache) { return $script:GiteaTokenCache }
     $tok = (ssh -o BatchMode=yes "root@$($Ports.OBS_VM_HOST)" 'cat /root/obs-lab/.gitea-token 2>/dev/null')
     if ($LASTEXITCODE -ne 0 -or -not $tok) { return '' }
-    return "$tok".Trim()
+    $script:GiteaTokenCache = "$tok".Trim()
+    return $script:GiteaTokenCache
 }
 
 function Get-GiteaAuthKey { return "http.${GiteaUrl}/.extraheader" }
@@ -105,6 +113,35 @@ function Push-GiteaWork {
     return (git -C $Path rev-parse --short HEAD).Trim()
 }
 
+function Get-GiteaCommitBySubject {
+    <# The newest commit on the current branch whose subject is EXACTLY
+       $Subject, or '' if there is none.
+
+       Not `git log --grep`. That takes a POSIX basic regular expression, in
+       which `\(` and `\)` are grouping operators rather than literal parens -
+       so `[regex]::Escape` (which produces .NET/PCRE escaping) and git disagree
+       the moment a subject contains a bracket, and the lookup silently matches
+       nothing. 14-red-pipeline found this the hard way: its subject ends in
+       `percentile()`, the grep returned empty, and the caller's `.Trim()` blew
+       up on null halfway through a verify.
+
+       Comparing subjects in PowerShell sidesteps the regex flavour question
+       entirely, and exact equality is what these callers actually want: a
+       substring match would also hit the `Revert "<subject>"` commit and undo
+       the fix instead of the fault. #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Subject,
+        [int]$Depth = 50
+    )
+    $sep = [char]0x1f
+    foreach ($line in @(git -C $Path log --format="%H$sep%s" -n $Depth)) {
+        $parts = "$line".Split($sep)
+        if ($parts.Count -ge 2 -and $parts[1] -ceq $Subject) { return $parts[0] }
+    }
+    return ''
+}
+
 function Undo-GiteaCommit {
     <# Revert the newest commit whose subject matches $Subject, and push. The fix
        ships as a commit, exactly like the break did. #>
@@ -112,7 +149,7 @@ function Undo-GiteaCommit {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Subject
     )
-    $sha = (git -C $Path log --format='%H' --grep="^$([regex]::Escape($Subject))$" -n 1).Trim()
+    $sha = Get-GiteaCommitBySubject -Path $Path -Subject $Subject
     if (-not $sha) { Write-Warning "no commit found with subject '$Subject'"; return '' }
     git -C $Path revert --no-edit $sha | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Warning "git revert of $sha failed"; return '' }
@@ -158,6 +195,31 @@ function Get-GiteaRuns {
         return @($resp.workflow_runs)
     } catch {
         Write-Warning "could not list Actions runs for $Repo"
+        return @()
+    }
+}
+
+function Get-GiteaRunJobs {
+    <# The per-job breakdown of one run: name, status, conclusion, steps.
+
+       The runs API gives a single conclusion for the whole run, which is not
+       enough for 14-red-pipeline. "the pipeline is red" and "the TEST job is
+       red" are different incidents - a red build-push means the code is fine
+       and the registry or the runner is not - and a scenario that only checked
+       the run-level conclusion would pass on either, grading an agent against
+       an answer key describing the wrong failure. #>
+    param(
+        [Parameter(Mandatory)][ValidateSet('obs-lab', 'obs-gitops')][string]$Repo,
+        [Parameter(Mandatory)][int64]$RunId
+    )
+    $tok = Get-GiteaToken
+    if (-not $tok) { return @() }
+    try {
+        $resp = Invoke-RestMethod -Uri "$GiteaUrl/api/v1/repos/obs/$Repo/actions/runs/$RunId/jobs" `
+            -Headers @{ Authorization = "token $tok" } -TimeoutSec 15
+        return @($resp.jobs)
+    } catch {
+        Write-Warning "could not list jobs for run $RunId in $Repo"
         return @()
     }
 }

@@ -308,3 +308,45 @@ function Assert-MimirSeries {
     Write-Warning "signal MISSING: $Context matched $($script:AssertMimirCount) series (want >= $AtLeast at >= $MinValue) within ${TimeoutSec}s for: $Query"
     return $false
 }
+
+# --- the CI evidence plane --------------------------------------------------
+# ci-shim turns Gitea's webhooks into Prometheus text at /metrics, which Alloy
+# scrapes into Mimir. The CI-layer services live on the VM in BOTH modes (the
+# laptop never runs a forge), so this is VM-addressed where Mimir above is not.
+$CiShimUrl = "http://$($Ports.OBS_VM_HOST):$($Ports.OBS_CI_SHIM_PORT)"
+
+function Get-CiShimCounter {
+    <# One counter sample straight from ci-shim, or $null when the series does
+       not exist or the shim is unreachable.
+
+       Read at the SOURCE rather than through Mimir on purpose. The pipeline
+       alert queries `increase(...[15m])`, so Mimir answers "was there a failure
+       recently" - which is still true for fifteen minutes after a scenario is
+       reverted, and would make a verify pass on a pipeline that is already
+       green again. The raw counter answers the question a verify actually has:
+       is the number higher than it was before this inject. Reading it here also
+       proves the shim received the workflow_run webhook at all, which is the
+       step everything downstream - the alert, the DORA panels - depends on. #>
+    param([Parameter(Mandatory)][string]$Name, [hashtable]$Labels = @{})
+
+    $text = ''
+    try { $text = (Invoke-WebRequest "$CiShimUrl/metrics" -TimeoutSec 10 -UseBasicParsing).Content }
+    catch { Write-Warning "ci-shim /metrics is unreachable at $CiShimUrl - run 'obs ci up'"; return $null }
+
+    foreach ($line in ($text -split "`n")) {
+        $line = $line.Trim()
+        if (-not $line.StartsWith("$Name{")) { continue }
+        $close = $line.LastIndexOf('}')
+        if ($close -lt 0) { continue }
+        $labelText = $line.Substring($Name.Length + 1, $close - $Name.Length - 1)
+        $matched = $true
+        foreach ($k in $Labels.Keys) {
+            # Anchored on a comma or an end so `result="failure"` cannot be
+            # satisfied by some future `result="failure_ignored"`.
+            $pattern = '(^|,)' + [regex]::Escape($k) + '="' + [regex]::Escape([string]$Labels[$k]) + '"($|,)'
+            if ($labelText -notmatch $pattern) { $matched = $false; break }
+        }
+        if ($matched) { return [double]$line.Substring($close + 1).Trim() }
+    }
+    return $null
+}
