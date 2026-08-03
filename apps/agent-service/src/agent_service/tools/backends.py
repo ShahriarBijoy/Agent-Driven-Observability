@@ -21,7 +21,7 @@ import httpx
 
 from .. import db
 from ..config import config
-from .validation import parse_range, safe_runbook_path, validate_select_sql
+from .validation import PG_ALLOWLIST, parse_range, safe_runbook_path, validate_select_sql
 
 _client: httpx.AsyncClient | None = None
 LINEAGE_NAMESPACE = "ai-observability-lab"
@@ -223,8 +223,15 @@ async def _marquez_dataset_names(namespace: str, limit: int = 50) -> list[str]:
 # ---- Postgres (read-only) ---------------------------------------------------
 
 
-async def pg_select(sql: str, params: list | None = None) -> dict:
-    ok, reason = validate_select_sql(sql)
+async def pg_select(
+    sql: str,
+    params: list | None = None,
+    allowlist: frozenset[str] = PG_ALLOWLIST,
+) -> dict:
+    """`allowlist` narrows which tables this call may touch. Agents behind an
+    information barrier are handed PG_ALLOWLIST_BARRIERED by the per-run tool
+    in sdk.py — the barrier is applied where the agent kind is known, not here."""
+    ok, reason = validate_select_sql(sql, allowlist)
     if not ok:
         return {"error": f"rejected: {reason}", "sql": sql}
     try:
@@ -1135,6 +1142,43 @@ async def gitea_ci_runs(limit: int = 5, branch: str = "") -> dict:
         return {"error": f"gitea runs query failed: {exc}"}
 
 
+def withhold_exam_keys(diff: str) -> str:
+    """Drop every file under the answer-key directory from a unified diff.
+
+    The keys are committed to the repo, and `gitea_compare` reads the forge
+    rather than the filesystem — so the path barrier in exam.py, which is about
+    the local tree, does not cover this route. Without it, an agent under
+    examination that diffed a span containing the commit that added
+    `scripts/exam-keys/` would be handed the answers to every scenario.
+
+    Applied to every caller, not just barriered agents: no agent has a reason
+    to read a key through the forge, and the judge gets its key server-side.
+    """
+    from ..exam import KEYS_REPO_PREFIX
+
+    if KEYS_REPO_PREFIX not in diff:
+        return diff
+    kept, withheld = [], 0
+    # A unified diff is a sequence of sections, each opening with `diff --git`;
+    # split on that boundary so a dropped file takes its whole hunk with it.
+    for part in re.split(r"(?m)^(?=diff --git )", diff):
+        header = part.split("\n", 1)[0]
+        if part.startswith("diff --git ") and KEYS_REPO_PREFIX in header:
+            withheld += 1
+            continue
+        kept.append(part)
+    text = "".join(kept)
+    if withheld:
+        text += f"\n[{withheld} file(s) under {KEYS_REPO_PREFIX} withheld]"
+    return text
+
+
+def _is_exam_key(filename: str) -> bool:
+    from ..exam import KEYS_REPO_PREFIX
+
+    return filename.replace("\\", "/").startswith(KEYS_REPO_PREFIX)
+
+
 async def gitea_compare(base: str, head: str, include_diff: bool = False) -> dict:
     """base...head diff summary from the forge: commits + per-file stats.
     include_diff adds each commit's unified diff (truncated) when the span is
@@ -1158,9 +1202,16 @@ async def gitea_compare(base: str, head: str, include_diff: bool = False) -> dic
         commits = []
         touched: dict[str, str] = {}
         for c in data.get("commits", []):
-            commit_files = [f.get("filename") for f in (c.get("files") or []) if f.get("filename")]
+            # File NAMES are withheld too, not just their contents: a listing
+            # that says `scripts/exam-keys/15-stale-secret.md` tells the agent
+            # under test that a key exists and what it is called.
+            commit_files = [
+                f.get("filename")
+                for f in (c.get("files") or [])
+                if f.get("filename") and not _is_exam_key(f["filename"])
+            ]
             for f in c.get("files") or []:
-                if f.get("filename"):
+                if f.get("filename") and not _is_exam_key(f["filename"]):
                     touched[f["filename"]] = f.get("status") or "changed"
             stats = c.get("stats") or {}
             entry = {
@@ -1179,7 +1230,9 @@ async def gitea_compare(base: str, head: str, include_diff: bool = False) -> dic
                         headers=headers,
                     )
                     dresp.raise_for_status()
-                    entry["diff"] = dresp.text[:4000]
+                    # Withhold BEFORE truncating: truncating first could leave
+                    # a key's hunk inside the 4000 chars that survive.
+                    entry["diff"] = withhold_exam_keys(dresp.text)[:4000]
                 except Exception:  # noqa: BLE001 — diff is best-effort
                     pass
             commits.append(entry)

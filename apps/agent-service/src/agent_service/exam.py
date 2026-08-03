@@ -26,6 +26,13 @@ from .models import JudgeVerdict
 
 KEYS_DIR = os.path.join(config.lab_root, "scripts", "exam-keys")
 
+# The same directory as a REPO path, for the tools that read the forge instead
+# of the filesystem. The keys are committed (they should be versioned), so a
+# diff spanning the commit that added them would hand the agent under test the
+# answers — `gitea_compare` withholds anything under this prefix. Derived from
+# KEYS_DIR so the directory is still named exactly once.
+KEYS_REPO_PREFIX = os.path.relpath(KEYS_DIR, config.lab_root).replace(os.sep, "/") + "/"
+
 # Scenario ids are `NN-name` by construction (ADR-006: ids are always NN-name,
 # group names are always bare words, so the two namespaces cannot collide).
 # Pinning that shape here is what makes traversal impossible: there is no

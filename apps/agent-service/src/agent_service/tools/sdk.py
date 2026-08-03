@@ -18,7 +18,7 @@ from .. import exam, postmortem
 from ..config import config
 from ..context import RunContext
 from . import backends, remediate
-from .validation import safe_artifact_name
+from .validation import PG_ALLOWLIST_BARRIERED, safe_artifact_name
 
 SERVER = "obslab"
 
@@ -172,8 +172,9 @@ async def _marquez(args: dict) -> dict:
     return _text("marquez_lineage", await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
 
 
-@tool(
-    "pg_select",
+# Split so the barriered build below can drop the audit clause without keeping
+# a second copy of the description in sync.
+_PG_DESC_HEAD = (
     "Run a read-only SELECT against the lab database. Use $1, $2 placeholders with params. "
     "Writes, information_schema, and non-allow-listed tables are refused. Allowed tables "
     "(with key columns) — "
@@ -181,18 +182,24 @@ async def _marquez(args: dict) -> dict:
     "retrieved_count, retrieval_score_mean, retrieval_score_max, cache_hit, status, created_at); "
     "usage_events(tenant, prompt_tokens, completion_tokens, model, created_at); "
     "dq_violations(check_name, signal, severity, dataset, ts, payload); "
-    "chunks(doc_id, body, created_at); agent_runs and the other agent_* audit tables. "
-    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables.",
-    {
-        "type": "object",
-        "properties": {
-            "sql": {"type": "string", "description": "a single SELECT statement"},
-            "params": {"type": "array", "description": "positional params for $1, $2, ...",
-                       "items": {}},
-        },
-        "required": ["sql"],
-    },
+    "chunks(doc_id, body, created_at). "
 )
+_PG_DESC_AUDIT = "Also agent_runs and the other agent_* audit tables. "
+_PG_DESC_TAIL = (
+    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables."
+)
+_PG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sql": {"type": "string", "description": "a single SELECT statement"},
+        "params": {"type": "array", "description": "positional params for $1, $2, ...",
+                   "items": {}},
+    },
+    "required": ["sql"],
+}
+
+
+@tool("pg_select", _PG_DESC_HEAD + _PG_DESC_AUDIT + _PG_DESC_TAIL, _PG_SCHEMA)
 async def _pg(args: dict) -> dict:
     return _text("pg_select", await backends.pg_select(args["sql"], args.get("params") or []))
 
@@ -544,7 +551,13 @@ async def request_approval_impl(ctx: RunContext, prompt: str, action_id: str | N
     return {"decision": decision, "approval_id": approval_id, "instruction": instruction}
 
 
-def build_mcp_server(ctx: RunContext):
+# Agents whose pg_select loses the audit tables (P12). Only `oncall`: it is the
+# agent the exam examines, and the audit trail holds the grades of its own past
+# exams. `judge` needs no entry — it holds no pg_select at all.
+AUDIT_BARRIERED_AGENTS: frozenset[str] = frozenset({"oncall"})
+
+
+def build_mcp_server(ctx: RunContext, agent_kind: str | None = None):
     @tool(
         "request_approval",
         "Pause and ask the human operator to approve a sensitive action before proceeding. "
@@ -859,10 +872,28 @@ def build_mcp_server(ctx: RunContext):
             rationale=str(args.get("rationale", "")),
         ))
 
+    # The audit-trail barrier (P12). Swapped in per run rather than filtered
+    # inside pg_select, because this is the layer that knows which agent is
+    # about to run — and the replacement's DESCRIPTION drops the audit tables
+    # too, so the model is never offered a table it would only be refused.
+    stateless = _STATELESS
+    if agent_kind in AUDIT_BARRIERED_AGENTS:
+
+        @tool("pg_select", _PG_DESC_HEAD + _PG_DESC_TAIL, _PG_SCHEMA)
+        async def _pg_barriered(args: dict) -> dict:
+            return _text(
+                "pg_select",
+                await backends.pg_select(
+                    args["sql"], args.get("params") or [], allowlist=PG_ALLOWLIST_BARRIERED
+                ),
+            )
+
+        stateless = [t for t in _STATELESS if t is not _pg] + [_pg_barriered]
+
     return create_sdk_mcp_server(
         name=SERVER,
         tools=[
-            *_STATELESS, _gh, _approval, _artifact,
+            *stateless, _gh, _approval, _artifact,
             _rollout_undo, _rollout_abort, _rollout_promote,
             _scale_deployment, _patch_memory_limit, _restart_workload,
             _update_db_secret, _publish_postmortem, _submit_grade,

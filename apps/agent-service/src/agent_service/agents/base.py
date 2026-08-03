@@ -146,7 +146,10 @@ async def run_agent_session(
     allowed_override: list[str] | None = None,
 ) -> str:
     """Run one agent turn-set to completion; returns the final assistant text."""
-    server = toolsdk.build_mcp_server(ctx)
+    # agent_kind, not ctx: the barriered pg_select is chosen at build time, and
+    # the caller's kind is the authority (an oncall chat and an oncall alert run
+    # must get the same tool).
+    server = toolsdk.build_mcp_server(ctx, agent_kind)
     stg = await settings_store.load()
     allowed = settings_store.resolve_allowed(agent_kind, stg)
     if extra_allowed:
