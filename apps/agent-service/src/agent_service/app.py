@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import db
 from . import escalation
+from . import exam
 from . import ingress
 from . import settings as settings_store
 from .agents.autofix import run_autofixer
@@ -40,6 +41,7 @@ from .agents.gitops import (
     subject_of,
 )
 from .agents.incident import run_incident_chat
+from .agents.judge import JudgeError, run_judge
 from .agents.oncall import run_oncall, run_oncall_chat
 from .agents.rca import run_rca
 from .agents.runbook import run_runbook_executor
@@ -500,6 +502,54 @@ async def record_exam_result(request: Request) -> JSONResponse:
         )
     row_id = await db.record_exam_result(result)
     return JSONResponse({"id": row_id, "score": result.score}, status_code=201)
+
+
+class JudgeBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    scenario_id: str = Field(alias="scenarioId")
+    report: str
+    transcript: str = ""
+
+
+@app.post("/exam/judge")
+async def judge_report(request: Request) -> JSONResponse:
+    """Grade one report against its hidden key. The key is resolved HERE, from
+    the scenario id — the runner never holds one, so a key cannot leak by
+    being put on the wire, and `read_key` stays the single doorway to
+    scripts/exam-keys/.
+
+    Synchronous, unlike the other agent entrypoints: the exam runner has
+    nothing to do until the verdict exists, and a background run would just
+    make it poll."""
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
+    try:
+        body = JudgeBody.model_validate(await request.json())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    try:
+        key = exam.read_key(body.scenario_id)
+    except ValueError as exc:
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            {"error": {"code": "no_key",
+                       "message": f"no answer key for scenario {body.scenario_id!r}"}},
+            status_code=404,
+        )
+    try:
+        verdict = await run_judge(body.scenario_id, body.report, body.transcript, key)
+    except JudgeError as exc:
+        # No verdict: the caller must record status='error', never a grade.
+        return JSONResponse(
+            {"error": {"code": "no_verdict", "message": str(exc)}}, status_code=502
+        )
+    return JSONResponse(verdict.wire())
 
 
 @app.get("/exam/runs")

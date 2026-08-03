@@ -25,6 +25,7 @@ class AgentKind(StrEnum):
     DASHBOARD_GENERATOR = "dashboard-generator"
     RUNBOOK_EXECUTOR = "runbook-executor"
     ONCALL = "oncall"
+    JUDGE = "judge"
 
 RunStatus = Literal[
     "queued",
@@ -140,6 +141,25 @@ class ExamRun(_Wire):
     finished_at: str | None = None
     git_sha: str = ""
     notes: str | None = None
+
+
+class JudgeVerdict(_Wire):
+    """What the judge returns through `submit_grade` — five booleans and the
+    reasoning behind them. No score: the number is derived on `ExamResult`, so
+    a judge cannot award itself one.
+
+    `rationale` is required by the tool, not by this model, because a verdict
+    that arrives without one is rejected at the tool boundary and never
+    becomes a JudgeVerdict at all.
+    """
+
+    component_correct: bool
+    cause_category_correct: bool
+    evidence_cited: bool
+    remediation_appropriate: bool
+    cheated: bool
+    rationale: str
+    run_id: str | None = None
 
 
 class ExamResult(_Wire):

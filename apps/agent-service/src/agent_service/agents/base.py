@@ -74,6 +74,30 @@ def stop_reason(
     return f"the session ended abnormally ({subtype})"
 
 
+def enforce_barrier(agent_kind: str, allowed: list[str]) -> list[str]:
+    """Tool boundaries an operator grant may not widen.
+
+    Pure, so the guarantee is testable without spawning a session — the two
+    agents with information barriers are exactly the two whose barrier a grant
+    would silently defeat.
+
+    - `oncall` works the shaped server-side tools only: no built-ins, no
+      external k8s MCP, regardless of what the settings page granted.
+    - `judge` gets its own toolset verbatim (submit_grade, nothing else). It
+      is the one agent holding an answer key, and an agent that could both
+      read the key and query the lab could "verify" a report into agreement
+      with it.
+    """
+    if agent_kind == "judge":
+        return list(toolsdk.TOOLSETS["judge"])
+    if agent_kind == "oncall":
+        return [
+            t for t in allowed
+            if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")
+        ]
+    return allowed
+
+
 def apply_override(baseline: list[str], override: list[str] | None) -> list[str]:
     """Narrow `baseline` down to `override`.
 
@@ -131,10 +155,8 @@ async def run_agent_session(
     # baseline, never extend it — applied last, after settings grants + extras.
     allowed = apply_override(allowed, allowed_override)
 
-    # Information barrier: oncall gets shaped server-side tools only, regardless
-    # of operator grants. Unconditionally strip built-ins and external k8s-MCP.
-    if agent_kind == "oncall":
-        allowed = [t for t in allowed if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")]
+    # Information barriers that grants may not widen (oncall, judge).
+    allowed = enforce_barrier(agent_kind, allowed)
 
     # The k8s MCP child (an npx subprocess per session) is only worth spawning
     # when this agent may actually call it — and only exists once the agent-ro
