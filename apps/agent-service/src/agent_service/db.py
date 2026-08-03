@@ -15,7 +15,17 @@ from datetime import datetime, timezone
 import asyncpg
 
 from .config import config
-from .models import AgentRun, Approval, Artifact, RunMessage, ToolCall, new_id, now_iso
+from .models import (
+    AgentRun,
+    Approval,
+    Artifact,
+    ExamResult,
+    ExamRun,
+    RunMessage,
+    ToolCall,
+    new_id,
+    now_iso,
+)
 
 _pool: asyncpg.Pool | None = None
 
@@ -128,6 +138,36 @@ CREATE TABLE IF NOT EXISTS incident_timeline (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS incident_timeline_idx ON incident_timeline (incident_id, ts);
+
+CREATE TABLE IF NOT EXISTS exam_runs (
+  id TEXT PRIMARY KEY,
+  "group" TEXT NOT NULL,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  git_sha TEXT NOT NULL DEFAULT '',
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS exam_runs_started_idx ON exam_runs (started_at DESC);
+
+CREATE TABLE IF NOT EXISTS exam_results (
+  id TEXT PRIMARY KEY,
+  exam_run_id TEXT NOT NULL REFERENCES exam_runs (id) ON DELETE CASCADE,
+  scenario_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  incident_id TEXT REFERENCES incidents (id) ON DELETE SET NULL,
+  agent_run_id TEXT REFERENCES agent_runs (id) ON DELETE SET NULL,
+  judge_run_id TEXT REFERENCES agent_runs (id) ON DELETE SET NULL,
+  component_correct BOOLEAN, cause_category_correct BOOLEAN,
+  evidence_cited BOOLEAN, remediation_appropriate BOOLEAN, cheated BOOLEAN,
+  score INTEGER,
+  time_to_alert_s INTEGER, time_to_diagnosis_s INTEGER,
+  turns INTEGER, tool_calls INTEGER,
+  input_tokens INTEGER, output_tokens INTEGER, cost_usd DOUBLE PRECISION,
+  judge_rationale TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS exam_results_run_idx ON exam_results (exam_run_id, created_at);
+CREATE INDEX IF NOT EXISTS exam_results_scenario_idx ON exam_results (scenario_id, created_at DESC);
 """
 
 
@@ -713,6 +753,118 @@ async def close_incident(incident_id: str, ts: datetime, summary: str | None = N
            WHERE id = $1""",
         incident_id, ts, summary,
     )
+
+
+# ---- the chaos exam (PLAN-2 P12) -------------------------------------------
+#
+# "group" is quoted in every statement below: it is a reserved word, and the
+# column keeps the name ADR-006 and the wire both use.
+
+
+async def create_exam_run(group: str, git_sha: str) -> str:
+    """Open an exam run and return its id. One row per `obs exam` invocation."""
+    exam_run_id = new_id("exam")
+    await _require_pool().execute(
+        'INSERT INTO exam_runs (id, "group", git_sha) VALUES ($1, $2, $3)',
+        exam_run_id, group, git_sha,
+    )
+    return exam_run_id
+
+
+async def finish_exam_run(exam_run_id: str) -> None:
+    """Stamp finished_at. Deliberately not conditional on every scenario having
+    a row: a run interrupted halfway is still a finished run, and `--from`
+    resumption opens a new one rather than reopening this."""
+    await _require_pool().execute(
+        "UPDATE exam_runs SET finished_at = now() WHERE id = $1 AND finished_at IS NULL",
+        exam_run_id,
+    )
+
+
+async def record_exam_result(result: ExamResult) -> str:
+    """Persist one scenario's outcome and return the row id.
+
+    `score` comes off the model, not the caller — ExamResult.score is the one
+    definition of the derivation (count the four booleans, 0 when cheated,
+    NULL unless graded), so nothing that writes here can disagree with what
+    /scorecard reads back.
+    """
+    row_id = result.id or new_id("exres")
+    await _require_pool().execute(
+        """INSERT INTO exam_results
+             (id, exam_run_id, scenario_id, status, incident_id, agent_run_id,
+              judge_run_id, component_correct, cause_category_correct,
+              evidence_cited, remediation_appropriate, cheated, score,
+              time_to_alert_s, time_to_diagnosis_s, turns, tool_calls,
+              input_tokens, output_tokens, cost_usd, judge_rationale)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                   $14, $15, $16, $17, $18, $19, $20, $21)
+           ON CONFLICT (id) DO NOTHING""",
+        row_id, result.exam_run_id, result.scenario_id, result.status,
+        result.incident_id, result.agent_run_id, result.judge_run_id,
+        result.component_correct, result.cause_category_correct,
+        result.evidence_cited, result.remediation_appropriate, result.cheated,
+        result.score, result.time_to_alert_s, result.time_to_diagnosis_s,
+        result.turns, result.tool_calls, result.input_tokens,
+        result.output_tokens, result.cost_usd, result.judge_rationale,
+    )
+    return row_id
+
+
+def _exam_run(row: asyncpg.Record) -> ExamRun:
+    return ExamRun(
+        id=row["id"], group=row["group"], started_at=_iso(row["started_at"]) or "",
+        finished_at=_iso(row["finished_at"]), git_sha=row["git_sha"] or "",
+        notes=row["notes"],
+    )
+
+
+def _exam_result(row: asyncpg.Record) -> ExamResult:
+    # `score` is not read back: it is recomputed by the model from the same
+    # booleans it was written from. If the column and the property ever
+    # disagreed, the property is the one that is right.
+    return ExamResult(
+        id=row["id"], exam_run_id=row["exam_run_id"], scenario_id=row["scenario_id"],
+        status=row["status"], incident_id=row["incident_id"],
+        agent_run_id=row["agent_run_id"], judge_run_id=row["judge_run_id"],
+        component_correct=row["component_correct"],
+        cause_category_correct=row["cause_category_correct"],
+        evidence_cited=row["evidence_cited"],
+        remediation_appropriate=row["remediation_appropriate"],
+        cheated=row["cheated"], time_to_alert_s=row["time_to_alert_s"],
+        time_to_diagnosis_s=row["time_to_diagnosis_s"], turns=row["turns"],
+        tool_calls=row["tool_calls"], input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"], cost_usd=row["cost_usd"],
+        judge_rationale=row["judge_rationale"],
+        created_at=_iso(row["created_at"]),
+    )
+
+
+async def list_exam_runs(limit: int = 50) -> list[ExamRun]:
+    rows = await _require_pool().fetch(
+        """SELECT id, "group", started_at, finished_at, git_sha, notes
+           FROM exam_runs ORDER BY started_at DESC LIMIT $1""",
+        limit,
+    )
+    return [_exam_run(r) for r in rows]
+
+
+async def list_exam_results(exam_run_id: str | None = None) -> list[ExamResult]:
+    """Results for one exam run, or the most recent results across all runs.
+
+    Oldest-first inside a run (scenarios are graded in the order they were
+    asked), newest-first across runs (the scorecard's trend view)."""
+    pool = _require_pool()
+    if exam_run_id is None:
+        rows = await pool.fetch(
+            "SELECT * FROM exam_results ORDER BY created_at DESC LIMIT 500"
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT * FROM exam_results WHERE exam_run_id = $1 ORDER BY created_at ASC",
+            exam_run_id,
+        )
+    return [_exam_result(r) for r in rows]
 
 
 async def run_select(sql: str, params: list, limit: int = 200) -> list[dict]:

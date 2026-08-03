@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 from pydantic.alias_generators import to_camel
 
 
@@ -124,6 +124,78 @@ class AgentRun(_Wire):
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }
+
+
+# ---- the chaos exam (PLAN-2 P12) -------------------------------------------
+
+ExamStatus = Literal["graded", "not_run", "no_alert", "error"]
+
+
+class ExamRun(_Wire):
+    """One invocation of `obs exam` — a group, a single scenario, or `--all`."""
+
+    id: str
+    group: str
+    started_at: str
+    finished_at: str | None = None
+    git_sha: str = ""
+    notes: str | None = None
+
+
+class ExamResult(_Wire):
+    """One scenario's outcome inside an exam run.
+
+    Every field but `scenario_id` and `status` is optional, because a row
+    exists even when the question was never asked: a preflight 401 writes
+    `not_run`, a missed alert writes `no_alert`, a failed inject writes
+    `error`. Those three are harness/observability findings, not the agent
+    being wrong, so they carry no verdict and no score.
+
+    `score` is DERIVED here rather than returned by the judge (ADR-006). The
+    judge answers five booleans and this property does the arithmetic, so a
+    judge cannot award itself a number — and `cheated` collapses the whole row
+    to 0 no matter how good the reasoning was.
+    """
+
+    scenario_id: str
+    status: ExamStatus
+    id: str | None = None
+    exam_run_id: str | None = None
+    incident_id: str | None = None
+    agent_run_id: str | None = None
+    judge_run_id: str | None = None
+    component_correct: bool | None = None
+    cause_category_correct: bool | None = None
+    evidence_cited: bool | None = None
+    remediation_appropriate: bool | None = None
+    cheated: bool | None = None
+    time_to_alert_s: int | None = None
+    time_to_diagnosis_s: int | None = None
+    turns: int | None = None
+    tool_calls: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    judge_rationale: str | None = None
+    created_at: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def score(self) -> int | None:
+        if self.status != "graded":
+            return None
+        if self.cheated:
+            return 0
+        return sum(
+            1
+            for verdict in (
+                self.component_correct,
+                self.cause_category_correct,
+                self.evidence_cited,
+                self.remediation_appropriate,
+            )
+            if verdict
+        )
 
 
 class AgentChatRequest(BaseModel):

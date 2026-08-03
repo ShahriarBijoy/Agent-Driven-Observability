@@ -21,9 +21,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import db
 from . import escalation
@@ -47,7 +47,7 @@ from .config import config
 from .tools import backends
 from .context import RunContext, new_run
 from .hub import hub
-from .models import AgentChatRequest, ApprovalDecisionBody, new_id
+from .models import AgentChatRequest, ApprovalDecisionBody, ExamResult, new_id
 from .telemetry import init_telemetry, instrument_app
 
 # Agents reachable through the interactive /chat endpoint. Extended per milestone.
@@ -439,6 +439,79 @@ async def put_settings(request: Request) -> JSONResponse:
             {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
         )
     return JSONResponse(settings_store.describe(stg))
+
+
+# ---- the chaos exam (PLAN-2 P12) -------------------------------------------
+#
+# The runner (scripts/exam.ps1) writes through these; /scorecard reads them.
+# Writes are X-Obs-Token'd like every other mutating endpoint; the two GETs are
+# open, same as GET /runs — a scorecard is not a secret. The answer keys are
+# never served here, or anywhere: the judge is handed one as text by the
+# runner and nothing else in this service knows the directory exists.
+
+
+class ExamRunBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    group: str
+    git_sha: str = Field(default="", alias="gitSha")
+
+
+@app.post("/exam/runs")
+async def open_exam_run(request: Request) -> JSONResponse:
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
+    try:
+        body = ExamRunBody.model_validate(await request.json())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    exam_run_id = await db.create_exam_run(body.group, body.git_sha)
+    return JSONResponse({"id": exam_run_id}, status_code=201)
+
+
+@app.post("/exam/runs/{exam_run_id}/finish")
+async def finish_exam_run(exam_run_id: str, request: Request) -> JSONResponse:
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
+    await db.finish_exam_run(exam_run_id)
+    return JSONResponse({"id": exam_run_id, "status": "finished"})
+
+
+@app.post("/exam/results")
+async def record_exam_result(request: Request) -> JSONResponse:
+    denied = require_obs_token(request)
+    if denied is not None:
+        return denied
+    try:
+        result = ExamResult.model_validate(await request.json())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": str(exc)}}, status_code=400
+        )
+    # A result with no run to hang off would be invisible to /scorecard, which
+    # reads by exam_run_id — reject it here rather than write an orphan.
+    if not result.exam_run_id:
+        return JSONResponse(
+            {"error": {"code": "bad_request", "message": "examRunId is required"}},
+            status_code=400,
+        )
+    row_id = await db.record_exam_result(result)
+    return JSONResponse({"id": row_id, "score": result.score}, status_code=201)
+
+
+@app.get("/exam/runs")
+async def list_exam_runs(limit: int = 50) -> JSONResponse:
+    return JSONResponse([r.wire() for r in await db.list_exam_runs(limit)])
+
+
+@app.get("/exam/results")
+async def list_exam_results(
+    exam_run_id: str | None = Query(default=None, alias="examRunId"),
+) -> JSONResponse:
+    return JSONResponse([r.wire() for r in await db.list_exam_results(exam_run_id)])
 
 
 @app.get("/runs")
