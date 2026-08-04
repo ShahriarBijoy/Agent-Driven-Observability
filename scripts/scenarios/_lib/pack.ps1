@@ -87,6 +87,63 @@ function Show-ScenarioTable {
     Write-Host "MODIFIES a field git declares - Argo's diff ignores fields git never mentioned."
 }
 
+# ---- the lab lock ------------------------------------------------------------
+#
+# Who is currently holding the lab with a live fault. The pack is where this
+# belongs: every injector goes through it, and "may I inject?" is a question
+# about the lab, not about any one caller.
+#
+# It exists because the surprise drill's original guard scanned process command
+# lines for `exam.ps1` — and `obs exam` DOT-SOURCES that script inside the obs
+# process, so the string never appears in any command line. A drill firing
+# during a sit-down exam would have sailed past the guard and injected a second
+# fault on top of a live one, which makes both incidents unreadable and is the
+# one thing the runner is strictly sequential to avoid.
+$LabLockFile = Join-Path $Repo '.artifacts\lab.lock'
+
+function Get-LabLock {
+    <# The live holder, or $null when the lab is free.
+
+       Checks the holder's PROCESS START TIME as well as its pid, because pids
+       are reused: without that, a lock left behind by a killed exam would
+       block every drill until somebody deleted a file by hand — and a guard
+       that fails closed forever is just a broken guard. #>
+    if (-not (Test-Path $LabLockFile)) { return $null }
+    $lock = try { Get-Content $LabLockFile -Raw | ConvertFrom-Json } catch { $null }
+    if (-not $lock -or -not $lock.pid) { return $null }
+    $proc = Get-Process -Id ([int]$lock.pid) -ErrorAction SilentlyContinue
+    if (-not $proc) { return $null }
+    if ($lock.processStartedAt) {
+        $started = try { [datetime]::Parse($lock.processStartedAt, $null, [Globalization.DateTimeStyles]::RoundtripKind) } catch { $null }
+        # Same pid, different process: the holder died and Windows reissued it.
+        if ($started -and ([Math]::Abs(($started - $proc.StartTime).TotalSeconds) -gt 5)) { return $null }
+    }
+    return $lock
+}
+
+function Set-LabLock {
+    <# Claim the lab. Callers check Get-LabLock first; this only records. #>
+    param([Parameter(Mandatory)][string]$What)
+    $dir = Split-Path $LabLockFile
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $me = Get-Process -Id $PID
+    @{
+        pid = $PID
+        processStartedAt = $me.StartTime.ToString('o')
+        what = $What
+        at = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json -Depth 3 | Set-Content -Path $LabLockFile -Encoding UTF8
+}
+
+function Clear-LabLock {
+    <# Release, but only our own: a crashed holder's lock is already ignored by
+       Get-LabLock, and deleting somebody else's would defeat the guard. #>
+    if (-not (Test-Path $LabLockFile)) { return }
+    $lock = try { Get-Content $LabLockFile -Raw | ConvertFrom-Json } catch { $null }
+    if ($lock -and [int]$lock.pid -ne $PID) { return }
+    Remove-Item $LabLockFile -Force -ErrorAction SilentlyContinue
+}
+
 function Test-Scenario {
     <# The test cycle every scenario must pass before it is trusted in an exam:
 

@@ -198,6 +198,47 @@ function Test-Preflight {
     return $false
 }
 
+function Test-AgentCredentials {
+    <# Can the AGENT still reach the cluster? Not the operator - the operator's
+       kubeconfig is what inject/verify/revert use, and it working tells you
+       nothing about the two scoped ones the agent gets.
+
+       This exists because it did not. `obs k8s agent-kubeconfig` mints a 168h
+       ServiceAccount token; on 2026-08-01 it quietly expired, and the exam
+       went on cheerfully grading an agent whose kubectl_read, kube_scan,
+       rollout_state, secret_age and every remediation returned "You must be
+       logged in to the server (Unauthorized)". Three of six pre-checks were
+       dead for three days and nothing said so, because the only thing that
+       reads these files is an agent whose failures look like bad answers.
+
+       A warning, not a gate: a scenario that needs no cluster read (the CI
+       ones) is still worth running with a lapsed token, and an exam that
+       refuses to start is worse than one that tells you what is degraded. #>
+    $ok = $true
+    foreach ($pair in @(
+        @{ name = 'agent-ro'; path = 'apps\agent-service\.kube\agent-ro.yaml'; probe = @('get', 'pods', '-n', 'subject') },
+        @{ name = 'agent-remediate'; path = 'apps\agent-service\.kube\agent-remediate.yaml'; probe = @('get', 'deploy', '-n', 'subject') }
+    )) {
+        $file = Join-Path $Repo $pair.path
+        if (-not (Test-Path $file)) {
+            Write-Warning "$($pair.name) kubeconfig missing - the agent has no cluster access. Mint it: obs k8s $(if ($pair.name -eq 'agent-ro') { 'agent-kubeconfig' } else { 'agent-remediate-kubeconfig' })"
+            $ok = $false
+            continue
+        }
+        & kubectl --kubeconfig $file @($pair.probe) --request-timeout=10s 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "$($pair.name) kubeconfig cannot reach the cluster (expired token? re-minted cluster?). Re-mint: obs k8s $(if ($pair.name -eq 'agent-ro') { 'agent-kubeconfig' } else { 'agent-remediate-kubeconfig' })"
+            $ok = $false
+            continue
+        }
+        Write-Host "  ok  $($pair.name) kubeconfig reaches the cluster"
+    }
+    if (-not $ok) {
+        Write-Warning 'the agent will investigate with degraded cluster tools - grades from this run are not comparable with ones taken against a healthy lab'
+    }
+    return $ok
+}
+
 function Test-AuthFailure {
     <# Does this run's failure look like a dead Claude session rather than a
        bad answer? Those two must never be graded the same way. #>
@@ -693,9 +734,19 @@ if ($plan.Count -eq 1) { $group = (Get-Scenario $plan[0]).group }
 Write-Step "exam: $($plan.Count) scenario(s) - $($plan -join ', ')"
 if (-not (Test-ClockSkew)) { return }
 if (-not (Test-Preflight)) { return }
+Test-AgentCredentials | Out-Null   # warns, never blocks
+
+# One live fault at a time, across every entrance to the lab. `obs exam` and
+# the surprise drill can both start one, and nothing else stops them coinciding.
+$held = Get-LabLock
+if ($held) {
+    Write-Warning "the lab is already held by $($held.what) (pid $($held.pid), since $($held.at)) - two live faults at once make both incidents unreadable. Wait for it, or stop it and re-run."
+    return
+}
 
 Push-Location $Repo
 Set-KeepAwake
+Set-LabLock -What "exam $($plan -join ',')"
 # PS decodes a NATIVE command's stdout with [Console]::OutputEncoding, which on
 # a default Windows console is the OEM codepage - so a postmortem read back
 # through `docker exec ... psql` arrives mangled in exactly the way the HTTP
@@ -745,6 +796,7 @@ try {
     if ($examRunId) {
         try { Invoke-Agents -Path "/exam/runs/$examRunId/finish" -Method 'POST' | Out-Null } catch { }
     }
+    Clear-LabLock
     Clear-KeepAwake
     if ($prevConsoleEncoding) { try { [Console]::OutputEncoding = $prevConsoleEncoding } catch { } }
     Pop-Location

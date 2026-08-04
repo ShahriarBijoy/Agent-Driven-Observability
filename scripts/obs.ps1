@@ -45,6 +45,11 @@
                              interruption. A full sweep is ~2 h and a real token budget.
                              Bare `obs exam` prints the plan without running anything.
                              Results land in exam_results; read them at /scorecard.
+    obs drill <sub>          THE SURPRISE DRILL (P12): a Windows scheduled task that fires ONE
+                             random exam question at a random time inside a window - the
+                             rehearsal nobody scheduled. Subcommands: status (default),
+                             install [--window 01:00-05:00] [--days Mon,Thu] [--mode exam|fail],
+                             now [--id <id>] (fire one immediately), uninstall.
     obs fixes [clean]        List auto-fixer workspaces (.artifacts/autofix) with sizes and fix
                              branches; `clean` deletes them all. The working clone is already
                              auto-removed after each run — what remains is the ~1 MB origin.git
@@ -579,6 +584,14 @@ try {
             # deadline, the statuses, the judge, the result rows - lives in
             # exam.ps1; what stays here is the name.
             & (Join-Path $PSScriptRoot 'exam.ps1') @Rest
+        }
+
+        'drill' {
+            # The exam with its last two human inputs removed: Task Scheduler
+            # picks the time, drill.ps1 picks the question. Same runner
+            # underneath, so a surprise grade and a sit-down grade land in the
+            # same table and compare directly on /scorecard.
+            & (Join-Path $PSScriptRoot 'drill.ps1') @Rest
         }
 
         'demo' {

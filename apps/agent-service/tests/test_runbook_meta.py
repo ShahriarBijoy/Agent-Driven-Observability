@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 
 import pytest
 
@@ -160,6 +161,37 @@ async def test_lookup_multi_match_unions_both_runbooks() -> None:
     # the union alongside gateway-high-error-rate.md's tools.
     assert toolsdk.mcp("update_db_secret") in override
     assert toolsdk.mcp("restart_workload") in override
+
+
+async def test_real_multi_match_runbooks_fit_the_tool_budget() -> None:
+    """Every alertname claimed by more than one REAL runbook must produce a
+    payload that survives enforce_budget with its shape intact.
+
+    Over budget, enforce_budget does not trim — it collapses the whole payload
+    into a single truncated string, so the agent gets neither runbook. And the
+    first match is serialized TWICE (top level + inside `matches`), so the
+    headroom is roughly half what the budget looks like. Lengthening a runbook
+    is the way this breaks; this test says so out loud rather than failing
+    somewhere downstream with a KeyError."""
+    claimed: dict[str, int] = {}
+    for name in os.listdir(backends.config.runbooks_dir):
+        if not name.lower().endswith(".md"):
+            continue
+        with open(os.path.join(backends.config.runbooks_dir, name), encoding="utf-8") as fh:
+            meta = backends.parse_runbook_meta(fh.read())
+        for alertname in meta.get("alert_types") or []:
+            claimed[alertname] = claimed.get(alertname, 0) + 1
+
+    multi = [alertname for alertname, count in claimed.items() if count > 1]
+    assert multi, "expected at least one alertname claimed by two runbooks"
+    for alertname in multi:
+        payload = await backends.runbook_lookup(alertname)
+        assert "matches" in payload, (
+            f"'{alertname}' collapsed under the runbook_lookup budget "
+            f"({backends.TOOL_BUDGETS['runbook_lookup']} chars): its runbooks are too long "
+            f"to be returned together. Shorten one, or raise the budget."
+        )
+        assert not payload.get("truncated"), f"'{alertname}' lookup was truncated"
 
 
 async def test_lookup_no_match_lists_available(runbooks_dir) -> None:

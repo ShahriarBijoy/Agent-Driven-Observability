@@ -598,7 +598,18 @@ async def runbook_lookup(alertname: str) -> dict:
 TOOL_BUDGETS: dict[str, int] = {
     "kubectl_read": 8000,
     "gitea_compare": 12000,
-    "runbook_lookup": 8000,
+    # A multi-match lookup pays for its FIRST runbook twice: `{**matches[0],
+    # "matches": matches}` repeats that body at the top level for callers that
+    # predate `matches`. So the usable budget for two matched runbooks is not
+    # 8000 but roughly (8000 - dup)/2, and overflow does not trim the payload —
+    # enforce_budget collapses the whole thing into one truncated STRING, which
+    # is worse for the agent than either runbook alone. `gw-5xx` and
+    # `slo-avail-fast` are each claimed by two runbooks, and lengthening either
+    # one crossed the line: 12000 (the gitea_compare figure, ~3k tokens for a
+    # once-per-incident call) leaves room for two full runbooks plus the
+    # duplicate. test_lookup_multi_match_unions_both_runbooks is the tripwire —
+    # it reads `matches`, so a collapsed payload fails it by KeyError.
+    "runbook_lookup": 12000,
     "deploy_history": 10000,
 }
 DEFAULT_TOOL_BUDGET = 6000
