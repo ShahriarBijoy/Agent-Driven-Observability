@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import * as agentClient from "./agent-client";
 import {
+  databaseReachable,
   incidentById,
   oncallFeed,
   oncallIncidentDetail,
@@ -15,16 +16,33 @@ import { fetchGoldenSignals } from "./mimir";
 import { listRunbooks } from "./runbooks";
 import { SAMPLE_INCIDENT } from "./sample-incident";
 
-/** Everything the home page needs, fetched in parallel on the server. */
+/**
+ * Everything the home page needs, fetched in parallel on the server, and
+ * re-fetched by the page's 5s poll.
+ *
+ * `deps` is the honest answer to "is the lab even up": each of the three
+ * planes is independently absent much of the time, and an empty list means
+ * nothing until you know whether anyone was listening.
+ */
 export const getOverview = createServerFn({ method: "GET" }).handler(async () => {
   // Runs come from the DB directly: agent-service is the same source of truth,
   // one fewer hop, and the overview still renders if the service is down.
-  const [signals, incidents, runs] = await Promise.all([
+  const [signals, incidents, runs, approvals, recordsUp, agentsUp] = await Promise.all([
     fetchGoldenSignals(),
     recentIncidents(10),
     recentAgentRunsFromDb(10),
+    pendingApprovalsFromDb(),
+    databaseReachable(),
+    agentClient.agentServiceReachable(),
   ]);
-  return { signals, incidents, runs };
+  return {
+    fetchedAt: new Date().toISOString(),
+    signals,
+    incidents,
+    runs,
+    approvals,
+    deps: { telemetry: signals.reachable, records: recordsUp, agents: agentsUp },
+  };
 });
 
 export const getAgentRuns = createServerFn({ method: "GET" }).handler(async () => {

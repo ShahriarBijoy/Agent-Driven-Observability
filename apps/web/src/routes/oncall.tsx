@@ -25,6 +25,7 @@ import {
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Spinner } from "~/components/ui/spinner";
 import { useMountEffect } from "~/lib/use-mount-effect";
+import { SEV_STYLES } from "~/lib/incident-status";
 import { cn } from "~/lib/utils";
 import type { OncallIncident, OncallIncidentDetail } from "~/server/db";
 import { decideApproval, getOncallFeed, getOncallIncident } from "~/server/functions";
@@ -41,12 +42,6 @@ export const Route = createFileRoute("/oncall")({
   },
   component: OncallPage,
 });
-
-const SEV_STYLES = {
-  sev1: "bg-destructive/10 text-destructive",
-  sev2: "bg-warning/15 text-warning",
-  sev3: "bg-muted text-muted-foreground",
-} as const;
 
 /** Shared row treatment for the selectable lists on the master–detail pages:
  * hover, keyboard focus, and the selected state all read the same way. */

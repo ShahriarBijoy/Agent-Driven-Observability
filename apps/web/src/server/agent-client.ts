@@ -48,6 +48,20 @@ export async function getAgentRun(id: string): Promise<AgentRun | null> {
   }
 }
 
+/**
+ * Liveness probe for the overview's dependency strip. agent-service runs on
+ * the host for live Claude auth and is absent as often as not; the overview
+ * says so rather than letting a dead approve button look merely unresponsive.
+ */
+export async function agentServiceReachable(): Promise<boolean> {
+  try {
+    const res = await fetch(new URL("/health", base), { signal: AbortSignal.timeout(1_500) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function getAgentSettings(): Promise<AgentSettings | null> {
   try {
     const res = await fetch(new URL("/settings", base), {

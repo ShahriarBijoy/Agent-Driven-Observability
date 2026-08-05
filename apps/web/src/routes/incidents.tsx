@@ -24,6 +24,7 @@ import {
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
+import { SEV_STYLES } from "~/lib/incident-status";
 import { cn } from "~/lib/utils";
 import { autoFixIncident, getIncidentInbox } from "~/server/functions";
 
@@ -33,12 +34,6 @@ export const Route = createFileRoute("/incidents")({
   loader: ({ deps }) => getIncidentInbox({ data: { id: deps.id } }),
   component: IncidentsPage,
 });
-
-const SEV_STYLES = {
-  sev1: "bg-destructive/10 text-destructive",
-  sev2: "bg-warning/15 text-warning",
-  sev3: "bg-muted text-muted-foreground",
-} as const;
 
 /** Shared row treatment for the selectable lists on the master–detail pages:
  * hover, keyboard focus, and the selected state all read the same way. */

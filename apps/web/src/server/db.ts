@@ -37,6 +37,21 @@ async function safeRows<T>(query: () => Promise<T[]>): Promise<T[]> {
   }
 }
 
+/**
+ * Cheap liveness probe. Every list query above degrades to `[]`, which makes
+ * "Postgres is down" and "there are genuinely no incidents" indistinguishable
+ * at the call site — so the overview asks this separately rather than
+ * reporting an empty inbox it cannot actually vouch for.
+ */
+export async function databaseReachable(): Promise<boolean> {
+  try {
+    await sql()`select 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function recentIncidents(limit = 10): Promise<IncidentSummary[]> {
   const rows = await safeRows<Record<string, unknown>>(
     () => sql()`
