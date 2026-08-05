@@ -37,6 +37,8 @@ Thumbs.db
 
 # claude code tooling / session artifacts
 .claude/
+# design-review hook state (written at the repo root and per-app)
+.impeccable/
 
 # local-only docs (kept on disk, not in the repo)
 /docs/
