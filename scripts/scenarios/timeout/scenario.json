@@ -1,0 +1,18 @@
+{
+  "id": "timeout",
+  "title": "Timeout drill - model-proxy stalls past the gateway's 8s upstream timeout",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 300,
+  "expected_time_to_alert_s": 180,
+  "exam": false,
+  "chaos": {
+    "service": "model-proxy",
+    "knobs": { "pStall": 0.25 },
+    "confirm": { "knob": "pStall", "at_least": 0.25 },
+    "signal": { "kind": "error-code", "code": "upstream_timeout", "at_least": 2, "probes": 16 }
+  }
+}

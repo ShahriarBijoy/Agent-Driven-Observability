@@ -2,11 +2,15 @@ import {
   AgentRunSchema,
   AgentRunSummarySchema,
   AgentSettingsSchema,
+  ExamResultSchema,
+  ExamRunSchema,
   type AgentRun,
   type AgentRunSummary,
   type AgentSettings,
   type AgentSettingsUpdate,
   type ApprovalDecisionRequest,
+  type ExamResult,
+  type ExamRun,
 } from "@obs/contracts";
 import { z } from "zod";
 import { serverEnv } from "./env";
@@ -69,6 +73,37 @@ export async function updateAgentSettings(
     return AgentSettingsSchema.parse(await res.json());
   } catch {
     return null;
+  }
+}
+
+/**
+ * The chaos exam (P12). Reads only — the rows are written by
+ * `scripts/exam.ps1`, never from the browser: a scorecard that could edit its
+ * own grades would not be worth reading.
+ */
+
+export async function listExamRuns(limit = 50): Promise<ExamRun[]> {
+  const url = new URL("/exam/runs", base);
+  url.searchParams.set("limit", String(limit));
+  try {
+    const res = await fetch(url, { headers: { accept: "application/json" } });
+    if (!res.ok) return [];
+    return z.array(ExamRunSchema).parse(await res.json());
+  } catch {
+    return [];
+  }
+}
+
+/** Every result row, or one run's when `examRunId` is given. */
+export async function listExamResults(examRunId?: string): Promise<ExamResult[]> {
+  const url = new URL("/exam/results", base);
+  if (examRunId !== undefined) url.searchParams.set("examRunId", examRunId);
+  try {
+    const res = await fetch(url, { headers: { accept: "application/json" } });
+    if (!res.ok) return [];
+    return z.array(ExamResultSchema).parse(await res.json());
+  } catch {
+    return [];
   }
 }
 

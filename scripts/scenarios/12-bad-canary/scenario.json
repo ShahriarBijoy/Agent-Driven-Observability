@@ -1,0 +1,21 @@
+{
+  "id": "12-bad-canary",
+  "title": "Bad canary - a gateway revision that cannot reach its upstream",
+  "layer": "delivery / gitops",
+  "group": "delivery",
+  "inject_mode": "git",
+  "needs": ["k8s", "gitops"],
+  "load": { "profile": "steady", "qps": 120 },
+  "drill_dwell_s": 900,
+  "expected_time_to_alert_s": 600,
+  "alert": { "match": ["rollout gateway %", "on-rollout-aborted%", "on-analysis-run-failed%"] },
+  "exam": true,
+  "git": {
+    "repo": "obs-gitops",
+    "file": "services/gateway/deployment.yaml",
+    "subject": "gateway: point completions at the regional model-proxy endpoint",
+    "marker": "http://model-proxy-eu-west:8083",
+    "anchor": "http://model-proxy:8083"
+  },
+  "k8s": { "app": "gateway", "argo_app": "gateway" }
+}

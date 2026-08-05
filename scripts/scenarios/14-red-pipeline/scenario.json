@@ -1,0 +1,22 @@
+{
+  "id": "14-red-pipeline",
+  "title": "Red pipeline - a regression on main fails CI, so no fix can ship",
+  "layer": "ci",
+  "group": "cicd",
+  "inject_mode": "git",
+  "needs": ["ci"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 900,
+  "expected_time_to_alert_s": 600,
+  "alert": { "match": ["a pipeline run on main failed%"] },
+  "exam": true,
+  "git": {
+    "repo": "obs-lab",
+    "file": "apps/load-generator/src/stats.ts",
+    "subject": "load-generator: drop the defensive copy in percentile()",
+    "marker": "(values as number[]).sort(",
+    "anchor": "  const sorted = [...values].sort((a, b) => a - b);",
+    "job": "test",
+    "blocked_job": "build-push"
+  }
+}

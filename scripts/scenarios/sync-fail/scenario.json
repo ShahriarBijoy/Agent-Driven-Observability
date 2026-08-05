@@ -1,0 +1,20 @@
+{
+  "id": "sync-fail",
+  "title": "Sync failure drill - the desired state itself is invalid",
+  "layer": "gitops",
+  "group": "delivery",
+  "inject_mode": "git",
+  "needs": ["k8s", "gitops"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 300,
+  "expected_time_to_alert_s": 120,
+  "exam": false,
+  "git": {
+    "repo": "obs-gitops",
+    "file": "services/retriever/deployment.yaml",
+    "subject": "retriever: scale tuning for the new memory envelope",
+    "marker": "replicas: -1",
+    "anchor": "replicas: 1"
+  },
+  "k8s": { "argo_app": "retriever" }
+}

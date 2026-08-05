@@ -1,0 +1,26 @@
+{
+  "id": "flaky",
+  "title": "Flaky drill - model-proxy 'bad minutes': short 500-bursts, healthy in between",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 600,
+  "expected_time_to_alert_s": 300,
+  "exam": false,
+  "chaos": {
+    "service": "model-proxy",
+    "knobs": {
+      "p500": 0.015,
+      "pBadMinute": 0.0004,
+      "badMinuteMs": 45000,
+      "badMinuteMultiplier": 40
+    },
+    "confirm": { "knob": "badMinuteMultiplier", "at_least": 40 },
+    "signal": {
+      "kind": "knob-only",
+      "note": "bursts are stochastic and last 45s - no bounded probe burst can prove or disprove one, so this drill asserts the knobs only"
+    }
+  }
+}

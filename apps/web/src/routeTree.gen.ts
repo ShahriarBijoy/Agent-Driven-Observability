@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TelemetryRouteImport } from './routes/telemetry'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ScorecardRouteImport } from './routes/scorecard'
 import { Route as RunbooksRouteImport } from './routes/runbooks'
 import { Route as OncallRouteImport } from './routes/oncall'
 import { Route as LineageRouteImport } from './routes/lineage'
@@ -28,6 +29,11 @@ const TelemetryRoute = TelemetryRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ScorecardRoute = ScorecardRouteImport.update({
+  id: '/scorecard',
+  path: '/scorecard',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RunbooksRoute = RunbooksRouteImport.update({
@@ -77,6 +83,7 @@ export interface FileRoutesByFullPath {
   '/lineage': typeof LineageRoute
   '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
+  '/scorecard': typeof ScorecardRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/agents/': typeof AgentsIndexRoute
@@ -89,6 +96,7 @@ export interface FileRoutesByTo {
   '/lineage': typeof LineageRoute
   '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
+  '/scorecard': typeof ScorecardRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/agents': typeof AgentsIndexRoute
@@ -102,6 +110,7 @@ export interface FileRoutesById {
   '/lineage': typeof LineageRoute
   '/oncall': typeof OncallRoute
   '/runbooks': typeof RunbooksRoute
+  '/scorecard': typeof ScorecardRoute
   '/settings': typeof SettingsRoute
   '/telemetry': typeof TelemetryRoute
   '/agents/': typeof AgentsIndexRoute
@@ -116,6 +125,7 @@ export interface FileRouteTypes {
     | '/lineage'
     | '/oncall'
     | '/runbooks'
+    | '/scorecard'
     | '/settings'
     | '/telemetry'
     | '/agents/'
@@ -128,6 +138,7 @@ export interface FileRouteTypes {
     | '/lineage'
     | '/oncall'
     | '/runbooks'
+    | '/scorecard'
     | '/settings'
     | '/telemetry'
     | '/agents'
@@ -140,6 +151,7 @@ export interface FileRouteTypes {
     | '/lineage'
     | '/oncall'
     | '/runbooks'
+    | '/scorecard'
     | '/settings'
     | '/telemetry'
     | '/agents/'
@@ -153,6 +165,7 @@ export interface RootRouteChildren {
   LineageRoute: typeof LineageRoute
   OncallRoute: typeof OncallRoute
   RunbooksRoute: typeof RunbooksRoute
+  ScorecardRoute: typeof ScorecardRoute
   SettingsRoute: typeof SettingsRoute
   TelemetryRoute: typeof TelemetryRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
@@ -174,6 +187,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scorecard': {
+      id: '/scorecard'
+      path: '/scorecard'
+      fullPath: '/scorecard'
+      preLoaderRoute: typeof ScorecardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/runbooks': {
@@ -241,6 +261,7 @@ const rootRouteChildren: RootRouteChildren = {
   LineageRoute: LineageRoute,
   OncallRoute: OncallRoute,
   RunbooksRoute: RunbooksRoute,
+  ScorecardRoute: ScorecardRoute,
   SettingsRoute: SettingsRoute,
   TelemetryRoute: TelemetryRoute,
   AgentsIndexRoute: AgentsIndexRoute,

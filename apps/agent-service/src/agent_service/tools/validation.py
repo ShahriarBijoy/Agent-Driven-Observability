@@ -28,6 +28,35 @@ PG_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
+# The agent audit trail: every agent's runs, messages, tool calls, approvals
+# and artifacts. Readable by default — `runbooks/snapshot-agent-audit.md`
+# counts runs and tool calls through pg_select.
+AUDIT_TABLES: frozenset[str] = frozenset(
+    {
+        "agent_runs",
+        "agent_messages",
+        "agent_tool_calls",
+        "agent_approvals",
+        "agent_artifacts",
+    }
+)
+
+# What an agent behind an information barrier may select from (P12).
+#
+# The answer keys never reach storage — exam.py is careful about that — but the
+# GRADES do, and a grade paraphrases the key it was graded against. A judge run
+# records its verdict twice in the audit trail (`agent_runs.summary` and
+# `submit_grade`'s stored input) under a title that names the scenario, e.g.
+# "judge: 15-stale-secret". The exam re-runs the same ten scenarios, so an
+# on-call agent holding pg_select could assemble a scenario-keyed answer key
+# out of its own past exams — before investigating anything.
+#
+# Reading other agents' audit rows is no part of diagnosing the subject system,
+# so the barriered agent loses the audit tables entirely rather than losing the
+# judge's rows specifically: a filter that had to spot "which rows came from a
+# judge" would be one JOIN away from being wrong.
+PG_ALLOWLIST_BARRIERED: frozenset[str] = PG_ALLOWLIST - AUDIT_TABLES
+
 _RANGE_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 

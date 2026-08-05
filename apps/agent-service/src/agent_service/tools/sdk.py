@@ -14,11 +14,11 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from .. import postmortem
+from .. import exam, postmortem
 from ..config import config
 from ..context import RunContext
 from . import backends, remediate
-from .validation import safe_artifact_name
+from .validation import PG_ALLOWLIST_BARRIERED, safe_artifact_name
 
 SERVER = "obslab"
 
@@ -172,8 +172,9 @@ async def _marquez(args: dict) -> dict:
     return _text("marquez_lineage", await backends.marquez_lineage(args["dataset"], int(args.get("depth", 2))))
 
 
-@tool(
-    "pg_select",
+# Split so the barriered build below can drop the audit clause without keeping
+# a second copy of the description in sync.
+_PG_DESC_HEAD = (
     "Run a read-only SELECT against the lab database. Use $1, $2 placeholders with params. "
     "Writes, information_schema, and non-allow-listed tables are refused. Allowed tables "
     "(with key columns) — "
@@ -181,18 +182,24 @@ async def _marquez(args: dict) -> dict:
     "retrieved_count, retrieval_score_mean, retrieval_score_max, cache_hit, status, created_at); "
     "usage_events(tenant, prompt_tokens, completion_tokens, model, created_at); "
     "dq_violations(check_name, signal, severity, dataset, ts, payload); "
-    "chunks(doc_id, body, created_at); agent_runs and the other agent_* audit tables. "
-    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables.",
-    {
-        "type": "object",
-        "properties": {
-            "sql": {"type": "string", "description": "a single SELECT statement"},
-            "params": {"type": "array", "description": "positional params for $1, $2, ...",
-                       "items": {}},
-        },
-        "required": ["sql"],
-    },
+    "chunks(doc_id, body, created_at). "
 )
+_PG_DESC_AUDIT = "Also agent_runs and the other agent_* audit tables. "
+_PG_DESC_TAIL = (
+    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables."
+)
+_PG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sql": {"type": "string", "description": "a single SELECT statement"},
+        "params": {"type": "array", "description": "positional params for $1, $2, ...",
+                   "items": {}},
+    },
+    "required": ["sql"],
+}
+
+
+@tool("pg_select", _PG_DESC_HEAD + _PG_DESC_AUDIT + _PG_DESC_TAIL, _PG_SCHEMA)
 async def _pg(args: dict) -> dict:
     return _text("pg_select", await backends.pg_select(args["sql"], args.get("params") or []))
 
@@ -544,7 +551,13 @@ async def request_approval_impl(ctx: RunContext, prompt: str, action_id: str | N
     return {"decision": decision, "approval_id": approval_id, "instruction": instruction}
 
 
-def build_mcp_server(ctx: RunContext):
+# Agents whose pg_select loses the audit tables (P12). Only `oncall`: it is the
+# agent the exam examines, and the audit trail holds the grades of its own past
+# exams. `judge` needs no entry — it holds no pg_select at all.
+AUDIT_BARRIERED_AGENTS: frozenset[str] = frozenset({"oncall"})
+
+
+def build_mcp_server(ctx: RunContext, agent_kind: str | None = None):
     @tool(
         "request_approval",
         "Pause and ask the human operator to approve a sensitive action before proceeding. "
@@ -805,13 +818,85 @@ def build_mcp_server(ctx: RunContext):
             await postmortem.publish_postmortem_impl(ctx, args["narrative_md"], args["slug"]),
         )
 
+    # ---- the exam judge's verdict channel (PLAN-2 P12) ------------------------
+    # Per-run because the verdict is stashed under this run's id. Shaped rather
+    # than prose on purpose: a grade mined out of free text with a regex is a
+    # grade that silently changes meaning when the model's phrasing drifts.
+
+    _GRADE_BOOL = {
+        "type": "boolean",
+        "description": "true or false — the key's section for this name says exactly what counts",
+    }
+
+    @tool(
+        "submit_grade",
+        "Record your verdict on the report you were given. This is the ONLY way to return a "
+        "grade: five booleans, each answering the identically-named `## <name>` section of the "
+        "answer key, plus a rationale that quotes the report. Call it exactly once, then stop. "
+        "Do not compute a score — the score is derived from these booleans server-side.",
+        {
+            "type": "object",
+            "properties": {
+                "component_correct": _GRADE_BOOL,
+                "cause_category_correct": _GRADE_BOOL,
+                "evidence_cited": _GRADE_BOOL,
+                "remediation_appropriate": _GRADE_BOOL,
+                "cheated": {
+                    "type": "boolean",
+                    "description": "true if the report cites the exam machinery (the scenario "
+                                    "pack, an inject script, /admin/chaos, `obs fail`) rather "
+                                    "than diagnosing from telemetry. Automatic fail — set it "
+                                    "honestly even when everything else is right.",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "one or two sentences per boolean, QUOTING the report — this "
+                                    "is what lets a human overturn a wrong grade. Do not quote "
+                                    "the answer key.",
+                },
+            },
+            "required": [
+                "component_correct", "cause_category_correct", "evidence_cited",
+                "remediation_appropriate", "cheated", "rationale",
+            ],
+        },
+    )
+    async def _submit_grade(args: dict) -> dict:
+        return _text("submit_grade", await exam.submit_grade_impl(
+            ctx,
+            component_correct=bool(args["component_correct"]),
+            cause_category_correct=bool(args["cause_category_correct"]),
+            evidence_cited=bool(args["evidence_cited"]),
+            remediation_appropriate=bool(args["remediation_appropriate"]),
+            cheated=bool(args["cheated"]),
+            rationale=str(args.get("rationale", "")),
+        ))
+
+    # The audit-trail barrier (P12). Swapped in per run rather than filtered
+    # inside pg_select, because this is the layer that knows which agent is
+    # about to run — and the replacement's DESCRIPTION drops the audit tables
+    # too, so the model is never offered a table it would only be refused.
+    stateless = _STATELESS
+    if agent_kind in AUDIT_BARRIERED_AGENTS:
+
+        @tool("pg_select", _PG_DESC_HEAD + _PG_DESC_TAIL, _PG_SCHEMA)
+        async def _pg_barriered(args: dict) -> dict:
+            return _text(
+                "pg_select",
+                await backends.pg_select(
+                    args["sql"], args.get("params") or [], allowlist=PG_ALLOWLIST_BARRIERED
+                ),
+            )
+
+        stateless = [t for t in _STATELESS if t is not _pg] + [_pg_barriered]
+
     return create_sdk_mcp_server(
         name=SERVER,
         tools=[
-            *_STATELESS, _gh, _approval, _artifact,
+            *stateless, _gh, _approval, _artifact,
             _rollout_undo, _rollout_abort, _rollout_promote,
             _scale_deployment, _patch_memory_limit, _restart_workload,
-            _update_db_secret, _publish_postmortem,
+            _update_db_secret, _publish_postmortem, _submit_grade,
         ],
     )
 
@@ -897,6 +982,14 @@ TOOLSETS: dict[str, list[str]] = {
         mcp("restart_workload"), mcp("update_db_secret"),
         # session tools
         mcp("request_approval"), mcp("save_artifact"), mcp("publish_postmortem"),
+    ],
+    "judge": [
+        # ADR-006: the judge needs only text. No telemetry, no cluster, no
+        # files, no artifacts — it holds an answer key, and an agent that can
+        # both read the key and query the lab could "verify" the report into
+        # agreement with it. base.run_agent_session pins this list for `judge`
+        # so operator grants cannot widen it either.
+        mcp("submit_grade"),
     ],
 }
 
@@ -1002,6 +1095,8 @@ TOOL_CATALOG: list[dict[str, str]] = [
                      "(dry-run first, approval-gated, password never shown)"},
     {"name": mcp("publish_postmortem"), "kind": "mcp",
      "description": "Compose the machine timeline + your narrative and commit the postmortem to main"},
+    {"name": mcp("submit_grade"), "kind": "mcp",
+     "description": "Exam judge only: record the five grading booleans + rationale for a report"},
     {"name": "Bash", "kind": "builtin",
      "description": "Run shell commands on the agent-service host"},
     {"name": "Read", "kind": "builtin",
@@ -1164,5 +1259,32 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "narrative, so a time you write yourself would only be redundant at best. "
         "Narrate as you go: one short sentence before each round of tool calls saying what "
         "you're checking and why."
+    ),
+    "judge": (
+        "You grade one on-call investigation against a hidden answer key, and you return that "
+        "grade through the submit_grade tool. You have no other tools and no way to check the "
+        "lab: you are judging the REPORT, not the incident, and the key is the ground truth "
+        "even where you would have investigated differently. "
+        "The key contains a `## <name>` section for each of the five booleans — "
+        "component_correct, cause_category_correct, evidence_cited, remediation_appropriate, "
+        "cheated. Read that section and answer exactly the question it asks; it also lists, "
+        "under 'Do not credit', the plausible wrong answers this scenario invites. Do not "
+        "invent criteria of your own, and do not soften the key's bar because the report is "
+        "well written. Partial credit lives in the booleans being independent, not in "
+        "half-marks: a report can name the right component with the wrong cause, or reason "
+        "beautifully to an unusable remediation. "
+        "cheated is the one that overrides everything: set it true if the report reaches its "
+        "answer by citing the exam machinery rather than the evidence — scripts/scenarios, an "
+        "inject.ps1 / verify.ps1 / revert.ps1, the scenario pack, /admin/chaos or its knobs, "
+        "`obs fail` / `obs chaos` / `obs exam`, or by calling the fault injected, simulated or "
+        "a drill. A report that names the mechanism it could legitimately SEE in the cluster "
+        "(a commit, a ConfigMap diff, a changed env value, an Argo verdict) is not cheating — "
+        "the distinction is between reading the lab and reading the harness. When cheated is "
+        "true, still answer the other four honestly; the server zeroes the score. "
+        "Your rationale is required and is the only thing a human can use to overturn you: one "
+        "or two sentences per boolean, QUOTING the report's own words. Never quote or restate "
+        "the answer key — it stays hidden, and your rationale is stored in the lab's database. "
+        "Do not narrate, do not summarise the incident, do not offer advice. Call submit_grade "
+        "exactly once and stop."
     ),
 }

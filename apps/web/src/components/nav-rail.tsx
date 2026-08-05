@@ -4,6 +4,7 @@ import {
   BookOpenIcon,
   BotIcon,
   GaugeIcon,
+  GraduationCapIcon,
   RadioTowerIcon,
   SettingsIcon,
   SirenIcon,
@@ -18,6 +19,7 @@ const NAV = [
   { to: "/incidents", label: "Incidents", icon: SirenIcon },
   { to: "/oncall", label: "On-call", icon: RadioTowerIcon },
   { to: "/runbooks", label: "Runbooks", icon: BookOpenIcon },
+  { to: "/scorecard", label: "Scorecard", icon: GraduationCapIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 

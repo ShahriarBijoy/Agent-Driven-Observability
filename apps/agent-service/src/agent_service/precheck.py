@@ -1,5 +1,5 @@
 """The deterministic pre-check battery (PLAN-2 P11 Task 5) — the Grafana Sift
-pattern applied to this lab: before the LLM ever takes a turn, five fast,
+pattern applied to this lab: before the LLM ever takes a turn, six fast,
 non-agentic checks run against the telemetry/gitops/cluster planes and hand
 back a leads-first Markdown report. `run_oncall` prepends that report to the
 model's first prompt, so the investigation starts from real signal instead of
@@ -208,6 +208,228 @@ async def _check_log_spike(alert: Any) -> CheckResult:
         return CheckResult("log_spike", "unavailable", f"pre-check failed: {exc}", [])
 
 
+# ---- attribution --------------------------------------------------------------
+
+# ATTRIBUTE THE SYMPTOM BEFORE EXPLAINING IT. Every request enters through the
+# gateway, so every downstream failure reaches a human as "the gateway is
+# failing" or "the gateway is slow". Two exam questions were lost to exactly
+# that, in the same way:
+#
+#   02-error-storm — a downstream failed 30% of calls; the agent stayed inside
+#   the gateway, built a story from gateway CPU and a lineage-timeout log
+#   flood, and proposed restarting the gateway.
+#   01-latency — latency was injected into ONE service's handler; the agent
+#   named two other services, called it a single-replica queueing bottleneck,
+#   and proposed scaling them.
+#
+# Neither was a reasoning failure downstream of good data. Both skipped the
+# breakdown that decides which service you are even talking about, so this
+# check does that breakdown first and hands over the ranking.
+#
+# Three views, because no single one is sufficient:
+#   * SERVER side (`request_duration_seconds_count`) — what each service says
+#     about its OWN responses. A service returning 500s indicts itself.
+#   * CLIENT side (`traces_spanmetrics_calls_total`, span_kind=CLIENT) — what
+#     each caller says about the hop it made. This is the only view that sees
+#     a callee which is DOWN: a dead workload emits no server-side series at
+#     all, and silence ranks nowhere in a ranking built from server metrics.
+#   * SPAN LATENCY (`traces_spanmetrics_latency_bucket`) — where the time goes,
+#     with each service's own handler separated from what it spends waiting on
+#     someone else. "Slow because it waits on X" and "slow in its own code" are
+#     different incidents with different fixes, and the p95 of a front door
+#     cannot tell them apart.
+_ATTRIBUTION_WINDOW = "10m"
+# Percent of requests. Measured, not guessed: under a steady 40 qps load window
+# with no fault injected the gateway sits at 0.0-0.6% 5xx, and the availability
+# alert fires at 2%. 1% is therefore "above the lab's own noise but below the
+# thing that paged us" — a lead worth a sentence, not proof of anything.
+_ERROR_FLOOR_PCT = 1.0
+_SUBJECT_SERVICES = ("gateway", "model-proxy", "retriever", "embedder")
+
+_SERVICE_ERROR_QUERY = (
+    '100 * sum by (service) '
+    f'(rate(request_duration_seconds_count{{http_status_code=~"5.."}}[{_ATTRIBUTION_WINDOW}]))'
+    ' / clamp_min(sum by (service) '
+    f'(rate(request_duration_seconds_count[{_ATTRIBUTION_WINDOW}])), 0.001)'
+)
+_EDGE_ERROR_QUERY = (
+    '100 * sum by (service, span_name) (rate(traces_spanmetrics_calls_total'
+    f'{{span_kind="SPAN_KIND_CLIENT", status_code="STATUS_CODE_ERROR"}}[{_ATTRIBUTION_WINDOW}]))'
+    ' / clamp_min(sum by (service, span_name) (rate(traces_spanmetrics_calls_total'
+    f'{{span_kind="SPAN_KIND_CLIENT"}}[{_ATTRIBUTION_WINDOW}])), 0.001)'
+)
+# Seconds. The gateway's latency SLO is 1.5s end to end, so a span at or above
+# 1s is worth ranking; below that the breakdown is noise about a healthy lab.
+_LATENCY_FLOOR_S = 1.0
+_SPAN_P95_QUERY = (
+    'histogram_quantile(0.95, sum by (service, span_name, span_kind, le) '
+    f'(rate(traces_spanmetrics_latency_bucket[{_ATTRIBUTION_WINDOW}])))'
+)
+
+
+def _vector_rows(payload: dict) -> list[tuple[dict, float]]:
+    """Flatten a Mimir instant-vector payload into (labels, value) pairs.
+
+    Non-finite values are dropped rather than carried: a ratio over a
+    denominator that was zero for the whole window comes back as "NaN", and a
+    NaN sorts unpredictably and formats as a lead that reads like a finding."""
+    rows: list[tuple[dict, float]] = []
+    for entry in (payload.get("data") or {}).get("result") or []:
+        raw = (entry.get("value") or [None, None])[-1]
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value != value or value in (float("inf"), float("-inf")):  # NaN / ±Inf
+            continue
+        rows.append((entry.get("metric") or {}, value))
+    return rows
+
+
+def _callee_of(span_name: str) -> str:
+    """The client span names this lab emits are `<METHOD> <peer>` (e.g.
+    "POST model-proxy"), so the last token is the callee. Anything that does
+    not resolve to a known subject service is left alone — the span name is
+    still reported, just not treated as a service that ought to have metrics."""
+    tail = span_name.strip().split()[-1] if span_name.strip() else ""
+    return tail if tail in _SUBJECT_SERVICES else ""
+
+
+def _self_time_ranking(spans: list[tuple[str, str, str, float]]) -> list[tuple[str, float, float]]:
+    """(service, own-handler p95, end-to-end p95), slowest own-handler first.
+
+    "Own handler" is the service's slowest SERVER span minus its slowest CLIENT
+    span: time it did not spend waiting on somebody else. That subtraction is
+    what separates the origin of a latency incident from every service above it
+    in the call graph — all of which are slow, and none of which is the answer.
+
+    Quantiles do not subtract exactly (the p95 request of a caller is not the
+    one that made the p95 downstream call), so this is a RANKING, not a
+    measurement, and every caller says so."""
+    server: dict[str, float] = {}
+    client: dict[str, float] = {}
+    for service, _span_name, span_kind, value in spans:
+        bucket = server if span_kind.endswith("SERVER") else client if span_kind.endswith("CLIENT") else None
+        if bucket is None:
+            continue
+        bucket[service] = max(bucket.get(service, 0.0), value)
+    ranked = [
+        (service, max(total - client.get(service, 0.0), 0.0), total)
+        for service, total in server.items()
+    ]
+    return sorted(ranked, key=lambda row: -row[1])
+
+
+def _shape_attribution(services: dict, edges: dict, spans: dict) -> CheckResult:
+    if "error" in services and "error" in edges and "error" in spans:
+        return CheckResult("attribution", "unavailable", services["error"], [])
+
+    service_rows = sorted(
+        ((str(m.get("service", "?")), v) for m, v in _vector_rows(services)),
+        key=lambda row: -row[1],
+    )
+    edge_rows = sorted(
+        ((str(m.get("service", "?")), str(m.get("span_name", "?")), v) for m, v in _vector_rows(edges)),
+        key=lambda row: -row[2],
+    )
+    span_rows = [
+        (str(m.get("service", "?")), str(m.get("span_name", "?")), str(m.get("span_kind", "")), v)
+        for m, v in _vector_rows(spans)
+    ]
+    if not service_rows and not edge_rows and not span_rows:
+        return CheckResult(
+            "attribution", "unavailable",
+            f"no request or span series in the last {_ATTRIBUTION_WINDOW}", [],
+        )
+
+    reporting = {name for name, _ in service_rows}
+    # A callee somebody is calling that reports nothing of its own. Ordered by
+    # how badly its callers are failing, so the worst edge leads.
+    silent = list(dict.fromkeys(
+        callee for _, span_name, _ in edge_rows
+        if (callee := _callee_of(span_name)) and callee not in reporting
+    ))
+
+    error_leads = [
+        f"{name}: {pct:.1f}% of its OWN responses are 5xx ({_ATTRIBUTION_WINDOW})"
+        for name, pct in service_rows if pct >= _ERROR_FLOOR_PCT
+    ][:3]
+    error_leads += [
+        f"{caller} → {span_name}: {pct:.1f}% of those outbound calls failed"
+        for caller, span_name, pct in edge_rows if pct >= _ERROR_FLOOR_PCT
+    ][:2]
+
+    self_times = [row for row in _self_time_ranking(span_rows) if row[2] >= _LATENCY_FLOOR_S]
+    latency_leads: list[str] = []
+    if self_times:
+        latency_leads.append(
+            "own-handler p95 (server p95 minus its slowest outbound call — a ranking, not a "
+            "measurement): " + ", ".join(
+                f"{service} ~{own:.1f}s of {total:.1f}s end to end" for service, own, total in self_times[:4]
+            )
+        )
+        latency_leads += [
+            f"{service} → {span_name}: p95 {value:.1f}s outbound"
+            for service, span_name, span_kind, value in
+            sorted((r for r in span_rows if r[2].endswith("CLIENT") and r[3] >= _LATENCY_FLOOR_S),
+                   key=lambda row: -row[3])[:2]
+        ]
+
+    leads = error_leads + latency_leads
+    for callee in silent:
+        leads.append(
+            f"{callee} reported no server-side requests at all — a workload that is down or "
+            f"unscheduled emits nothing, and its CALLERS carry its errors"
+        )
+
+    if leads:
+        heads: list[str] = []
+        if error_leads:
+            top_service = service_rows[0] if service_rows and service_rows[0][1] >= _ERROR_FLOOR_PCT else None
+            top_edge = edge_rows[0] if edge_rows and edge_rows[0][2] >= _ERROR_FLOOR_PCT else None
+            if top_service and (not top_edge or top_service[1] >= top_edge[2]):
+                heads.append(f"errors concentrate on {top_service[0]} ({top_service[1]:.1f}%)")
+            elif top_edge:
+                heads.append(f"errors concentrate on {top_edge[0]} → {top_edge[1]} ({top_edge[2]:.1f}%)")
+        if self_times:
+            service, own, total = self_times[0]
+            heads.append(f"time concentrates in {service}'s own handler (~{own:.1f}s of {total:.1f}s)")
+        summary = (
+            "; ".join(heads) + f" over the last {_ATTRIBUTION_WINDOW} — which is not necessarily "
+            "the workload named on the alert:"
+        )
+        return CheckResult("attribution", "lead", summary, leads)
+
+    highest = ""
+    if service_rows:
+        highest = f" (highest: {service_rows[0][0]} {service_rows[0][1]:.1f}%)"
+    negative = (
+        f"No service or dependency edge above {_ERROR_FLOOR_PCT:.0f}% errors or "
+        f"{_LATENCY_FLOOR_S:.0f}s p95 in the last {_ATTRIBUTION_WINDOW}{highest} — whatever "
+        f"paged us is not a broad service-level failure. Look for something too narrow to move "
+        f"a service-wide number (one route, one tenant, one pod) or something that is not "
+        f"request-shaped at all (a stuck rollout, a pipeline, a credential)."
+    )
+    return CheckResult("attribution", "lead", negative, [negative])
+
+
+async def _fetch_attribution() -> tuple[dict, dict, dict]:
+    services, edges, spans = await asyncio.gather(
+        backends.mimir_query(_SERVICE_ERROR_QUERY),
+        backends.mimir_query(_EDGE_ERROR_QUERY),
+        backends.mimir_query(_SPAN_P95_QUERY),
+    )
+    return services, edges, spans
+
+
+async def _check_attribution(alert: Any) -> CheckResult:
+    try:
+        services, edges, spans = await _fetch_attribution()
+        return _shape_attribution(services, edges, spans)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("attribution", "unavailable", f"pre-check failed: {exc}", [])
+
+
 # ---- rollout_state -----------------------------------------------------------
 
 
@@ -358,11 +580,13 @@ async def _check_secret_age(alert: Any) -> CheckResult:
 
 # ---- battery + report ---------------------------------------------------------
 
-_CHECK_NAMES = ("recent_deploys", "kube_scan", "log_spike", "rollout_state", "secret_age")
+_CHECK_NAMES = (
+    "recent_deploys", "kube_scan", "log_spike", "attribution", "rollout_state", "secret_age",
+)
 
 
 async def run_prechecks(alert: Any) -> list[CheckResult]:
-    """Run all five checks concurrently. `return_exceptions=True` is a second
+    """Run all six checks concurrently. `return_exceptions=True` is a second
     guard on top of each `_check_*`'s own try/except — nothing thrown here can
     ever prevent the other checks (or the oncall run) from proceeding.
 

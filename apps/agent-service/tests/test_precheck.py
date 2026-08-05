@@ -13,10 +13,13 @@ from agent_service.ingress import AlertEvent
 from agent_service.precheck import (
     PRECHECK_BUDGET,
     CheckResult,
+    _ATTRIBUTION_WINDOW,
     _LEAD_CHAR_CAP,
     _LEADS_CAP,
     _SECTION_MARKER_ALLOWANCE,
+    _fetch_attribution,
     _fetch_log_spike,
+    _shape_attribution,
     _shape_kube_scan,
     _shape_log_spike,
     _shape_recent_deploys,
@@ -225,6 +228,187 @@ async def test_log_spike_fetch_queries_now_and_baseline_as_separate_windows(monk
     assert baseline_count == 2
 
 
+# ---- attribution --------------------------------------------------------------
+
+
+def _vector(*rows: tuple[dict, float]) -> dict:
+    """A Mimir instant-vector payload, shaped exactly as `mimir_query` returns
+    it (values are strings in Prometheus JSON, which is half the point)."""
+    return {
+        "query": "…", "range": "instant",
+        "data": {
+            "resultType": "vector",
+            "result": [{"metric": labels, "value": [1785846757.4, str(value)]}
+                       for labels, value in rows],
+        },
+    }
+
+
+def _spans(*rows: tuple[str, str, str, float]) -> dict:
+    """A span-latency payload: (service, span_name, kind, p95 seconds)."""
+    return _vector(*(
+        ({"service": service, "span_name": name, "span_kind": f"SPAN_KIND_{kind}"}, value)
+        for service, name, kind, value in rows
+    ))
+
+
+def test_attribution_ranks_the_downstream_above_the_alerting_workload():
+    """The finding `02-error-storm` was lost on: the gateway is the front door,
+    so a downstream failure reaches a human as "gateway 5xx"."""
+    services = _vector(
+        ({"service": "retriever"}, 30.4),
+        ({"service": "gateway"}, 4.9),
+        ({"service": "embedder"}, 0.0),
+    )
+    edges = _vector(({"service": "gateway", "span_name": "POST retriever"}, 29.8))
+    res = _shape_attribution(services, edges, _vector())
+    assert res.status == "lead"
+    assert "errors concentrate on retriever" in res.summary
+    assert res.leads[0].startswith("retriever: 30.4%")
+    # The alerting workload is still reported — ranked, not hidden.
+    assert any("gateway: 4.9%" in lead for lead in res.leads)
+
+
+def test_attribution_names_the_failing_dependency_edge():
+    services = _vector(({"service": "gateway"}, 5.0))
+    edges = _vector(
+        ({"service": "gateway", "span_name": "POST model-proxy"}, 12.5),
+        ({"service": "gateway", "span_name": "POST embedder"}, 0.2),
+    )
+    res = _shape_attribution(services, edges, _vector())
+    assert any("gateway → POST model-proxy: 12.5%" in lead for lead in res.leads)
+    assert not any("POST embedder" in lead for lead in res.leads)  # below the floor
+
+
+def test_attribution_flags_a_callee_that_reports_nothing():
+    """The case a server-side ranking cannot see: a workload that is DOWN emits
+    no series at all, so it sorts nowhere. Its callers are the witnesses."""
+    services = _vector(({"service": "gateway"}, 6.0), ({"service": "model-proxy"}, 0.1))
+    edges = _vector(({"service": "model-proxy", "span_name": "POST retriever"}, 100.0))
+    res = _shape_attribution(services, edges, _vector())
+    assert res.status == "lead"
+    assert any("retriever reported no server-side requests at all" in lead for lead in res.leads)
+
+
+def test_attribution_ignores_an_unknown_peer_as_a_silent_service():
+    services = _vector(({"service": "gateway"}, 6.0))
+    edges = _vector(({"service": "gateway", "span_name": "POST api.openai.com"}, 40.0))
+    res = _shape_attribution(services, edges, _vector())
+    assert any("POST api.openai.com" in lead for lead in res.leads)
+    assert not any("reported no server-side requests" in lead for lead in res.leads)
+
+
+def test_attribution_names_the_service_whose_own_handler_holds_the_time():
+    """The finding `01-latency` was lost on. Latency was injected into ONE
+    service's handler; everything above it in the call graph is slow too, and
+    the agent named two services that were merely waiting."""
+    spans = _spans(
+        ("gateway", "POST /v1/chat", "SERVER", 8.0),
+        ("gateway", "POST model-proxy", "CLIENT", 7.3),
+        ("gateway", "POST retriever", "CLIENT", 2.2),
+        ("model-proxy", "POST /v1/complete", "SERVER", 7.3),
+        ("retriever", "POST /v1/search", "SERVER", 2.2),
+    )
+    res = _shape_attribution(_vector(), _vector(), spans)
+    assert res.status == "lead"
+    # gateway is slowest end to end (8.0s) but spends 7.3s of it waiting.
+    assert "time concentrates in model-proxy's own handler" in res.summary
+    assert "~7.3s of 7.3s" in res.summary
+    ranking = next(lead for lead in res.leads if lead.startswith("own-handler p95"))
+    assert ranking.index("model-proxy") < ranking.index("gateway")
+    # And it says what the number is, because quantiles do not subtract exactly.
+    assert "a ranking, not a measurement" in ranking
+
+
+def test_attribution_ignores_spans_below_the_latency_floor():
+    spans = _spans(
+        ("gateway", "POST /v1/chat", "SERVER", 0.4),
+        ("gateway", "POST model-proxy", "CLIENT", 0.3),
+    )
+    res = _shape_attribution(_vector(), _vector(), spans)
+    assert not any("own-handler" in lead for lead in res.leads)
+    assert "not a broad service-level failure" in res.summary
+
+
+def test_attribution_reports_errors_and_latency_together():
+    services = _vector(({"service": "retriever"}, 12.0))
+    spans = _spans(
+        ("gateway", "POST /v1/chat", "SERVER", 6.0),
+        ("gateway", "POST retriever", "CLIENT", 5.5),
+        ("retriever", "POST /v1/search", "SERVER", 5.5),
+    )
+    res = _shape_attribution(services, _vector(), spans)
+    assert "errors concentrate on retriever" in res.summary
+    assert "time concentrates in retriever's own handler" in res.summary
+
+
+def test_attribution_negative_is_load_bearing():
+    services = _vector(({"service": "gateway"}, 0.2), ({"service": "retriever"}, 0.0))
+    edges = _vector(({"service": "gateway", "span_name": "POST retriever"}, 0.1))
+    res = _shape_attribution(services, edges, _vector())
+    # Not "ok": "nothing is broadly broken" is itself a lead, in the same way
+    # recent_deploys' "no deploy in the last 60m" is.
+    assert res.status == "lead"
+    assert "not a broad service-level failure" in res.summary
+    assert "gateway 0.2%" in res.summary
+    # An incident that is not request-shaped at all reaches this branch too, so
+    # the negative must not send every quiet investigation hunting a small
+    # error-rate failure that does not exist.
+    assert "a stuck rollout, a pipeline, a credential" in res.summary
+
+
+def test_attribution_drops_nan_ratios():
+    """A ratio whose denominator was zero all window comes back "NaN"; printed
+    as a lead it reads like a finding."""
+    services = _vector(({"service": "gateway"}, 8.0), ({"service": "embedder"}, float("nan")))
+    res = _shape_attribution(services, _vector(), _vector())
+    assert any("gateway: 8.0%" in lead for lead in res.leads)
+    assert not any("embedder" in lead for lead in res.leads)
+    assert "nan" not in res.summary.lower()
+
+
+def test_attribution_unavailable_when_every_query_fails():
+    failed = {"error": "mimir query failed: connection refused"}
+    assert _shape_attribution(failed, failed, failed).status == "unavailable"
+
+
+def test_attribution_survives_one_query_failing():
+    res = _shape_attribution(_vector(({"service": "retriever"}, 22.0)),
+                             {"error": "mimir query failed: connection refused"},
+                             _vector())
+    assert res.status == "lead"
+    assert any("retriever: 22.0%" in lead for lead in res.leads)
+
+
+def test_attribution_unavailable_when_the_lab_is_silent():
+    res = _shape_attribution(_vector(), _vector(), _vector())
+    assert res.status == "unavailable"
+
+
+async def test_attribution_fetch_asks_mimir_for_all_three_views(monkeypatch):
+    from agent_service.tools import backends
+
+    queries: list[str] = []
+
+    async def fake_mimir_query(promql, range="", step="60s"):
+        queries.append(promql)
+        return _vector()
+
+    monkeypatch.setattr(backends, "mimir_query", fake_mimir_query)
+    await _fetch_attribution()
+
+    assert len(queries) == 3
+    server, client, latency = queries
+    assert "request_duration_seconds_count" in server and 'http_status_code=~"5.."' in server
+    assert "traces_spanmetrics_calls_total" in client and 'span_kind="SPAN_KIND_CLIENT"' in client
+    assert "traces_spanmetrics_latency_bucket" in latency and "histogram_quantile" in latency
+    # All three views must cover the SAME window or the rankings are not
+    # comparable, which is the only reason to show them side by side.
+    assert server.count(f"[{_ATTRIBUTION_WINDOW}]") == 2
+    assert client.count(f"[{_ATTRIBUTION_WINDOW}]") == 2
+    assert latency.count(f"[{_ATTRIBUTION_WINDOW}]") == 1
+
+
 # ---- rollout_state -----------------------------------------------------------
 
 
@@ -349,6 +533,7 @@ async def test_run_prechecks_reports_unavailable_on_backend_error(monkeypatch):
     monkeypatch.setattr(backends, "kubectl_read", failing)
     monkeypatch.setattr(backends, "k8s_events", failing)
     monkeypatch.setattr(backends, "loki_query", failing)
+    monkeypatch.setattr(backends, "mimir_query", failing)
     monkeypatch.setattr(backends, "rollout_status", failing)
     monkeypatch.setattr(backends, "analysisrun_get", failing)
     monkeypatch.setattr(
@@ -359,10 +544,11 @@ async def test_run_prechecks_reports_unavailable_on_backend_error(monkeypatch):
     monkeypatch.setattr(precheck_module, "config", config_module.config)
 
     results = await run_prechecks(_alert())
-    assert len(results) == 5
+    assert len(results) == 6
     assert all(isinstance(r, CheckResult) for r in results)
     names = {r.name for r in results}
-    assert names == {"recent_deploys", "kube_scan", "log_spike", "rollout_state", "secret_age"}
+    assert names == {"recent_deploys", "kube_scan", "log_spike", "attribution",
+                     "rollout_state", "secret_age"}
     secret_result = next(r for r in results if r.name == "secret_age")
     assert secret_result.status == "unavailable"
 

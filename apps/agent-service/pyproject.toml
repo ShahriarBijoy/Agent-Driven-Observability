@@ -30,6 +30,12 @@ packages = ["src/agent_service"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `live` tests spawn a real Claude session: they cost tokens, need a healthy
+# OAuth session on the host, and take tens of seconds. Deselected by default so
+# `uv run pytest` stays a fast, offline, always-runnable suite; run them with
+# `uv run pytest -m live`.
+markers = ["live: hits a real Claude session (deselected by default)"]
+addopts = "-m 'not live'"
 
 [tool.ruff]
 line-length = 100

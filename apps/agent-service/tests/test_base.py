@@ -59,11 +59,11 @@ def test_oncall_information_barrier_removes_unshaped_tools():
         "mcp__k8s__pods_list", "mcp__k8s__pods_get",
     ]
 
-    # Apply the barrier (mimicking the logic in run_agent_session for oncall)
-    filtered = [
-        t for t in test_allowed
-        if t not in _DENYABLE_BUILTINS and not t.startswith("mcp__k8s__")
-    ]
+    # The real barrier, not a copy of it: run_agent_session calls exactly this
+    # (P12 extracted it so the guarantee is testable rather than re-typed).
+    from agent_service.agents.base import enforce_barrier
+
+    filtered = enforce_barrier("oncall", test_allowed)
 
     # Verify unshaped tools are gone
     assert "Bash" not in filtered

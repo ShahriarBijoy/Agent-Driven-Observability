@@ -1,0 +1,21 @@
+{
+  "id": "01-latency",
+  "title": "Latency injection - model-proxy slow, every request still succeeds",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 600,
+  "expected_time_to_alert_s": 600,
+  "alert": {
+    "match": ["gateway p95 latency above%", "gateway latency error budget burning fast%"]
+  },
+  "exam": true,
+  "chaos": {
+    "service": "model-proxy",
+    "knobs": { "latencyBaseMs": 2500, "latencyGammaScaleMs": 600, "latencyMaxMs": 6000 },
+    "confirm": { "knob": "latencyBaseMs", "at_least": 2500 },
+    "signal": { "kind": "slow", "median_ms": 2000, "probes": 6 }
+  }
+}

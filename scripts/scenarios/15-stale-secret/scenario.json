@@ -1,0 +1,24 @@
+{
+  "id": "15-stale-secret",
+  "title": "Stale secret - the database password was rotated, the Secret was not",
+  "layer": "config / security",
+  "group": "config",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 300,
+  "expected_time_to_alert_s": 300,
+  "alert": {
+    "match": ["gateway 5xx rate above%", "gateway availability error budget burning fast%"]
+  },
+  "exam": true,
+  "drill_hold": true,
+  "k8s": {
+    "secret": "subject-db-credentials",
+    "password_key": "POSTGRES_PASSWORD",
+    "db_user": "lab",
+    "db_name": "observability_lab",
+    "db_host": "postgres",
+    "vault_file": "apps/agent-service/.secrets/db-vault.txt"
+  }
+}

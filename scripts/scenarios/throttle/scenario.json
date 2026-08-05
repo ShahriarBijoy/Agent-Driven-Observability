@@ -1,0 +1,18 @@
+{
+  "id": "throttle",
+  "title": "Throttle drill - model-proxy sheds half with 429s; degrades users, pages nobody",
+  "layer": "app",
+  "group": "inference",
+  "inject_mode": "live",
+  "needs": ["k8s"],
+  "load": { "profile": "steady", "qps": 40 },
+  "drill_dwell_s": 300,
+  "expected_time_to_alert_s": 0,
+  "exam": false,
+  "chaos": {
+    "service": "model-proxy",
+    "knobs": { "p429": 0.5 },
+    "confirm": { "knob": "p429", "at_least": 0.5 },
+    "signal": { "kind": "error-code", "code": "model_overloaded", "at_least": 4, "probes": 12 }
+  }
+}
