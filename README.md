@@ -1,93 +1,178 @@
 # AI Observability Lab
 
-A free learning lab where a small AI inference gateway becomes the subject of full-spectrum observability. The gateway serves a real RAG pipeline (embedder → pgvector retriever → mock LLM) and emits logs, metrics, distributed traces, data-lineage events, and data-quality signals. Claude agents then read that telemetry — Grafana dashboards, Tempo traces, Marquez lineage, Postgres — to diagnose problems, write postmortems, and trigger remediations behind approval gates.
+An AI inference platform instrumented end to end — and the on-call arrangement that watches it. A RAG gateway serves real traffic, every layer emits telemetry into one pipeline, and Claude agents read that telemetry to diagnose incidents, propose fixes behind approval gates, and write the postmortem.
 
-**Act I** (phases 0–6) runs everything in local Docker Compose. **Act II** (phases 7+) moves the subject system onto a real k3d Kubernetes cluster on a small remote VM, reached over Tailscale — while the observability plane and the agents stay on the laptop, which becomes the on-call workstation. Every byte of telemetry flows back home, so no amount of cluster mayhem can destroy the evidence.
+![Bun](https://img.shields.io/badge/Bun-000?style=flat&logo=bun&logoColor=fff)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=fff)
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=fff)
+![Kubernetes](https://img.shields.io/badge/k3d-326CE5?style=flat&logo=kubernetes&logoColor=fff)
+![Docker](https://img.shields.io/badge/Compose-2496ED?style=flat&logo=docker&logoColor=fff)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-000?style=flat&logo=opentelemetry&logoColor=fff)
+![Grafana](https://img.shields.io/badge/LGTM%20stack-F46800?style=flat&logo=grafana&logoColor=fff)
+![PostgreSQL](https://img.shields.io/badge/pgvector-4169E1?style=flat&logo=postgresql&logoColor=fff)
+![Argo](https://img.shields.io/badge/Argo%20CD-EF7B4D?style=flat&logo=argo&logoColor=fff)
+![Gitea](https://img.shields.io/badge/Gitea%20Actions-609926?style=flat&logo=gitea&logoColor=fff)
+![Claude](https://img.shields.io/badge/Claude%20Agent%20SDK-D97757?style=flat&logo=anthropic&logoColor=fff)
 
-## What's inside
+## Architecture
 
-- **Subject system** — Bun services (gateway, embedder, retriever, model-proxy) with bearer-token auth, per-tenant rate limiting, usage metering, and a load generator with a chaos fault model
-- **Application observability** — manual OpenTelemetry → Grafana Alloy → Loki / Tempo / Mimir, with provisioned RED + RAG dashboards, exemplars, service map, and tail-based sampling
-- **Data observability** — every request is an OpenLineage run in Marquez; a Python dq-runner checks freshness / volume / drift / schema / cache every 30s
-- **Control plane** — a TanStack Start web app (`:3003`): golden signals, embedded Grafana/Marquez, incident inbox, runbooks, and a streaming agent chat with live tool calls and artifacts
-- **Claude agents** — a host-side FastAPI service (`:8093`, Claude Agent SDK) with five agents: RCA assistant, incident reporter, dashboard generator, runbook executor (per-step approvals), and auto-fixer (PR behind an approval gate). Every run is itself a Tempo trace.
-- **Chaos & SLOs** — a clock-driven chaos scheduler, SLO specs compiled to Mimir recording rules, multi-window burn-rate alerts, browser RUM, opt-in eBPF profiling, and a one-command incident demo
-- **Kubernetes (Act II)** — the subject system runs as pods in a k3d cluster (1 tainted server + 2 killable agents) on a cheap cloud VM; `infra/ports.env` is the single address book, `obs k8s` wraps the whole lifecycle, and the agents get a read-only cluster identity (`agent-ro`)
-- **K8s observability** — the grafana/k8s-monitoring chart ships cluster state (kube-state-metrics), container usage (cAdvisor), Kubernetes events, and pod logs into the same Mimir/Loki; kubernetes-mixin dashboards (job labels aligned), 8 fast cause-alerts (CrashLooping, OOMKilled, ImagePullBackOff…) wired to the agent webhook, a cardinality-budget dashboard, and a read-only cluster window for the agents (kubernetes-mcp-server + shaped `k8s_events` / `kubectl_read` tools — Secrets denied by construction)
-- **Local CI/CD (Act II)** — Gitea 1.26 + Actions runner + a Bun `ci-shim` on the VM (`infra/compose.ci.yml`, `obs ci`): `git push gitea main` tests, builds, pushes `:sha` images to the k3d registry, and deploys — with the pipeline itself observable: each completed run lands as ONE post-hoc Tempo trace (OTel CI/CD semconv, per-step spans, immune to the 10s tail-sampling window), DORA metrics in Mimir (`CI/CD · Delivery` dashboard: deploy frequency, lead time, change failure rate, MTTR), per-service deploy annotations on the RED dashboards, `cicd-pipeline-red` / `cicd-queue-stall` alerts, a push-mirror keeping GitHub in sync, and delivery-history agent tools (`gitea_ci_runs`, `gitea_compare` with diffs, `grafana_annotations`, `gitea_open_pr`) — so the agent can walk alert → deploy marker → CI run → the exact commit
-- **On-call brain (Act II)** — a sixth, autonomous agent (`oncall`) owns the whole alert→close loop with no human dispatching it: a firing Grafana webhook dedupes into one incident by `alert_key` (an alert storm of 10 repeats still opens exactly one), server-side pre-checks (secret age, recent deploys/rollouts) get injected as leads before the model's first tool call, `runbook_lookup` narrows its tool allow-list to the matched runbook(s)' declared tools, any mutating fix is dry-run first and only a server-verified diff can make an approval executable (approve/deny on the new `/oncall` page), a `verify_deadline` watcher re-escalates automatically if the alert is still firing after the fix, and a closed, verified incident gets a postmortem opened as a Gitea PR with deep links. Its `agent-remediate` identity is fixed-argv kubectl scoped to namespace `subject` plus one named Secret — Bash stays off the table by construction. New commands: `obs k8s agent-remediate-kubeconfig` (mint that scoped identity) and `obs fail stale-secret` (the flagship drill: rotate a Secret out from under a workload and watch the whole loop close it)
+Three planes, deliberately separated. The **subject system** is disposable and lives on a remote k3d cluster. The **telemetry pipeline** and the **on-call workstation** stay on the laptop, so no amount of cluster mayhem can destroy the evidence.
 
-## Prerequisites
+```mermaid
+flowchart LR
+  subgraph SUBJ["Subject system · k3d on a remote VM (or Compose locally)"]
+    direction TB
+    GW["gateway<br/>auth · rate limit · metering"]
+    EMB["embedder"]
+    RET["retriever"]
+    MP["model-proxy"]
+    DB[("Postgres<br/>+ pgvector")]
+    GW --> EMB
+    GW --> RET
+    GW --> MP
+    RET --> DB
+  end
 
-- **Docker Desktop** (the lab is ~15 containers)
-- **Bun** ≥ 1.1 (workspaces + Turborepo)
-- **uv** (Python; for the agent-service)
-- **Claude Code** logged in on this machine — the agent-service authenticates the Claude Agent SDK against your local session; no API key needed
-- **For the Act II k8s mode only**: `kubectl` locally, plus a small Linux VM (4 vCPU / 8 GB, Docker + k3d + Tailscale — see `infra/vm/`) on the same tailnet
+  subgraph PIPE["Telemetry pipeline"]
+    direction TB
+    ALLOY["Grafana Alloy<br/>scrub · tail-sample"]
+    LOKI[("Loki · logs")]
+    TEMPO[("Tempo · traces")]
+    MIMIR[("Mimir · metrics + SLOs")]
+    MARQ[("Marquez · lineage")]
+    ALLOY --> LOKI
+    ALLOY --> TEMPO
+    ALLOY --> MIMIR
+  end
+
+  subgraph OPS["On-call workstation"]
+    direction TB
+    GRAF["Grafana<br/>dashboards · burn-rate alerts"]
+    WEB["Web control plane<br/>:3003"]
+    AGENTS["agent-service :8093<br/>Claude Agent SDK"]
+  end
+
+  GW -- "OTLP" --> ALLOY
+  GW -- "OpenLineage" --> MARQ
+  LOKI --> GRAF
+  TEMPO --> GRAF
+  MIMIR --> GRAF
+  MARQ --> WEB
+  GRAF -- "alert webhook (HMAC)" --> AGENTS
+  AGENTS -- "read-only queries" --> GRAF
+  AGENTS -. "scoped kubectl · fix PR" .-> GW
+  WEB <--> AGENTS
+```
+
+### Design decisions
+
+| Decision                                      | Why                                                                                                                                     |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Observability plane off-cluster               | The thing being broken can't take its own evidence down with it                                                                         |
+| Manual OpenTelemetry, no auto-instrumentation | Spans and attributes are chosen, not inherited — the trace tells the story of the request                                               |
+| `infra/ports.env` as the single address book  | Compose, `obs`, the k3d config and the URL aliases all read one file; a port collision is a one-line fix                                |
+| Agents get their own Kubernetes identities    | `agent-ro` reads, `agent-remediate` is fixed-argv kubectl scoped to one namespace. Bash is off the table by construction, not by prompt |
+| Every mutating fix is dry-run first           | Only a server-verified diff can make an approval executable                                                                             |
+| SLO specs compile to recording rules          | `slo/` is the source of truth; Mimir rules and multi-window burn-rate alerts are generated from it                                      |
+
+### The incident loop
+
+An alert fires and nobody dispatches anything — the `oncall` agent owns the loop from webhook to postmortem PR.
+
+```mermaid
+flowchart LR
+  A["Alert fires"] --> B["Webhook<br/>HMAC + dedupe"]
+  B --> C["One incident<br/>per alert_key"]
+  C --> D["Server-side pre-checks<br/>secret age · recent deploys"]
+  D --> E["oncall agent<br/>runbook narrows its tools"]
+  E --> F["Dry-run fix<br/>verified diff"]
+  F --> G{"Approve?"}
+  G -- "deny" --> H["Stays proposed"]
+  G -- "approve" --> I["Scoped kubectl apply"]
+  I --> J{"Alert cleared<br/>by deadline?"}
+  J -- "no" --> E
+  J -- "yes" --> K["Postmortem PR<br/>in Gitea"]
+```
+
+## Tech stack
+
+| Layer                 | Built with                                                  |
+| --------------------- | ----------------------------------------------------------- |
+| Subject services      | Bun · TypeScript · Zod · Postgres + pgvector · Redis        |
+| Instrumentation       | OpenTelemetry (manual) · Grafana Alloy · OpenLineage        |
+| Storage & query       | Loki · Tempo · Mimir · Pyroscope · Marquez                  |
+| Dashboards & alerting | Grafana · kubernetes-mixin · multi-window burn-rate alerts  |
+| Control plane UI      | TanStack Start · shadcn (Base UI) · AI Elements             |
+| Agents                | Python · FastAPI · Claude Agent SDK · kubernetes-mcp-server |
+| Data quality          | Python dq-runner — freshness, volume, drift, schema, cache  |
+| Platform              | k3d on a Hetzner VM over Tailscale · Docker Compose locally |
+| Delivery              | Gitea Actions · Argo CD · Argo Rollouts (canary)            |
+| Tooling               | Turborepo · Vitest · oxlint · oxfmt · uv                    |
 
 ## Quickstart
 
 ```bash
-bun install          # one-time: install workspace dependencies
-cp .env.example .env # one-time: local defaults work out of the box
+bun install
+cp .env.example .env   # local defaults work out of the box
 ```
 
-The lab is driven by the **`obs` CLI** (`scripts/obs.ps1`, PowerShell). To call it as `obs` from anywhere, add a function to your PowerShell `$PROFILE`:
+The lab is driven by the **`obs` CLI** (`scripts/obs.ps1`). Add it to your PowerShell `$PROFILE`:
 
 ```powershell
 function obs { & '<path-to-repo>\scripts\obs.ps1' @args }
 ```
 
-Then bring up everything at once:
-
 ```powershell
-obs all              # containers + agent-service + web + load traffic (own windows)
+obs all                # containers + agent-service + web + traffic, each in its own window
 ```
 
 …or piece by piece:
 
 ```powershell
-obs up               # 1. the 15 containers (subject + observability + lineage)
-obs agents           # 2. agent-service :8093  (own terminal, Ctrl-C to stop)
-obs web              # 3. web control plane :3003  (own terminal, Ctrl-C to stop)
-obs load 120 300     # 4. synthetic traffic so dashboards populate
+obs up                 # 1. the containers (subject + observability + lineage)
+obs agents             # 2. agent-service :8093   (own terminal)
+obs web                # 3. control plane :3003   (own terminal)
+obs load 120 300       # 4. synthetic traffic so the dashboards fill in
 ```
 
-The full lab is those three pieces: **containers + `obs agents` + `obs web`**. The two host processes run outside compose so the Agent SDK can use your Claude Code login and the web app can hot-reload.
+The two host processes run outside Compose so the Agent SDK can use your local Claude Code login and the web app can hot-reload.
 
-### `obs` command reference
-
-| Command                  | What it does                                                                                                                                                                                                                                                                                                                             |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `obs all [qps] [secs]`   | Everything: containers, agent-service, web, and load, in their own windows                                                                                                                                                                                                                                                               |
-| `obs up [--build]`       | Bring up the full lab (handles the compose network-ordering gotcha)                                                                                                                                                                                                                                                                      |
-| `obs down [-v]`          | Tear it down (`-v` also wipes volumes: seeded data + Grafana state)                                                                                                                                                                                                                                                                      |
-| `obs load [qps] [secs]`  | Drive synthetic traffic (defaults 120 qps / 300s)                                                                                                                                                                                                                                                                                        |
-| `obs demo [qps] [secs]`  | Full cycle: up --build → wait healthy → load → down                                                                                                                                                                                                                                                                                      |
-| `obs web` / `obs agents` | Run a host process in the current terminal                                                                                                                                                                                                                                                                                               |
-| `obs fail <scenario>`    | Failure drills with baseline traffic: 8 compose chaos scenarios, the k8s-native `pod-kill`, `oomkill`, `imagepull`, `crashloop`, `readiness-break`, the delivery-native `bad-deploy`, `canary-bad-image`, `config-drift`, `sync-fail`, and the on-call flagship `stale-secret` (each declares `inject_mode: git\|live`; all auto-revert) |
-| `obs k8s <sub>`          | Act II cluster lifecycle on the VM: `up` `down` `status` `build` `deploy` `smoke` `monitoring` (k8s-monitoring chart) `argo` (Argo CD + Rollouts + Applications + webhook route) `agent-kubeconfig` (read-only) `agent-remediate-kubeconfig` (on-call's scoped writer) `node-stop/start`                                                 |
-| `obs ci <sub>`           | Act II CI layer on the VM: `up` (ship source, bootstrap Gitea admin/token/webhook/runner) `down` `logs` `token` `status`                                                                                                                                                                                                                 |
-| `obs gitops <sub>`       | Act II desired-state repo (`obs/obs-gitops`): `init` (seed from `infra/gitops`) `push` (operator override) `status` (Applications table) `smoke` (the canary-hash gate)                                                                                                                                                                  |
-| `obs argocd`             | Argo CD UI on :8443 (port-forward + admin password + browser)                                                                                                                                                                                                                                                                            |
-| `obs rollouts`           | Argo Rollouts dashboard on :3105 (laptop-side kubectl plugin)                                                                                                                                                                                                                                                                            |
-| `obs names [install]`    | Register `https://obs-*.localhost` aliases for the human-facing endpoints                                                                                                                                                                                                                                                                |
-| `obs preflight`          | Check required binaries and every port in `infra/ports.env`                                                                                                                                                                                                                                                                              |
-| `obs smoke`              | Phase-1 end-to-end smoke test                                                                                                                                                                                                                                                                                                            |
-| `obs ps` / `obs logs`    | Container status / follow logs                                                                                                                                                                                                                                                                                                           |
-| `obs urls` / `obs hosts` | Print the address table / host-process commands                                                                                                                                                                                                                                                                                          |
-
-### Without the wrapper (macOS / Linux)
+<details>
+<summary>Without the wrapper (macOS / Linux)</summary>
 
 ```bash
-bash scripts/dev-up.sh --build                                  # containers (all three planes)
-(cd apps/agent-service && uv sync && uv run python -m agent_service)  # :8093
-bun --cwd apps/web run dev                                      # :3003
+bash scripts/dev-up.sh --build
+(cd apps/agent-service && uv sync && uv run python -m agent_service)   # :8093
+bun --cwd apps/web run dev                                            # :3003
 GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
-  bun --cwd apps/load-generator run start                       # traffic
+  bun --cwd apps/load-generator run start
 ```
 
-## Service addresses
+</details>
+
+**Prerequisites** — Docker Desktop, Bun ≥ 1.2, [uv](https://docs.astral.sh/uv/), and Claude Code logged in on this machine (the agent-service authenticates against your local session; no API key). Kubernetes mode additionally needs `kubectl` and a small Linux VM on your tailnet — see `infra/vm/`.
+
+## Commands
+
+| Command                              | What it does                                                                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `obs all [qps] [secs]`               | Everything at once, each piece in its own window                                                                                                       |
+| `obs up [--build]` / `obs down [-v]` | Bring the lab up / tear it down (`-v` wipes volumes)                                                                                                   |
+| `obs load [qps] [secs]`              | Steady traffic — also `spike`, `ramp`, `soak`, `drift`, `abuse`                                                                                        |
+| `obs fail <id>`                      | Run one failure scenario as a drill: inject, dwell, auto-revert                                                                                        |
+| `obs chaos <sub>`                    | `list` `inject` `verify` `revert` `selftest` a scenario by hand                                                                                        |
+| `obs exam <group>`                   | Grade the on-call agent against a hidden key — `inference` `resources` `delivery` `cicd` `config`                                                      |
+| `obs drill <sub>`                    | Schedule an unannounced exam question at a random time in a window                                                                                     |
+| `obs k8s <sub>`                      | Cluster lifecycle: `up` `down` `status` `build` `deploy` `smoke` `monitoring` `argo` `agent-kubeconfig` `agent-remediate-kubeconfig` `node-stop/start` |
+| `obs ci <sub>`                       | Gitea + Actions runner + `ci-shim` on the VM: `up` `down` `logs` `token` `status`                                                                      |
+| `obs gitops <sub>`                   | Desired-state repo: `init` `push` `status` `smoke`                                                                                                     |
+| `obs argocd` / `obs rollouts`        | Open the Argo CD UI (:8443) / Rollouts dashboard (:3105)                                                                                               |
+| `obs demo [qps] [secs]`              | Full cycle: up → healthy → load → down                                                                                                                 |
+| `obs preflight` / `obs smoke`        | Check binaries and ports / end-to-end smoke test                                                                                                       |
+| `obs urls` / `obs names`             | Print the address table / register `https://obs-*.localhost` aliases                                                                                   |
+| `obs ps` / `obs logs`                | Container status / follow logs                                                                                                                         |
+
+## Endpoints
 
 | Service       | Address               | Notes                      |
 | ------------- | --------------------- | -------------------------- |
@@ -96,68 +181,46 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 | Marquez UI    | http://localhost:3002 | lineage graph              |
 | Gateway API   | http://localhost:8080 | bearer tokens below        |
 | Agent service | http://localhost:8093 | host process               |
+| Gitea         | http://localhost:3005 | CI, PRs, GitOps repo       |
 | dq-runner     | http://localhost:8091 | `/violations`, `POST /run` |
 | Pyroscope     | http://localhost:4040 | profiles (opt-in profiler) |
 
-Every host-published port lives in **`infra/ports.env`** — a collision with another project is a one-line remap there, and everything (compose, obs.ps1, the k3d config) follows. In k8s mode the gateway answers at the VM's tailnet name on the same `:8080`.
+Every host-published port lives in **`infra/ports.env`**. Dev tenants: `dev-local-token` (acme), `dev-token-bravo` (bravo), `dev-token-abuser` (tiny quota — trips 429s).
 
-Dev tenants (gateway bearer tokens): `dev-local-token` (acme), `dev-token-bravo` (bravo), `dev-token-abuser` (abuser — tiny quota, trips 429s).
+> **Windows note:** the agent-service binds IPv4, so the web app points at `http://127.0.0.1:8093` — `localhost` may resolve to IPv6 first and refuse.
 
 ## Things to try
 
-- **Ask the gateway a question** (RAG over the seeded corpus):
-  ```bash
-  curl -s -X POST localhost:8080/v1/chat \
-    -H "authorization: Bearer dev-local-token" \
-    -H "content-type: application/json" \
-    -d '{"prompt":"what is pride and prejudice about","topK":3}'
-  ```
-- **Chat with the RCA assistant** at http://localhost:3003/agents — it runs real Loki/Tempo/Mimir/Postgres queries (shown live as collapsed tool-call rows) and saves Markdown/HTML artifacts that open in a split-pane viewer.
-- **Trigger an incident postmortem** (Grafana also posts here automatically when an alert fires):
-  ```bash
-  curl -X POST localhost:8093/webhook/grafana-alert -H 'content-type: application/json' \
-    -d '{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"Gateway 5xx rate > 2%","severity":"page"},"annotations":{"summary":"gateway 5xx above 2%"}}]}'
-  ```
-- **Generate a Grafana dashboard** from a natural-language brief:
-  ```bash
-  curl -X POST localhost:8093/generate-dashboard -H 'content-type: application/json' \
-    -d '{"brief":"gateway health: request rate, p95 latency, and 5xx share over time"}'
-  ```
-- **Run a runbook with approvals**: http://localhost:3003/runbooks → "run with executor", then approve/deny each step on the run page.
-- **The keystone demo** — one on-purpose incident end to end (~6–8 min): injects a chaos error burst, waits for the reporter's postmortem in the incident inbox, then runs an RCA follow-up (needs the agent-service up):
-  ```bash
-  bun run demo:incident
-  ```
-- **Scheduled chaos** (full 26-min timeline that drives the SLO burn-rate alerts): `bun run chaos:run`
-- **Break the cluster** (k8s mode): `obs fail oomkill` drops the retriever's memory limit to 64Mi under load — watch the working-set graph flat-top at the new ceiling, the `KubeContainerOOMKilled` alert fire, and the incident-reporter's postmortem distinguish "killed for exceeding its allowance" from "crashed" (~2 min from fault to agent-on-the-case). `crashloop`, `imagepull`, and `readiness-break` tell the other classic Kubernetes failure stories; all revert themselves.
-- **Ask the agent about the cluster**: "describe the gateway deployment and its recent events" — answered through read-only cluster tools only (`k8s_events` timelines, caged `kubectl_read`, the k8s MCP server). Ask it to read a Secret and watch three independent layers refuse.
-- **Run the on-call flagship drill** (k8s mode, needs `obs k8s agent-remediate-kubeconfig` minted once): `obs fail stale-secret` rotates a Secret out from under a workload — watch http://localhost:3003/oncall pick up the alert, post its pre-check leads and matched runbook, propose a dry-run fix, wait for your Approve, then flip to `verified` once the alert actually clears and open a postmortem PR in Gitea.
-- **Follow the telemetry**: in Grafana, click a latency exemplar on the RED dashboard to jump to its Tempo trace, then "Logs for this span" to land on the matching `trace_id` in Loki. Every agent run is also a trace (`service.name=agent-service`).
+**Ask the gateway a question** (RAG over the seeded corpus):
 
-> **Windows note:** the agent-service binds IPv4; the web app defaults to `http://127.0.0.1:8093` because `localhost` may resolve to IPv6 first and refuse the connection.
+```bash
+curl -s -X POST localhost:8080/v1/chat \
+  -H "authorization: Bearer dev-local-token" \
+  -H "content-type: application/json" \
+  -d '{"prompt":"what is pride and prejudice about","topK":3}'
+```
 
-### Phase 11 notes (the on-call brain)
+**Run the keystone demo** — one on-purpose incident end to end, ~6–8 min:
 
-- **GitOps notifications stay on their own path.** Argo Rollouts' own
-  `on-rollout-aborted` / `on-analysis-run-failed` notification events still
-  post to `/webhook/gitops` and are handled entirely by the gitops-reporter
-  agent (unchanged since Phase 10) — they never reach the on-call agent's
-  `runbook_lookup`. The on-call agent picks up an aborted/wedged canary
-  through the Grafana-alert path instead: the `rollout-stuck` alert (canary
-  Progressing past its budget, or short on ready replicas), diagnosed with
-  `canary-abort.md`. Two agents, two independent triggers, by design — not a
-  gap to unify.
-- **Flapping alerts open a fresh incident per cycle.** An alert that fires,
-  resolves, then fires again gets a brand-new incident each time it re-fires
-  (the open-incident dedupe key only covers one still-open incident per
-  alert). Debounce/coalescing across flap cycles is reserved for a later
-  pass, not implemented yet — a genuinely flapping alert will show up as
-  several short-lived incidents in the on-call feed rather than one.
+```bash
+bun run demo:incident
+```
+
+| Then                                                           | Where        |
+| -------------------------------------------------------------- | ------------ |
+| Chat with the RCA assistant — live tool calls, saved artifacts | `/agents`    |
+| Watch the on-call loop close an incident                       | `/oncall`    |
+| Walk a runbook with per-step approvals                         | `/runbooks`  |
+| Read exam scorecards                                           | `/scorecard` |
+
+**Break something** (k8s mode): `obs fail oomkill` cuts the retriever's memory limit under load — the working set flat-tops, `KubeContainerOOMKilled` fires, and the postmortem distinguishes "killed for exceeding its allowance" from "crashed". `crashloop`, `imagepull`, `readiness-break`, `bad-deploy`, `canary-bad-image`, `config-drift` and `sync-fail` tell the other stories. `obs fail stale-secret` is the flagship: rotate a Secret out from under a workload and watch the whole alert→approve→verify→postmortem loop run.
+
+**Follow the telemetry**: click a latency exemplar on the RED dashboard to land on its Tempo trace, then "Logs for this span" for the matching `trace_id` in Loki. Every agent run is itself a trace (`service.name=agent-service`).
 
 ## Development
 
 ```bash
-bun run dev          # all TS services in watch mode (stop the compose app services first — same ports)
+bun run dev          # all TS services in watch mode (stop the compose app services first)
 bun run test         # vitest across the monorepo
 bun run typecheck    # tsc --noEmit everywhere
 bun run lint         # oxlint
@@ -168,36 +231,34 @@ bun run format       # oxfmt --write .
 
 ```
 apps/
-  gateway/          # Bun HTTP server — AI inference gateway (OTel instrumented)
-  embedder/         # deterministic embedding service
-  retriever/        # pgvector top-k retrieval over a seeded corpus
-  model-proxy/      # mock LLM with a fault model + /admin/chaos control plane
-  load-generator/   # weighted chaotic traffic + the chaos scheduler
-  web/              # TanStack Start control plane (:3003)
-  agent-service/    # Python + Claude Agent SDK — the five agents (:8093)
-  dq-runner/        # Python — scheduled data-quality checks (:8091)
+  gateway/          Bun HTTP server — the AI inference gateway (OTel instrumented)
+  embedder/         deterministic embedding service
+  retriever/        pgvector top-k retrieval over a seeded corpus
+  model-proxy/      mock LLM with a fault model + /admin/chaos control plane
+  load-generator/   weighted chaotic traffic + the chaos scheduler
+  web/              TanStack Start control plane (:3003)
+  agent-service/    Python + Claude Agent SDK — six agents (:8093)
+  dq-runner/        Python — scheduled data-quality checks (:8091)
+  ci-shim/          turns Gitea deliveries into CI traces + DORA metrics
 packages/
-  contracts/        # shared types + Zod schemas (incl. the agent wire contract)
-  domain/           # pure domain logic
-  telemetry/        # @obs/telemetry — OTel init + manual instrumentation helpers
-  lineage/          # @obs/lineage — OpenLineage builders + Marquez emitter
-  ui/ tsconfig/     # design tokens, shared tsconfig presets
+  contracts/        shared types + Zod schemas (incl. the agent wire contract)
+  domain/           pure domain logic
+  telemetry/        OTel init + manual instrumentation helpers
+  lineage/          OpenLineage builders + Marquez emitter
 infra/
-  ports.env                    # THE address book — every host-published port, one file
-  compose.yml                  # subject system (Postgres, Redis, TS services, seed, load)
-  compose.observability.yml    # Alloy + Loki/Tempo/Mimir + Grafana + Pyroscope
-  compose.lineage.yml          # Marquez + dq-runner
-  gitops/                      # Act II: desired-state seed (platform + per-service
-                               #   sync roots) - runtime truth is Gitea obs/obs-gitops
-  k8s/                         # Act II: k3d config, cluster bootstrap, k8s-monitoring
-                               #   values, Argo CD/Rollouts values + Application CRs
-  vm/                          # obs-vm provisioning (cloud-init, tailnet NAT unit)
-  grafana/mixins/              # kubernetes-mixin dashboard build (jsonnet, dockerized)
-slo/                # SLO specs (source of truth for recording rules + alerts)
-runbooks/           # Markdown runbooks the executor agent walks with approvals
-scripts/            # obs.ps1 (the CLI), k8s-build.ps1, dev-up.sh, smoke.sh, demo-incident.sh
+  ports.env         THE address book — every host-published port, one file
+  compose*.yml      subject system · observability · lineage · CI
+  k8s/              k3d config, cluster bootstrap, monitoring + Argo values
+  gitops/           desired-state seed (runtime truth lives in Gitea)
+  vm/               VM provisioning (cloud-init, tailnet NAT unit)
+slo/                SLO specs — source of truth for recording rules + alerts
+runbooks/           Markdown runbooks the agents walk with approvals
+scripts/            obs.ps1 (the CLI), exam.ps1, drill.ps1, k8s-build.ps1, smoke.sh
 ```
 
-## Docs
+## Known gaps
 
-The phased plans (Act I and Act II), ADRs, and plain-language explainers are kept in a local-only `docs/` folder that is deliberately not tracked in this repo. The operator-facing documentation that ships here lives in the per-component `README.md` files under `infra/`, `apps/`, and `scripts/`.
+- **Flapping alerts open one incident per cycle.** The dedupe key covers one still-open incident per alert; an alert that resolves and re-fires gets a fresh incident. Coalescing across flap cycles isn't implemented.
+- **Rollout notifications stay on their own path.** Argo Rollouts' own abort/analysis events go to the gitops-reporter, not the on-call agent — which picks up a wedged canary through the Grafana `rollout-stuck` alert instead. Two triggers, by design.
+
+Phase plans, ADRs and long-form explainers live in a local-only `docs/` folder that isn't tracked here. Operator docs ship as per-component `README.md` files under `infra/`, `apps/` and `scripts/`.
