@@ -11,6 +11,13 @@
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", ui-monospace, monospace;
   --font-heading: var(--font-sans);
+  /*
+   * House easing. The CSS built-ins are too weak to read as intentional, so
+   * entrances/exits use the strong ease-out and anything that travels across
+   * the screen (the nav's active pill) uses the strong ease-in-out.
+   */
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -188,7 +195,7 @@
   }
 
   .panel-rise {
-    animation: panel-rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    animation: panel-rise 0.4s var(--ease-out-strong) both;
   }
 
   .panel-rise-1 {
@@ -202,6 +209,24 @@
   }
   .panel-rise-4 {
     animation-delay: 0.26s;
+  }
+
+  /* Sidebar rows cascade in from the rail edge on first paint. The animation
+     lives on the <li>, never on the <a>, so it can't clobber the row's own
+     :active transform once it settles. */
+  @keyframes nav-reveal {
+    from {
+      opacity: 0;
+      transform: translateX(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .nav-reveal {
+    animation: nav-reveal 0.3s var(--ease-out-strong) both;
   }
 }
 

@@ -17,23 +17,6 @@ export function TopBar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-4">
-      <div className="flex items-center gap-2.5">
-        <span className="flex size-7 items-center justify-center rounded-lg bg-primary/15">
-          <svg viewBox="0 0 32 32" className="size-4" aria-hidden>
-            <path
-              d="M4 19.5h5l3-9 5.5 13 3-8H28"
-              stroke="var(--primary)"
-              strokeWidth="3"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-        <span className="font-heading text-[15px] font-semibold tracking-tight">obs·lab</span>
-        <span className="hidden text-sm text-muted-foreground sm:inline">Control plane</span>
-      </div>
-
       <div className="ml-auto flex items-center gap-2">
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           Window
