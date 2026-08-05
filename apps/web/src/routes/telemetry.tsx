@@ -46,22 +46,30 @@ function TelemetryPage() {
       <aside className="flex w-52 shrink-0 flex-col overflow-y-auto border-r bg-sidebar/40 py-3">
         {groups.map((g) => (
           <div key={g.group} className="mb-1 px-2">
-            <p className="px-2 py-1 text-[10px] font-semibold tracking-wider text-muted-foreground/70 uppercase">
+            <p className="px-2 py-1 text-[10px] font-semibold tracking-[0.09em] text-muted-foreground/60 uppercase">
               {g.group}
             </p>
             <ul className="flex flex-col gap-0.5">
               {g.dashboards.map((dash) => (
                 <li key={dash.uid}>
+                  {/* Same active vocabulary as the primary rail — filled row plus
+                      an accent bar — so the two columns never read as peers. */}
                   <button
                     type="button"
                     onClick={() => navigate({ search: { d: dash.uid } })}
                     className={cn(
-                      "w-full cursor-pointer rounded-lg px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors",
+                      "relative w-full cursor-pointer rounded-lg px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors duration-150 active:translate-y-px",
                       dash.uid === active.uid
                         ? "bg-sidebar-accent text-sidebar-foreground"
-                        : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+                        : "text-muted-foreground hover:bg-sidebar-accent/45 hover:text-sidebar-foreground",
                     )}
                   >
+                    {dash.uid === active.uid && (
+                      <span
+                        aria-hidden
+                        className="absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
+                      />
+                    )}
                     {dash.label}
                   </button>
                 </li>
