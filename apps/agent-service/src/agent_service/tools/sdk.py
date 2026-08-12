@@ -186,7 +186,7 @@ _PG_DESC_HEAD = (
 )
 _PG_DESC_AUDIT = "Also agent_runs and the other agent_* audit tables. "
 _PG_DESC_TAIL = (
-    "There is no tenants table — tenant is a text column (e.g. 'acme') on these tables."
+    "There is no tenants table — tenant is a text column (e.g. 'test-bench') on these tables."
 )
 _PG_SCHEMA = {
     "type": "object",
@@ -995,11 +995,15 @@ TOOLSETS: dict[str, list[str]] = {
 
 # Tools every oncall session keeps even when a matched runbook narrows the
 # allow-list (allowed_override in base.run_agent_session): the investigation
-# spine (runbook_read/runbook_lookup/deploy_history/alert_status) and the
-# session-close tools (request_approval/save_artifact/publish_postmortem) — a
-# runbook can narrow which remediation tools are on offer, never these.
+# spine (runbook_read/runbook_lookup/deploy_history/alert_status), the
+# read-only cluster window (k8s_events/kubectl_read — the system prompt
+# advertises both unconditionally, so a runbook that omits them would leave
+# the model calling tools that don't exist), and the session-close tools
+# (request_approval/save_artifact/publish_postmortem) — a runbook can narrow
+# which REMEDIATION tools are on offer, never the investigator's eyes.
 ONCALL_ALWAYS_TOOLS: list[str] = [
     mcp("runbook_read"), mcp("runbook_lookup"), mcp("deploy_history"), mcp("alert_status"),
+    mcp("k8s_events"), mcp("kubectl_read"),
     mcp("request_approval"), mcp("save_artifact"), mcp("publish_postmortem"),
 ]
 
