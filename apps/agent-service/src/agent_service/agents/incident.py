@@ -35,7 +35,7 @@ def summarize_alert(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "alertname": alertname,
         "severity": _SEV.get(str(labels.get("severity", "")).lower(), "sev2"),
-        "tenant": labels.get("tenant") or "acme",
+        "tenant": labels.get("tenant") or "test-bench",
         "status": payload.get("status") or first.get("status") or "firing",
         "summary": annotations.get("summary") or annotations.get("description") or alertname,
         "value": first.get("valueString"),

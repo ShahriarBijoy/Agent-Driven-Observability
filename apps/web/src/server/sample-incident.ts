@@ -10,14 +10,14 @@ export const SAMPLE_INCIDENT: Incident = {
   title: "Elevated 5xx on /v1/chat after model-proxy deploy",
   severity: "sev2",
   status: "resolved",
-  tenant: "acme",
+  tenant: "test-bench",
   openedAt: "2026-06-08T14:12:00.000Z",
   resolvedAt: "2026-06-08T14:41:00.000Z",
   summary:
     "Gateway 5xx share rose to 7.4% for 18 minutes. Root cause: model-proxy timeout set below upstream p99 after the chaos flag was left on. (Sample postmortem — the reporter agent produces these in Phase 5.)",
   postmortemMd: `# Postmortem: elevated 5xx on /v1/chat
 
-**Severity:** sev2 · **Duration:** 29 min · **Tenants affected:** acme, bravo
+**Severity:** sev2 · **Duration:** 29 min · **Tenants affected:** test-bench, bravo
 
 ## Impact
 

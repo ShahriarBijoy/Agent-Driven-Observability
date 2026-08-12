@@ -46,7 +46,7 @@ class AlertEvent:
     alertname: str
     workload: str        # labels: workload|service|deployment|job first hit, else ""
     severity: str        # sev1|sev2|sev3 (agents/incident.py's _SEV mapping)
-    tenant: str           # default "acme"
+    tenant: str           # default "test-bench"
     starts_at: datetime | None
     fingerprint: str | None
     summary: str          # annotation summary/description or alertname
@@ -117,7 +117,7 @@ def _normalize_grafana(payload: dict) -> list[AlertEvent]:
                 alertname=alertname,
                 workload=_workload_from_labels(labels),
                 severity=_SEV.get(str(labels.get("severity", "")).lower(), "sev2"),
-                tenant=labels.get("tenant") or "acme",
+                tenant=labels.get("tenant") or "test-bench",
                 starts_at=_parse_starts_at(alert.get("startsAt")),
                 fingerprint=alert.get("fingerprint"),
                 summary=annotations.get("summary") or annotations.get("description") or alertname,
@@ -138,7 +138,7 @@ def _normalize_gitops(payload: dict) -> list[AlertEvent]:
             alertname=event,
             workload=workload,
             severity="sev2",
-            tenant="acme",
+            tenant="test-bench",
             starts_at=None,
             fingerprint=None,
             summary=event or "gitops event",

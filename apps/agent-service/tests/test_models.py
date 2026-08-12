@@ -48,7 +48,7 @@ def test_tool_call_wire_is_camelcase_and_drops_none() -> None:
 
 
 def test_agent_run_wire_keys() -> None:
-    run = AgentRun(id="r1", agent="rca", tenant="acme", status="running",
+    run = AgentRun(id="r1", agent="rca", tenant="test-bench", status="running",
                    title="t", created_at=now_iso(), updated_at=now_iso())
     wire = run.wire()
     for key in ("createdAt", "updatedAt", "toolCalls", "messages", "artifacts", "approvals"):

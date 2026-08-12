@@ -208,7 +208,7 @@ async def test_run_oncall_runs_closing_step_when_session_raises(monkeypatch):
     monkeypatch.setattr(oncall, "run_agent_session", _fake_session)
     monkeypatch.setattr(oncall, "_close_incident", _fake_close)
 
-    alert = SimpleNamespace(alertname="gw-5xx", severity="page", summary="x", tenant="acme")
+    alert = SimpleNamespace(alertname="gw-5xx", severity="page", summary="x", tenant="test-bench")
     ctx = _SessionCtx()
 
     with pytest.raises(AgentSessionError):

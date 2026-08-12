@@ -101,7 +101,7 @@ describe("inference orchestration", () => {
   it("returns the expected ChatResponse and surfaces 160-char snippets", async () => {
     const svc = createInferenceService(baseDeps({ embedder: fakeEmbedder(true) }));
 
-    const res = await svc.chat({ tenant: "acme", prompt: "what is x?", topK: 3 });
+    const res = await svc.chat({ tenant: "test-bench", prompt: "what is x?", topK: 3 });
 
     expect(res.model).toBe("mock-llm-v1");
     expect(res.completion).toContain("Based on:");
@@ -122,7 +122,7 @@ describe("inference orchestration", () => {
     const { client: model, contexts } = recordingModel();
     const svc = createInferenceService(baseDeps({ model }));
 
-    await svc.chat({ tenant: "acme", prompt: "what is x?", topK: 3 });
+    await svc.chat({ tenant: "test-bench", prompt: "what is x?", topK: 3 });
 
     expect(contexts).toHaveLength(1);
     expect(contexts[0]).toEqual([CHUNKS[0]?.body, CHUNKS[1]?.body]);
@@ -154,7 +154,7 @@ describe("inference orchestration", () => {
     };
     const svc = createInferenceService(baseDeps({ usage: throwingUsage }));
 
-    const res = await svc.chat({ tenant: "acme", prompt: "hi", topK: 1 });
+    const res = await svc.chat({ tenant: "test-bench", prompt: "hi", topK: 1 });
     expect(res.completion).toContain("Based on:");
   });
 
@@ -162,7 +162,7 @@ describe("inference orchestration", () => {
     const { emitter, calls } = recordingLineage();
     const svc = createInferenceService(baseDeps({ lineage: emitter }));
 
-    await svc.chat({ tenant: "acme", prompt: "what is x?", topK: 3 });
+    await svc.chat({ tenant: "test-bench", prompt: "what is x?", topK: 3 });
 
     expect(calls.map((c) => c.type)).toEqual(["start", "complete"]);
     const runId = calls[0]!.args.runId;
@@ -199,7 +199,7 @@ describe("inference orchestration", () => {
     };
     const svc = createInferenceService(baseDeps({ model: failingModel, lineage: emitter }));
 
-    await expect(svc.chat({ tenant: "acme", prompt: "hi", topK: 1 })).rejects.toThrow(
+    await expect(svc.chat({ tenant: "test-bench", prompt: "hi", topK: 1 })).rejects.toThrow(
       "model-proxy 503",
     );
     expect(calls.map((c) => c.type)).toEqual(["start", "fail"]);

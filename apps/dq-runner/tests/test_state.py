@@ -3,9 +3,9 @@ from dq_runner.state import Snapshot
 
 def test_snapshot_round_trips_a_series():
     snap = Snapshot()
-    snap.set_series("dq_freshness_seconds", [(45.0, {"dataset": "inferences", "tenant": "acme"})])
+    snap.set_series("dq_freshness_seconds", [(45.0, {"dataset": "inferences", "tenant": "test-bench"})])
     assert snap.get_series("dq_freshness_seconds") == [
-        (45.0, {"dataset": "inferences", "tenant": "acme"})
+        (45.0, {"dataset": "inferences", "tenant": "test-bench"})
     ]
 
 

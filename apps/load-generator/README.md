@@ -26,13 +26,13 @@ RCA agent is expected to pinpoint.
 
 ## Scenarios (weighted ~55/20/10/10/5)
 
-| scenario  | tenant / token              | intent                                  |
-| --------- | --------------------------- | --------------------------------------- |
-| `happy`   | acme / `dev-local-token`    | valid prompts → 2xx                     |
-| `repeat`  | bravo / `dev-token-bravo`   | small fixed prompt set → cache-friendly |
-| `long`    | acme / `dev-local-token`    | very long (but valid) prompt            |
-| `abusive` | abuser / `dev-token-abuser` | tiny bucket → bursts trip 429           |
-| `broken`  | acme / `dev-local-token`    | malformed JSON / missing prompt → 422   |
+| scenario  | tenant / token                 | intent                                  |
+| --------- | ------------------------------ | --------------------------------------- |
+| `happy`   | test-bench / `dev-local-token` | valid prompts → 2xx                     |
+| `repeat`  | bravo / `dev-token-bravo`      | small fixed prompt set → cache-friendly |
+| `long`    | test-bench / `dev-local-token` | very long (but valid) prompt            |
+| `abusive` | abuser / `dev-token-abuser`    | tiny bucket → bursts trip 429           |
+| `broken`  | test-bench / `dev-local-token` | malformed JSON / missing prompt → 422   |
 
 ## Outcome buckets
 

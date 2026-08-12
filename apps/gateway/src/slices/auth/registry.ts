@@ -12,12 +12,17 @@ export interface TenantRecord {
 }
 
 /**
- * Hardcoded dev tenant registry (ADR-002 §4). `acme`/`bravo` are generous so a
+ * Hardcoded dev tenant registry (ADR-002 §4). `test-bench`/`bravo` are generous so a
  * load test sustains ≥100 rps; `abuser` is tiny so the abusive scenario trips
- * 429 reliably. The `acme` token is also surfaced via the `DEV_TOKEN` env var.
+ * 429 reliably. The `test-bench` token is also surfaced via the `DEV_TOKEN` env var.
  */
 const RECORDS: readonly TenantRecord[] = [
-  { tenant: makeTenant("acme"), token: "dev-local-token", capacity: 1000, refillPerSecond: 1000 },
+  {
+    tenant: makeTenant("test-bench"),
+    token: "dev-local-token",
+    capacity: 1000,
+    refillPerSecond: 1000,
+  },
   { tenant: makeTenant("bravo"), token: "dev-token-bravo", capacity: 1000, refillPerSecond: 1000 },
   { tenant: makeTenant("abuser"), token: "dev-token-abuser", capacity: 20, refillPerSecond: 10 },
 ];

@@ -15,17 +15,17 @@ export interface Scenario {
 }
 
 /** Dev tenant tokens (ADR-002 §4). */
-const TOKEN_ACME = "dev-local-token";
+const TOKEN_TESTBENCH = "dev-local-token";
 const TOKEN_BRAVO = "dev-token-bravo";
 const TOKEN_ABUSER = "dev-token-abuser";
 
 /** Default weights ~ 55/20/10/10/5 (spec §6.5). */
 export const SCENARIOS: readonly Scenario[] = [
-  { name: "happy", weight: 55, token: TOKEN_ACME },
+  { name: "happy", weight: 55, token: TOKEN_TESTBENCH },
   { name: "repeat", weight: 20, token: TOKEN_BRAVO },
-  { name: "long", weight: 10, token: TOKEN_ACME },
+  { name: "long", weight: 10, token: TOKEN_TESTBENCH },
   { name: "abusive", weight: 10, token: TOKEN_ABUSER },
-  { name: "broken", weight: 5, token: TOKEN_ACME },
+  { name: "broken", weight: 5, token: TOKEN_TESTBENCH },
 ] as const;
 
 /**
