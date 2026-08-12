@@ -1,5 +1,5 @@
 import type { Artifact } from "@obs/contracts";
-import { CheckIcon, CopyIcon, DownloadIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon, Maximize2Icon, Minimize2Icon } from "lucide-react";
 import { useRef, useState } from "react";
 import {
   ArtifactAction,
@@ -29,24 +29,34 @@ type View = "preview" | "code";
 export function ArtifactPanel({
   artifact,
   onClose,
+  maximized = false,
+  onToggleMaximize,
   className,
 }: {
   artifact: Artifact;
   onClose: () => void;
+  /** Panel is filling the layout's content area — the parent grid owns (and
+   *  animates) the actual expansion; this only drives the button and Escape. */
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
   className?: string;
 }) {
   const [view, setView] = useState<View>("preview");
   const [copied, setCopied] = useState(false);
 
-  // Escape closes the panel — the only keyboard dismissal on the mobile
-  // overlay, where the close button is easy to tab past. The ref carries the
-  // latest onClose into the mount-scoped listener (same pattern as the run
-  // page's statusRef).
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  // Escape steps back one level: a maximized panel restores to the split view
+  // first, a second press closes it — the only keyboard dismissal on the
+  // mobile overlay, where the close button is easy to tab past. The ref
+  // carries the latest callbacks into the mount-scoped listener (same pattern
+  // as the run page's statusRef).
+  const escapeRef = useRef({ onClose, maximized, onToggleMaximize });
+  escapeRef.current = { onClose, maximized, onToggleMaximize };
   useMountEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onCloseRef.current();
+      if (event.key !== "Escape") return;
+      const current = escapeRef.current;
+      if (current.maximized && current.onToggleMaximize !== undefined) current.onToggleMaximize();
+      else current.onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -96,6 +106,14 @@ export function ArtifactPanel({
             label="Download artifact"
             onClick={() => downloadArtifact(artifact)}
           />
+          {onToggleMaximize !== undefined ? (
+            <ArtifactAction
+              icon={maximized ? Minimize2Icon : Maximize2Icon}
+              tooltip={maximized ? "Restore split view" : "Expand"}
+              label={maximized ? "Restore the split view" : "Expand to fill the page"}
+              onClick={onToggleMaximize}
+            />
+          ) : null}
           <ArtifactClose onClick={onClose} />
         </ArtifactActions>
       </ArtifactHeader>

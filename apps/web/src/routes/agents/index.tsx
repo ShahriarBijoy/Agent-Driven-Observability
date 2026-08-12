@@ -116,6 +116,7 @@ function AgentsPage() {
   const navigate = Route.useNavigate();
   const [tab, setTab] = useState<AgentTab>("rca");
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
+  const [artifactMaximized, setArtifactMaximized] = useState(false);
 
   // A selected past session (?run=) wins over the tab state: only RCA runs
   // resume (the one multi-turn chat agent); anything else is ignored here and
@@ -171,9 +172,14 @@ function AgentsPage() {
       <div
         className={cn(
           "grid min-h-0 flex-1 grid-cols-1 gap-4",
+          // fr↔fr tracks tween smoothly on maximize; the closed↔open switch
+          // (px track in the mix) snaps, as before.
+          "motion-safe:transition-[grid-template-columns,gap] motion-safe:duration-300 motion-safe:ease-in-out",
           openArtifact === null
             ? "lg:grid-cols-[minmax(0,1fr)_300px]"
-            : "lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
+            : artifactMaximized
+              ? "lg:grid-cols-[minmax(0,0fr)_minmax(0,100fr)] lg:gap-0"
+              : "lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]",
         )}
       >
         {/* The key remounts the chat when the surface changes meaning: another
@@ -261,7 +267,12 @@ function AgentsPage() {
             <ArtifactPanel
               key={openArtifact.id}
               artifact={openArtifact}
-              onClose={() => setOpenArtifact(null)}
+              onClose={() => {
+                setOpenArtifact(null);
+                setArtifactMaximized(false);
+              }}
+              maximized={artifactMaximized}
+              onToggleMaximize={() => setArtifactMaximized((m) => !m)}
               className="h-full"
             />
           </div>

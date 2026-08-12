@@ -46,6 +46,7 @@ function RunDetailPage() {
   const statusRef = useRef(run?.status);
   statusRef.current = run?.status;
   const [openArtifact, setOpenArtifact] = useState<Artifact | null>(null);
+  const [artifactMaximized, setArtifactMaximized] = useState(false);
   useMountEffect(() => {
     const timer = setInterval(() => {
       if (statusRef.current !== undefined && LIVE_STATUSES.has(statusRef.current)) {
@@ -99,12 +100,25 @@ function RunDetailPage() {
     <div
       className={cn(
         "mx-auto grid h-full grid-cols-1 px-6 py-6",
+        // Maximize animates by interpolating the fr tracks (fr↔fr tweens;
+        // a px track in the mix would snap) — the transcript column glides
+        // to zero and the artifact takes the whole content area.
+        "motion-safe:transition-[grid-template-columns,gap] motion-safe:duration-300 motion-safe:ease-in-out",
         openArtifact !== null
-          ? "max-w-none gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
+          ? artifactMaximized
+            ? "max-w-none gap-5 lg:grid-cols-[minmax(0,0fr)_minmax(0,100fr)] lg:gap-0"
+            : "max-w-none gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]"
           : "w-full max-w-3xl",
       )}
     >
-      <div className="flex min-h-0 min-w-0 flex-col">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-col",
+          // Clip the collapsing column so its content squeezes out of view
+          // instead of painting over the artifact at 0 width.
+          openArtifact !== null && artifactMaximized && "overflow-hidden",
+        )}
+      >
         <div className="panel-rise mb-5">
           <Button
             variant="ghost"
@@ -194,7 +208,12 @@ function RunDetailPage() {
           <ArtifactPanel
             key={openArtifact.id}
             artifact={openArtifact}
-            onClose={() => setOpenArtifact(null)}
+            onClose={() => {
+              setOpenArtifact(null);
+              setArtifactMaximized(false);
+            }}
+            maximized={artifactMaximized}
+            onToggleMaximize={() => setArtifactMaximized((m) => !m)}
             className="h-full"
           />
         </div>
