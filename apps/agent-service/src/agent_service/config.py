@@ -66,7 +66,7 @@ class Config:
     # mirrored here so the file provider doesn't revert them (~30s scan).
     grafana_dashboards_dir: str
 
-    # Fixed dev credentials (mirrors the BFF: ADR-002, the `acme` tenant).
+    # Fixed dev credentials (mirrors the BFF: ADR-002, the `test-bench` tenant).
     dev_tenant: str
 
     # Shared secret for state-changing endpoints (X-Obs-Token header). The
@@ -153,7 +153,7 @@ def load_config() -> Config:
         grafana_dashboards_dir=_anchored(
             _env("GRAFANA_DASHBOARDS_DIR", "infra/grafana/provisioning/dashboards")
         ),
-        dev_tenant=_env("DEV_TENANT", "acme"),
+        dev_tenant=_env("DEV_TENANT", "test-bench"),
         obs_token=os.environ.get("OBS_TOKEN", "").strip() or None,
         gitea_url=_env("GITEA_URL", "http://obs-vm:3005").rstrip("/"),
         gitea_token=os.environ.get("GITEA_TOKEN", "").strip(),

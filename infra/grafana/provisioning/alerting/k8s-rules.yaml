@@ -9,7 +9,7 @@
 # Routing: the root notification policy sends EVERYTHING to the agent-webhook
 # contact point (grouped by folder+alertname), so firing any of these spawns
 # an incident-reporter run. severity page->sev1 / warning->sev2 in
-# summarize_alert; tenant defaults to acme there. The Mimir ruler stays
+# summarize_alert; tenant defaults to test-bench there. The Mimir ruler stays
 # record-only - Grafana provisioning is where lab alerts live.
 #
 # Query-shape notes that earn their keep:

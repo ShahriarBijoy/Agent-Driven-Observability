@@ -22,13 +22,13 @@ class FakeCounter:
 def test_run_pass_wires_checks_to_gauges_and_violations(monkeypatch):
     inserted: list[dict] = []
 
-    monkeypatch.setattr(db, "last_inference_per_tenant", lambda conn: {"acme": NOW - timedelta(seconds=200)})
+    monkeypatch.setattr(db, "last_inference_per_tenant", lambda conn: {"test-bench": NOW - timedelta(seconds=200)})
     monkeypatch.setattr(db, "max_created_at", lambda conn, table: NOW - timedelta(seconds=5))
     # window 60s -> no recent traffic; baseline 3600s -> healthy history => collapse.
     monkeypatch.setattr(
         db,
         "inference_counts",
-        lambda conn, window: {"acme": 0} if window == 60 else {"acme": 600},
+        lambda conn, window: {"test-bench": 0} if window == 60 else {"test-bench": 600},
     )
     # baseline window (3600) vs current window (300) -> disjoint -> KS == 1.0.
     monkeypatch.setattr(
@@ -52,7 +52,7 @@ def test_run_pass_wires_checks_to_gauges_and_violations(monkeypatch):
             {"completion": "", "model": "m", "usage": {"promptTokens": 1, "completionTokens": 1}, "retrieved": [], "cached": False},
         ],
     )
-    monkeypatch.setattr(db, "cache_stats", lambda conn, window: {"acme": (0, 50)})
+    monkeypatch.setattr(db, "cache_stats", lambda conn, window: {"test-bench": (0, 50)})
     monkeypatch.setattr(
         db,
         "insert_violation",
@@ -70,9 +70,9 @@ def test_run_pass_wires_checks_to_gauges_and_violations(monkeypatch):
 
     # gauges populated
     assert snapshot.get_series("dq_freshness_seconds")
-    assert snapshot.get_series("dq_volume_ratio") == [(0.0, {"tenant": "acme"})]
+    assert snapshot.get_series("dq_volume_ratio") == [(0.0, {"tenant": "test-bench"})]
     assert ("dq_distribution_drift", 1.0) or snapshot.get_series("dq_distribution_drift")
-    assert snapshot.get_series("dq_cache_hit_ratio") == [(0.0, {"tenant": "acme"})]
+    assert snapshot.get_series("dq_cache_hit_ratio") == [(0.0, {"tenant": "test-bench"})]
     assert snapshot.get_series("dq_schema_sampled") == [(2.0, {})]
 
     # every check family fired a violation

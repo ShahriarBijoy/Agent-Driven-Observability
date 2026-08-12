@@ -5,7 +5,7 @@ import { recordForTenant, resolveByToken } from "./registry";
 
 describe("auth registry", () => {
   it("resolves each dev token to its tenant and bucket config", () => {
-    expect(resolveByToken("dev-local-token")?.tenant).toBe("acme");
+    expect(resolveByToken("dev-local-token")?.tenant).toBe("test-bench");
     expect(resolveByToken("dev-token-bravo")?.tenant).toBe("bravo");
     const abuser = resolveByToken("dev-token-abuser");
     expect(abuser?.tenant).toBe("abuser");
@@ -17,7 +17,7 @@ describe("auth registry", () => {
   });
 
   it("looks up bucket config by tenant", () => {
-    expect(recordForTenant(makeTenant("acme"))).toMatchObject({
+    expect(recordForTenant(makeTenant("test-bench"))).toMatchObject({
       capacity: 1000,
       refillPerSecond: 1000,
     });

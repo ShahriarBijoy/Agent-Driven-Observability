@@ -152,7 +152,7 @@ groups:
   # short and long windows exceed the burn-rate threshold — encoded directly in
   # PromQL as (short > bool T) * (long > bool T), which is 1 iff both do, so the
   # Grafana threshold is simply "> 0". severity=page routes to the agent-webhook
-  # (incident reporter) as sev1; severity=warning as sev2. tenant=acme so the
+  # (incident reporter) as sev1; severity=warning as sev2. tenant=test-bench so the
   # incident lands in the default inbox. See slo/*.yaml for the maths.
   - orgId: 1
     name: slo-burn
@@ -189,7 +189,7 @@ groups:
         labels:
           severity: page
           slo: gateway-availability
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: gateway availability error budget burning fast (2% of the 28d budget in 1h; 5m & 1h windows)
       - uid: slo-avail-slow
@@ -222,7 +222,7 @@ groups:
         labels:
           severity: warning
           slo: gateway-availability
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: gateway availability error budget burning slowly (10% of the 28d budget in 6h; 30m & 6h windows)
       - uid: slo-latency-fast
@@ -255,7 +255,7 @@ groups:
         labels:
           severity: page
           slo: gateway-latency
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: gateway latency error budget burning fast (2% of the 28d budget in 1h; 5m & 1h windows)
       - uid: slo-latency-slow
@@ -288,7 +288,7 @@ groups:
         labels:
           severity: warning
           slo: gateway-latency
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: gateway latency error budget burning slowly (10% of the 28d budget in 6h; 30m & 6h windows)
       - uid: slo-rag-quality
@@ -321,7 +321,7 @@ groups:
         labels:
           severity: warning
           slo: rag-quality
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: RAG top-1 relevance below the 90% objective over the last hour (burn-rate alerting saturates for a loose SLO)
 
@@ -362,7 +362,7 @@ groups:
         for: 0m
         labels:
           severity: page
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: Mimir is discarding samples because a per-tenant series limit was crossed (cardinality explosion)
 
@@ -405,7 +405,7 @@ groups:
         for: 0m
         labels:
           severity: page
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: a pipeline run on main failed in the last 15m - main is not shippable (test, build, or deploy job red)
       - uid: cicd-queue-stall
@@ -443,7 +443,7 @@ groups:
         for: 2m
         labels:
           severity: warning
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: CI jobs are queuing (oldest > 3m) with zero completions - the Actions runner is likely down or wedged
   - orgId: 1
@@ -481,7 +481,7 @@ groups:
         for: 3m
         labels:
           severity: warning
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: Argo CD reports application {{ $labels.name }} Degraded for 3m - live state is unhealthy relative to the synced revision (kubectl/argo_app the app; check the last sync + rollout state)
       - uid: rollout-stuck
@@ -518,6 +518,6 @@ groups:
         for: 12m
         labels:
           severity: warning
-          tenant: acme
+          tenant: test-bench
         annotations:
           summary: rollout {{ $labels.name }} has been Progressing >12m or is short on ready replicas - likely a wedged canary (never-Ready pods, stuck analysis, or image that cannot start); rollout_status + analysisrun_get have the detail

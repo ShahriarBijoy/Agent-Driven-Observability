@@ -14,7 +14,7 @@ async def test_add_artifact_stamps_created_at_and_publishes(monkeypatch) -> None
 
     monkeypatch.setattr("agent_service.db.add_artifact", fake_add_artifact)
 
-    ctx = new_run("rca", "acme", "test run")
+    ctx = new_run("rca", "test-bench", "test run")
     art = await ctx.add_artifact("report.html", "text/html", "<h1>hi</h1>")
     try:
         assert art.created_at  # stamped at creation

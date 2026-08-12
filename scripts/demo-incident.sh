@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 GATEWAY="http://localhost:8080"
 AGENT="http://localhost:8093"
-TENANT="acme"
+TENANT="test-bench"
 COMPOSE=(-f infra/compose.yml -f infra/compose.observability.yml)
 INCIDENT_TIMEOUT_SECONDS=${INCIDENT_TIMEOUT_SECONDS:-540}
 

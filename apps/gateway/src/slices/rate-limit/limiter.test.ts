@@ -41,10 +41,10 @@ describe("in-memory token-bucket limiter", () => {
   it("isolates buckets per tenant", async () => {
     const limiter = createMemoryLimiter(() => 0);
     const config = { capacity: 1, refillPerSecond: 0 };
-    const acme = makeTenant("acme");
+    const testBench = makeTenant("test-bench");
 
-    expect((await limiter.tryConsume(acme, config)).allowed).toBe(true);
-    expect((await limiter.tryConsume(acme, config)).allowed).toBe(false);
+    expect((await limiter.tryConsume(testBench, config)).allowed).toBe(true);
+    expect((await limiter.tryConsume(testBench, config)).allowed).toBe(false);
     // A different tenant still has its full bucket.
     expect((await limiter.tryConsume(tenant, config)).allowed).toBe(true);
   });

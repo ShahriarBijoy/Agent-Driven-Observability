@@ -69,7 +69,7 @@ describe("parseScenarioWeights", () => {
 });
 
 describe("buildRequest", () => {
-  it("targets the acme tenant for happy traffic with a valid body", () => {
+  it("targets the test-bench tenant for happy traffic with a valid body", () => {
     const req = buildRequest(findScenario("happy"), GATEWAY, () => 0);
     expect(req.url).toBe(`${GATEWAY}/v1/chat`);
     const headers = req.init.headers as Record<string, string>;

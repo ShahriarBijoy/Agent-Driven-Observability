@@ -34,7 +34,7 @@ from agent_service.precheck import (
 def _alert(**overrides) -> AlertEvent:
     base = dict(
         status="firing", alertname="slo-avail-fast", workload="gateway", severity="sev1",
-        tenant="acme", starts_at=None, fingerprint="abc123", summary="availability burn",
+        tenant="test-bench", starts_at=None, fingerprint="abc123", summary="availability burn",
     )
     base.update(overrides)
     return AlertEvent(**base)

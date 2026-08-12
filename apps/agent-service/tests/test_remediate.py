@@ -860,7 +860,7 @@ async def test_end_to_end_dry_run_approval_execute_uses_the_returned_approval_id
     monkeypatch.setattr(remediate.db, "decide_approval", _decide_approval)
     monkeypatch.setattr(remediate.db, "set_status", _set_status)
 
-    ctx = context_module.new_run("oncall", "acme", "test incident")
+    ctx = context_module.new_run("oncall", "test-bench", "test incident")
     try:
         dry = await remediate.scale_deployment(ctx, "gateway", replicas=4, dry_run=True)
         assert dry["dry_run"] is True

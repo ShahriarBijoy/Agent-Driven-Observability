@@ -39,7 +39,7 @@ def test_build_mcp_server_resolves_every_tool_it_registers():
 
     from agent_service.tools.sdk import build_mcp_server
 
-    ctx = SimpleNamespace(run=SimpleNamespace(id="run_test", tenant="acme"), run_id="run_test")
+    ctx = SimpleNamespace(run=SimpleNamespace(id="run_test", tenant="test-bench"), run_id="run_test")
     server = build_mcp_server(ctx)
     assert server is not None
 
@@ -51,7 +51,7 @@ def test_every_catalog_mcp_tool_is_actually_registered():
 
     from agent_service.tools.sdk import SERVER, TOOL_CATALOG, build_mcp_server
 
-    ctx = SimpleNamespace(run=SimpleNamespace(id="run_test", tenant="acme"), run_id="run_test")
+    ctx = SimpleNamespace(run=SimpleNamespace(id="run_test", tenant="test-bench"), run_id="run_test")
     server = build_mcp_server(ctx)
     registered = set()
     for attr in ("tools", "_tools"):

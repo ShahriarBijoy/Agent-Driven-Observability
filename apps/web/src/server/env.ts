@@ -12,9 +12,9 @@ export const serverEnv = {
    * which would refuse the BFF's server-side fetch.
    */
   agentServiceUrl: process.env["AGENT_SERVICE_URL"] ?? "http://127.0.0.1:8093",
-  /** Fixed dev credentials (ADR-002): the `acme` tenant's bearer token. */
+  /** Fixed dev credentials (ADR-002): the `test-bench` tenant's bearer token. */
   devToken: process.env["DEV_TOKEN"] ?? "dev-local-token",
-  devTenant: process.env["DEV_TENANT"] ?? "acme",
+  devTenant: process.env["DEV_TENANT"] ?? "test-bench",
   /**
    * Shared secret for agent-service's state-changing endpoints (PLAN-2 P7).
    * `obs web` exports it from the host .env; without it, approve/settings

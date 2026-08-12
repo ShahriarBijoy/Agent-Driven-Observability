@@ -185,7 +185,7 @@ GATEWAY_URL=http://localhost:8080 TARGET_QPS=120 DURATION_SECONDS=300 \
 | dq-runner     | http://localhost:8091 | `/violations`, `POST /run` |
 | Pyroscope     | http://localhost:4040 | profiles (opt-in profiler) |
 
-Every host-published port lives in **`infra/ports.env`**. Dev tenants: `dev-local-token` (acme), `dev-token-bravo` (bravo), `dev-token-abuser` (tiny quota — trips 429s).
+Every host-published port lives in **`infra/ports.env`**. Dev tenants: `dev-local-token` (test-bench), `dev-token-bravo` (bravo), `dev-token-abuser` (tiny quota — trips 429s).
 
 > **Windows note:** the agent-service binds IPv4, so the web app points at `http://127.0.0.1:8093` — `localhost` may resolve to IPv6 first and refuse.
 

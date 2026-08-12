@@ -64,7 +64,7 @@ export const Route = createFileRoute("/settings")({
 
 /** Mirrors the gateway's hardcoded registry (apps/gateway auth slice, ADR-002 §4). */
 const TENANT_ROWS = [
-  { tenant: "acme", token: "dev-local-token", capacity: 1000, refill: 1000 },
+  { tenant: "test-bench", token: "dev-local-token", capacity: 1000, refill: 1000 },
   { tenant: "bravo", token: "dev-token-bravo", capacity: 1000, refill: 1000 },
   { tenant: "abuser", token: "dev-token-abuser", capacity: 20, refill: 10 },
 ] as const;
