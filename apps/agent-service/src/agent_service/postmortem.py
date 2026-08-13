@@ -312,8 +312,15 @@ def _row_time(ts: Any, anchor_date) -> str:
 
 
 _EVIDENCE_LOKI_QUERY = '{namespace="subject"} |~ "(?i)error|failed"'
+# `request_duration_seconds` is what honoTelemetry actually records
+# (packages/telemetry/src/http.ts) — NOT the OTel auto-instrumentation name
+# `http_server_duration_milliseconds`, which this lab has never emitted and
+# which left every Mimir evidence link opening an empty Explore pane. Split
+# `by (service)` so the reader lands on per-service latency (gateway,
+# retriever, embedder, model-proxy — the only emitters) rather than one
+# aggregate line that hides which hop moved.
 _EVIDENCE_MIMIR_QUERY = (
-    'histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le))'
+    'histogram_quantile(0.95, sum by (le, service) (rate(request_duration_seconds_bucket[5m])))'
 )
 
 
