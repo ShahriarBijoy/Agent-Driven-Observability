@@ -60,7 +60,7 @@ export async function fetchGoldenSignals(): Promise<GoldenSignals> {
     // answer is zero. The denominator keeps its empty case — no traffic really
     // does mean the error rate is unknown, not 0%.
     instantQuery(
-      `100 * (sum(rate(request_duration_seconds_count{service="gateway",status_code=~"5.."}[5m])) or vector(0)) / sum(rate(request_duration_seconds_count{service="gateway"}[5m]))`,
+      `100 * (sum(rate(request_duration_seconds_count{service="gateway",http_status_code=~"5.."}[5m])) or vector(0)) / sum(rate(request_duration_seconds_count{service="gateway"}[5m]))`,
     ),
     instantQuery(latencyQuantile(0.5)),
     instantQuery(latencyQuantile(0.95)),
